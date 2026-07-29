@@ -20,6 +20,7 @@ import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sin
 
 /**
@@ -55,6 +56,26 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val HALF_PI = (Math.PI / 2).toFloat()
         // One-pole ~120 Hz à 44,1 kHz pour l'extraction des basses
         const val BASS_ALPHA = 0.017f
+        // Bass swap : atténuation des basses du deck « en retrait » pendant
+        // le crossfade (une seule ligne de basse à la fois)
+        const val BASS_SWAP_CUT = 0.85f
+    }
+
+    /** Détecteur d'attaques (kicks) sur l'enveloppe de basses d'un deck. */
+    private class OnsetTracker {
+        private var mean = 0f
+        var lastOnsetFrame = -1L
+            private set
+        private var refractoryUntil = 0L
+
+        fun feed(energy: Float, frame: Long, refractoryFrames: Long) {
+            if (mean <= 0f) mean = energy
+            if (energy > 1.7f * mean && energy > 1e-4f && frame >= refractoryUntil) {
+                lastOnsetFrame = frame
+                refractoryUntil = frame + refractoryFrames
+            }
+            mean += 0.05f * (energy - mean)
+        }
     }
 
     private val ui = Handler(Looper.getMainLooper())
@@ -155,6 +176,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             private set
         var finished = false
             private set
+
+        // Filtres de basses du deck (bass swap + détection de kick pour le
+        // verrouillage pendant le crossfade)
+        var lpL = 0f
+        var lpR = 0f
+        val onsets = OnsetTracker()
+
+        /** Micro-correction de synchro pendant le fade (bornée à ±0,4 %). */
+        fun syncNudge(delta: Float) {
+            curRate = (curRate + delta).coerceIn(rate * 0.996f, rate * 1.004f)
+        }
 
         // Retour progressif au tempo naturel après un calage (pitch ridé par
         // un DJ) : curRate glisse vers 1.0 une fois le crossfade terminé.
@@ -348,9 +380,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var endFadeFrames = -1L
         var blockCount = 0
 
-        // Renfort dynamique des basses
-        var lpL = 0f
-        var lpR = 0f
+        // Renfort dynamique des basses (sur le signal mixé)
+        var mixLpL = 0f
+        var mixLpR = 0f
         var bassGain = 0f
         var recentPeak = 0f
 
@@ -461,33 +493,96 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
                 var blockSq = 0.0
                 var bassSq = 0.0
+                val bd = b
+                val fadeActive = bd != null && fadeLenF > 0
+                var subA = 0f
+                var subB = 0f
                 for (i in 0 until BLOCK_FRAMES) {
                     val gf = framesGlobal + i
                     var gA = 1f
                     var gB = 0f
-                    if (b != null && gf >= fadeStartF && fadeLenF > 0) {
-                        val x = ((gf - fadeStartF).toFloat() / fadeLenF).coerceIn(0f, 1f)
+                    var x = 0f
+                    val inFade = fadeActive && gf >= fadeStartF
+                    if (inFade) {
+                        x = ((gf - fadeStartF).toFloat() / fadeLenF).coerceIn(0f, 1f)
                         gA = cos(x * HALF_PI)
-                        gB = sin(x * HALF_PI)
+                        // Entrée en S : le deck entrant reste discret sur le
+                        // premier tiers du fade, puis monte franchement.
+                        gB = sin(x.pow(1.6f) * HALF_PI)
                     }
                     var master = 1f
                     if (endFadeFrames >= 0) {
                         master = (endFadeFrames - i).coerceAtLeast(0L).toFloat() /
                                 (OUT_SR / 2f)
                     }
-                    val l = (tmpA[i * 2] * gA + tmpB[i * 2] * gB) * master
-                    val r = (tmpA[i * 2 + 1] * gA + tmpB[i * 2 + 1] * gB) * master
+
+                    val aL = tmpA[i * 2]
+                    val aR = tmpA[i * 2 + 1]
+                    val bL = tmpB[i * 2]
+                    val bR = tmpB[i * 2 + 1]
+                    // Basses de chaque deck (bass swap + détection de kick)
+                    a.lpL += BASS_ALPHA * (aL - a.lpL)
+                    a.lpR += BASS_ALPHA * (aR - a.lpR)
+                    var vaL = aL
+                    var vaR = aR
+                    var vbL = bL
+                    var vbR = bR
+                    if (inFade && bd != null) {
+                        bd.lpL += BASS_ALPHA * (bL - bd.lpL)
+                        bd.lpR += BASS_ALPHA * (bR - bd.lpR)
+                        // Bass swap : les basses de l'entrant sont coupées,
+                        // puis échangées avec celles du sortant à ~65 % du fade
+                        val swap = ((x - 0.62f) / 0.12f).coerceIn(0f, 1f)
+                        val cutA = BASS_SWAP_CUT * swap
+                        val cutB = BASS_SWAP_CUT * (1f - swap)
+                        vaL -= cutA * a.lpL
+                        vaR -= cutA * a.lpR
+                        vbL -= cutB * bd.lpL
+                        vbR -= cutB * bd.lpR
+                        // Enveloppes de kick par sous-fenêtre de 256 frames
+                        subA += abs(a.lpL) + abs(a.lpR)
+                        subB += abs(bd.lpL) + abs(bd.lpR)
+                        if ((i + 1) % 256 == 0) {
+                            a.onsets.feed(
+                                subA / 256, gf, (a.beatPeriodFrames * 0.6).toLong()
+                            )
+                            bd.onsets.feed(
+                                subB / 256, gf, (bd.beatPeriodFrames * 0.6).toLong()
+                            )
+                            subA = 0f
+                            subB = 0f
+                        }
+                    }
+
+                    val l = (vaL * gA + vbL * gB) * master
+                    val r = (vaR * gA + vbR * gB) * master
                     // Renfort dynamique des basses : extraction < ~120 Hz
                     // (one-pole), boost lissé appliqué sur les passages forts
                     // où les basses manquent.
-                    lpL += BASS_ALPHA * (l - lpL)
-                    lpR += BASS_ALPHA * (r - lpR)
+                    mixLpL += BASS_ALPHA * (l - mixLpL)
+                    mixLpR += BASS_ALPHA * (r - mixLpR)
                     blockSq += (l * l + r * r).toDouble()
-                    bassSq += (lpL * lpL + lpR * lpR).toDouble()
-                    val lb = l + bassGain * lpL
-                    val rb = r + bassGain * lpR
+                    bassSq += (mixLpL * mixLpL + mixLpR * mixLpR).toDouble()
+                    val lb = l + bassGain * mixLpL
+                    val rb = r + bassGain * mixLpR
                     out[i * 2] = lb.coerceIn(-1f, 1f)
                     out[i * 2 + 1] = rb.coerceIn(-1f, 1f)
+                }
+                // Verrouillage actif : si les kicks des deux decks dérivent
+                // pendant le fade, micro-corriger le rate de l'entrant.
+                if (fadeActive && bd != null && framesGlobal >= fadeStartF) {
+                    val pa = a.beatPeriodFrames
+                    val pb = bd.beatPeriodFrames
+                    if (abs(pa - pb) < 0.02 * pa) { // uniquement si tempos verrouillés
+                        val oa = a.onsets.lastOnsetFrame
+                        val ob = bd.onsets.lastOnsetFrame
+                        if (oa > 0 && ob > 0) {
+                            var d = (ob - oa).toDouble()
+                            d -= Math.round(d / pb) * pb // repli à ±période/2
+                            val delta = (d / pb * 0.002).coerceIn(-3.0e-4, 3.0e-4)
+                            bd.syncNudge(delta.toFloat())
+                        }
+                    }
                 }
                 // Mise à jour du boost pour le bloc suivant
                 run {

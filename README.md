@@ -87,6 +87,16 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   ne s'accumulent plus de morceau en morceau. Et sur les passages forts où
   les basses manquent, un **renfort dynamique des basses** (< 120 Hz,
   jusqu'à ~+3,5 dB, lissé) les remonte discrètement.
+  Les jonctions elles-mêmes sont travaillées comme un vrai passage de mains :
+  - **bass swap** : les basses du morceau entrant sont coupées pendant le
+    blend, puis échangées avec celles du sortant à ~65 % du fade — une seule
+    ligne de basse à la fois, fini la bouillie ;
+  - **entrée en S** : l'entrant reste discret sur le premier tiers puis monte
+    franchement ;
+  - **verrouillage actif** : les kicks des deux decks sont suivis pendant le
+    fade et le rate de l'entrant est micro-corrigé (±0,4 %) pour rester calé ;
+  - côté analyse, l'ancre de premier beat est affinée à l'échantillon près et
+    le BPM est interpolé en continu (parabole sur le pic d'autocorrélation).
   Pendant le mode DJ, ExoPlayer boucle une piste silencieuse à volume nul pour
   conserver le focus audio et la session active : les boutons Bluetooth
   continuent de piloter le moteur DJ.
