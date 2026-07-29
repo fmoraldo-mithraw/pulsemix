@@ -3,6 +3,7 @@ package com.pulsemix.app.mix
 import com.pulsemix.app.data.Track
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.random.Random
 
 /**
  * Construit des propositions de mix à partir de la bibliothèque analysée.
@@ -54,22 +55,50 @@ object MixEngine {
     /**
      * Ordonne un ensemble de morceaux en chaîne : chaque morceau suivant est
      * choisi pour minimiser l'écart de BPM et maximiser la compatibilité
-     * harmonique avec le précédent.
+     * harmonique avec le précédent — avec un hasard contrôlé : on tire parmi
+     * les 3 meilleurs candidats (biaisé vers le meilleur), pour que deux
+     * lancements du même mix ne donnent pas le même enchaînement.
      */
-    fun chainOrder(tracks: List<Track>, ascending: Boolean = true): List<Track> {
+    fun chainOrder(
+        tracks: List<Track>,
+        ascending: Boolean = true,
+        rnd: Random = Random.Default
+    ): List<Track> {
         if (tracks.size <= 1) return tracks
         val pool = tracks.toMutableList()
         val result = ArrayList<Track>(tracks.size)
-        val start = if (ascending) pool.minByOrNull { it.bpm } else pool.maxByOrNull { it.bpm }
-        result.add(start!!)
+        val startCands = pool.sortedBy { if (ascending) it.bpm else -it.bpm }.take(3)
+        val start = startCands[rnd.nextInt(startCands.size)]
+        result.add(start)
         pool.remove(start)
         while (pool.isNotEmpty()) {
             val prev = result.last()
-            val next = pool.minByOrNull { cost(prev, it, ascending) }!!
+            val cands = pool.sortedBy { cost(prev, it, ascending) }.take(3)
+            val r = rnd.nextFloat()
+            val pick = when {
+                cands.size == 1 || r < 0.6f -> 0
+                cands.size == 2 || r < 0.85f -> 1
+                else -> 2
+            }
+            val next = cands[pick]
             result.add(next)
             pool.remove(next)
         }
         return result
+    }
+
+    /**
+     * Prend n morceaux vers le haut d'un classement, en piochant au hasard
+     * dans une fenêtre légèrement plus large (n + 50 %) : la sélection change
+     * d'un lancement à l'autre tout en restant fidèle au critère.
+     */
+    private fun sampleTop(sorted: List<Track>, n: Int, rnd: Random): List<Track> {
+        val window = sorted.take(min(sorted.size, n + n / 2 + 1)).toMutableList()
+        val out = ArrayList<Track>(min(n, window.size))
+        repeat(min(n, window.size)) {
+            out.add(window.removeAt(rnd.nextInt(window.size)))
+        }
+        return out
     }
 
     private fun cost(prev: Track, cand: Track, ascending: Boolean): Float {
@@ -104,9 +133,10 @@ object MixEngine {
         if (tracks.size >= 12 && calme.size + groove.size >= 4 && energetic.size >= 4) {
             val used = HashSet<String>()
             fun take(from: List<Track>, n: Int, comparator: Comparator<Track>): List<Track> {
-                val picked = from.filter { it.uri !in used }
-                    .sortedWith(comparator)
-                    .take(n)
+                val picked = sampleTop(
+                    from.filter { it.uri !in used }.sortedWith(comparator),
+                    n, Random.Default
+                )
                 picked.forEach { used.add(it.uri) }
                 return picked
             }
@@ -172,9 +202,9 @@ object MixEngine {
 
         // 3. Chill : uniquement les morceaux doux, arc léger
         run {
-            val soft = (calme + groove)
-                .sortedBy { it.energyMean }
-                .take(14)
+            val soft = sampleTop(
+                (calme + groove).sortedBy { it.energyMean }, 14, Random.Default
+            )
             if (soft.size >= 4) {
                 val ordered = chainOrder(soft, ascending = true)
                 val phases = splitIntoPhases(ordered, listOf("Pose", "Flottement", "Descente"))
@@ -191,7 +221,7 @@ object MixEngine {
         // 4. Peak time : que des morceaux qui tapent
         if (energetic.size >= 6) {
             val ordered = chainOrder(
-                energetic.sortedByDescending { it.energyPeak }.take(16),
+                sampleTop(energetic.sortedByDescending { it.energyPeak }, 16, Random.Default),
                 ascending = true
             )
             val phases = splitIntoPhases(ordered, listOf("Impact", "Pression", "Explosion"))
@@ -206,7 +236,10 @@ object MixEngine {
 
         // 5. Vagues : alternance montée / pause
         if (energetic.size >= 8 && calme.size + groove.size >= 3) {
-            val soft = (calme + groove).sortedBy { it.energyMean }.toMutableList()
+            // léger bruit sur le tri : les accalmies varient d'un lancement à l'autre
+            val soft = (calme + groove)
+                .sortedBy { it.energyMean * (0.85f + 0.3f * Random.nextFloat()) }
+                .toMutableList()
             val hard = chainOrder(energetic, ascending = true).toMutableList()
             val phases = ArrayList<Phase>()
             var wave = 1
@@ -273,32 +306,50 @@ object MixEngine {
     // ------------------------------------------------------- musique douce
 
     /**
-     * Sélectionne les morceaux « doux » : BPM sous le seuil, énergie et
-     * brillance (centroïde) basses par rapport au reste de la bibliothèque.
+     * Sélectionne les morceaux vraiment « doux » : un score de douceur global
+     * (énergie, brillance, densité d'attaques ET BPM, en rangs percentiles de
+     * la bibliothèque) sert de filtre strict — seuls les morceaux sous le
+     * seuil entrent dans la sélection.
+     *
+     * @param softness seuil 0..1 : ~0,25 = le quart le plus doux de la
+     * bibliothèque (défaut de l'interface, très doux).
      */
-    fun softSelection(all: List<Track>, bpmCutoff: Float): List<Track> {
+    fun softSelection(
+        all: List<Track>,
+        softness: Float,
+        rnd: Random = Random.Default
+    ): List<Track> {
         val analyzed = all.filter { it.analyzed && it.bpm > 0f }
         if (analyzed.isEmpty()) return emptyList()
 
-        fun percentileRank(values: List<Float>, v: Float): Float {
-            if (values.isEmpty()) return 0.5f
-            val below = values.count { it <= v }
-            return below.toFloat() / values.size
+        // Rang percentile via tableau trié + recherche binaire (appelé à
+        // chaque cran du curseur : doit rester léger)
+        fun sortedOf(sel: (Track) -> Float): FloatArray =
+            analyzed.map(sel).sorted().toFloatArray()
+
+        fun pct(sorted: FloatArray, v: Float): Float {
+            var lo = 0
+            var hi = sorted.size
+            while (lo < hi) {
+                val mid = (lo + hi) / 2
+                if (sorted[mid] <= v) lo = mid + 1 else hi = mid
+            }
+            return lo.toFloat() / sorted.size
         }
 
-        val energies = analyzed.map { it.energyMean }
-        val centroids = analyzed.map { it.centroid }
-        val onsets = analyzed.map { it.onsetRate }
+        val energies = sortedOf { it.energyMean }
+        val centroids = sortedOf { it.centroid }
+        val onsets = sortedOf { it.onsetRate }
+        val bpms = sortedOf { it.bpm }
 
         fun softScore(t: Track): Float =
-            0.55f * percentileRank(energies, t.energyMean) +
-                0.25f * percentileRank(centroids, t.centroid) +
-                0.20f * percentileRank(onsets, t.onsetRate)
+            0.45f * pct(energies, t.energyMean) +
+                0.20f * pct(centroids, t.centroid) +
+                0.15f * pct(onsets, t.onsetRate) +
+                0.20f * pct(bpms, t.bpm)
 
-        // Seuil strict : ne jamais dépasser le BPM choisi par l'utilisateur
-        // (l'ancien élargissement silencieux de +15 BPM faisait entrer des
-        // morceaux plus rapides que demandé).
-        val candidates = analyzed.filter { it.bpm <= bpmCutoff }
-        return candidates.sortedBy { softScore(it) }
+        val eligible = analyzed.filter { softScore(it) <= softness.coerceIn(0.05f, 1f) }
+        // Ordre doux -> moins doux, avec un léger bruit pour varier
+        return eligible.sortedBy { softScore(it) + (rnd.nextFloat() - 0.5f) * 0.06f }
     }
 }

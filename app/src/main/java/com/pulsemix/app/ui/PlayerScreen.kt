@@ -256,27 +256,35 @@ fun PlayerScreen(
 
     // ------------------------------------------------------- dialogue Douce
     if (showDouceDialog) {
-        var cutoff by remember { mutableFloatStateOf(95f) }
-        val matching = vm.softCount(cutoff)
+        // Défaut très doux : le quart le plus calme de la bibliothèque
+        var softness by remember { mutableFloatStateOf(0.25f) }
+        val matching = vm.softCount(softness)
+        val label = when {
+            softness <= 0.20f -> "très doux"
+            softness <= 0.35f -> "doux"
+            softness <= 0.50f -> "modéré"
+            else -> "permissif"
+        }
         AlertDialog(
             onDismissRequest = { showDouceDialog = false },
             title = { Text("Musique douce") },
             text = {
                 Column {
                     Text(
-                        "Sélectionne les morceaux calmes : BPM sous le seuil, " +
-                            "énergie et brillance basses."
+                        "Ne garde que les morceaux vraiment calmes : énergie, " +
+                            "brillance, attaques et BPM bas par rapport au reste " +
+                            "de ta bibliothèque."
                     )
                     Spacer(Modifier.height(12.dp))
-                    Text("Seuil : ${cutoff.toInt()} BPM")
+                    Text("Douceur : ${(softness * 100).toInt()} % — $label")
                     Slider(
-                        value = cutoff,
-                        onValueChange = { cutoff = it },
-                        valueRange = 60f..120f
+                        value = softness,
+                        onValueChange = { softness = it },
+                        valueRange = 0.10f..0.60f
                     )
                     Text(
                         if (matching > 0) "$matching morceau(x) correspondant(s)"
-                        else "Aucun morceau sous ce seuil — monte le curseur.",
+                        else "Aucun morceau assez doux — monte le curseur.",
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
@@ -285,7 +293,7 @@ fun PlayerScreen(
                 Button(
                     enabled = matching > 0,
                     onClick = {
-                        vm.playDouce(cutoff)
+                        vm.playDouce(softness)
                         showDouceDialog = false
                     }
                 ) { Text("Lancer") }

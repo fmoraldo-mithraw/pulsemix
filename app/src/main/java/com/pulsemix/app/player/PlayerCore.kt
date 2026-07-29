@@ -173,8 +173,8 @@ object PlayerCore {
         persistState()
     }
 
-    fun playDouce(all: List<Track>, bpmCutoff: Float) {
-        val soft = MixEngine.softSelection(all, bpmCutoff)
+    fun playDouce(all: List<Track>, softness: Float) {
+        val soft = MixEngine.softSelection(all, softness)
         if (soft.isEmpty()) return
         stopDjIfNeeded()
         mode.value = PlayerMode.DOUCE

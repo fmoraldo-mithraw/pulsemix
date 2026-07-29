@@ -108,8 +108,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         PlayerCore.playNormal(tracks.value, 0)
     }
 
-    fun playDouce(bpmCutoff: Float) {
-        PlayerCore.playDouce(tracks.value, bpmCutoff)
+    fun playDouce(softness: Float) {
+        PlayerCore.playDouce(tracks.value, softness)
     }
 
     /**
@@ -129,8 +129,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun setShuffle(enabled: Boolean) = PlayerCore.setShuffle(enabled)
     fun seekTo(fraction: Float) = PlayerCore.seekToFraction(fraction)
 
-    /** Nombre de morceaux « doux » pour un seuil de BPM donné (aperçu du dialogue).
-     *  Simple comptage : pas de tri O(n²) sur le thread UI à chaque cran du curseur. */
-    fun softCount(bpmCutoff: Float): Int =
-        tracks.value.count { it.analyzed && it.bpm > 0f && it.bpm <= bpmCutoff }
+    /** Nombre de morceaux « doux » pour un seuil de douceur donné (aperçu du dialogue). */
+    fun softCount(softness: Float): Int =
+        MixEngine.softSelection(tracks.value, softness).size
 }

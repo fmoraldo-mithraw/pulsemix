@@ -55,9 +55,15 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   (Clé publique par construction : ne pas publier sur un store avec.)
   Si une version installée avait été signée autrement, il faut désinstaller
   une dernière fois.
-- **Musique douce** : seuil de BPM réglable (60–120) + tri par « douceur »
-  (énergie, brillance, densité d'attaques basses par rapport au reste de ta
-  bibliothèque).
+- **Musique douce** : un curseur de douceur (très doux par défaut) filtre
+  strictement — seuls les morceaux sous le seuil entrent, selon un score en
+  rangs percentiles de ta bibliothèque (énergie 45 %, brillance 20 %,
+  densité d'attaques 15 %, BPM 20 %), joués du plus doux au moins doux.
+- **Hasard contrôlé** : Douce, Mix et DJ varient à chaque lancement (tirage
+  parmi les meilleurs candidats à chaque enchaînement, sélections de phases
+  piochées dans une fenêtre un peu plus large) tout en respectant les
+  critères ; seul le mode Normal est déterministe (ordre alphabétique,
+  Shuffle en option).
 - **Mode Mix** : l'app propose plusieurs mix selon ce que contient la
   bibliothèque — *Soirée complète* (chauffe → montée → peak → pause →
   relance), *Montée progressive*, *Chill*, *Peak time*, *Vagues*, *Flow
