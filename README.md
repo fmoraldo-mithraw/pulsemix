@@ -22,9 +22,16 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
     mixage harmonique.
   - **Énergie** : RMS moyen/pic, centroïde spectral (brillance), densité
     d'attaques.
-  - **Meilleure minute** : fenêtre de 60 s la plus énergique, recalée sur la
-    vallée d'énergie qui la précède (début de section), avec une **ancre de
-    premier beat** pour le calage DJ.
+  - **Meilleure minute** : fenêtre de 60 s la plus énergique, calée sur le
+    **drop** (la montée d'énergie soutenue la plus franche autour de la
+    fenêtre), avec une **ancre de premier beat** pour le calage DJ.
+  - **Contrôles** : l'analyse peut être stoppée proprement, reprise là où
+    elle en était, ou relancée de zéro depuis la bibliothèque.
+- **Reprise de session** : l'état de lecture (mode, file, mix, phase, morceau
+  et position) est sauvegardé en continu et restauré au démarrage — après une
+  fermeture, une mise en veille ou un plantage, l'appli repart au même
+  endroit (en pause). En cas de crash, la trace est écrite dans
+  `Android/data/com.pulsemix.app/files/crash_log.txt`.
 - **Musique douce** : seuil de BPM réglable (60–120) + tri par « douceur »
   (énergie, brillance, densité d'attaques basses par rapport au reste de ta
   bibliothèque).

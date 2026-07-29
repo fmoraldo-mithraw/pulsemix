@@ -55,6 +55,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     @Volatile private var paused = false
     @Volatile private var pendingJump = -1
     @Volatile private var currentPhaseIndex = 0
+    @Volatile private var startSegIndex = 0
 
     private var segments: List<Segment> = emptyList()
     private var plan: MixEngine.MixPlan? = null
@@ -62,7 +63,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     // ------------------------------------------------------------------ API
 
-    fun start(plan: MixEngine.MixPlan) {
+    /** @param startPhase phase de départ (reprise après fermeture/plantage). */
+    fun start(plan: MixEngine.MixPlan, startPhase: Int = 0) {
         stop()
         this.plan = plan
         segments = plan.phases.flatMapIndexed { pi, phase ->
@@ -75,7 +77,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         running = true
         paused = false
         pendingJump = -1
-        currentPhaseIndex = 0
+        startSegIndex = segments.indexOfFirst { it.phaseIndex >= startPhase }
+            .let { if (it < 0) 0 else it }
+        currentPhaseIndex = segments[startSegIndex].phaseIndex
         mixThread = thread(name = "DjMixer", priority = Thread.MAX_PRIORITY) { runMix() }
     }
 
@@ -293,7 +297,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
         try {
             audioTrack.play()
-            deckA = openNextValid(0, 1f) ?: return
+            deckA = openNextValid(startSegIndex, 1f) ?: return
             deckA.startedAtFrame = 0L
             currentPhaseIndex = deckA.segment.phaseIndex
             announce(deckA)

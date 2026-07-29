@@ -52,13 +52,20 @@ class AudioAnalyzer {
         val durationMs: Long
     )
 
-    suspend fun analyze(context: Context, uri: Uri, durationHintMs: Long): Features? =
+    suspend fun analyze(
+        context: Context,
+        uri: Uri,
+        durationHintMs: Long,
+        shouldContinue: () -> Boolean = { true }
+    ): Features? =
         withContext(Dispatchers.Default) {
             val state = StreamState(durationHintMs)
             val ok = AudioDecoder().decode(context, uri) { pcm, frames, sr, ch ->
                 state.feed(pcm, frames, sr, ch)
-                true
+                shouldContinue()
             }
+            // Interrompu (stop demandé) : données partielles, ne rien conclure
+            if (!shouldContinue()) return@withContext null
             if (!ok || state.sampleRate == 0 || state.totalMono < state.sampleRate) return@withContext null
 
             val sr = state.sampleRate
@@ -212,7 +219,7 @@ class AudioAnalyzer {
         val f = FloatArray(n) { fluxList[it] }
 
         // Dé-tendance : soustraire la moyenne locale, garder la partie positive
-        val g = FloatArray(n)
+        val g0 = FloatArray(n)
         val radius = 8
         for (i in 0 until n) {
             var s = 0f
@@ -220,7 +227,16 @@ class AudioAnalyzer {
             for (j in max(0, i - radius)..min(n - 1, i + radius)) {
                 s += f[j]; c++
             }
-            g[i] = max(0f, f[i] - s / c)
+            g0[i] = max(0f, f[i] - s / c)
+        }
+        // Lissage léger [0.25, 0.5, 0.25] : élargit les pics d'attaque pour que
+        // l'autocorrélation aux lags entiers ne sous-estime plus les périodes
+        // non entières (BPM élevés = lags courts).
+        val g = FloatArray(n)
+        for (i in 0 until n) {
+            val a = if (i > 0) g0[i - 1] else g0[i]
+            val b = if (i < n - 1) g0[i + 1] else g0[i]
+            g[i] = 0.25f * a + 0.5f * g0[i] + 0.25f * b
         }
 
         val acCache = HashMap<Int, Float>()
@@ -249,9 +265,12 @@ class AudioAnalyzer {
         var bpm = 60.0
         while (bpm <= 190.0) {
             val lag = 60.0 / (bpm * hopSec)
+            // Peigne harmonique symétrique : uniquement des multiples du lag,
+            // même nombre de termes pour tous les candidats. L'ancien terme
+            // ac(lag/2) favorisait mécaniquement le demi-tempo (ses trois
+            // termes tombaient tous sur des pics, ex. 120 BPM détecté à 60).
             var s = acInterp(lag)
-            s += 0.45f * acInterp(lag * 2)      // support tempo moitié
-            if (lag / 2 >= 2) s += 0.45f * acInterp(lag / 2) // support tempo double
+            s += 0.45f * acInterp(lag * 2)
             val w = exp(-((bpm - 120.0) * (bpm - 120.0)) / (2.0 * 55.0 * 55.0)).toFloat()
             s *= (0.75f + 0.25f * w)
             scores[(bpm * 2).roundToInt()] = s
@@ -267,9 +286,33 @@ class AudioAnalyzer {
 
         fun scoreOf(b: Double): Float = scores[(b * 2).roundToInt()] ?: 0f
 
+        var raised = false
+        // Rattrapage 3:2 : un morceau à T détecté à 2T/3 (piège classique).
+        // Le candidat 1,5x est retenu si son score est proche ET s'il possède
+        // une vraie subdivision au demi-lag (tatum), contrairement au retenu.
+        val cand = bestBpm * 1.5
+        if (cand <= 190) {
+            val lagBest = 60.0 / (bestBpm * hopSec)
+            val lagCand = 60.0 / (cand * hopSec)
+            if (scoreOf(cand) > 0.70f * bestScore &&
+                acInterp(lagCand / 2) > 1.3f * acInterp(lagBest / 2)
+            ) {
+                bestBpm = (cand * 2).roundToInt() / 2.0
+                bestScore = scoreOf(bestBpm)
+                raised = true
+            }
+        }
         // Correction octave : préférer la plage 75-165
-        if (bestBpm < 75 && bestBpm * 2 <= 190 && scoreOf(bestBpm * 2) > 0.85f * bestScore) bestBpm *= 2
-        if (bestBpm > 165 && bestBpm / 2 >= 60 && scoreOf(bestBpm / 2) > 0.9f * bestScore) bestBpm /= 2
+        if (bestBpm < 75 && bestBpm * 2 <= 190 && scoreOf(bestBpm * 2) > 0.85f * bestScore) {
+            bestBpm *= 2
+            raised = true
+        }
+        // Ne pas redescendre un tempo qu'une règle vient de remonter
+        if (!raised && bestBpm > 165 && bestBpm / 2 >= 60 &&
+            scoreOf(bestBpm / 2) > 0.9f * bestScore
+        ) {
+            bestBpm /= 2
+        }
 
         val mean = scoreSum / max(1, scoreCount)
         val conf = if (mean > 0) min(1f, (bestScore / mean - 1f) / 3f) else 0f
@@ -338,15 +381,16 @@ class AudioAnalyzer {
         if (durationMs <= 75_000 || rms.size < 20) {
             return 0L to min(60_000L, durationMs)
         }
+        val n = rms.size
         val w = max(1, (60_000.0 / blockMs).roundToInt())
-        if (rms.size <= w) return 0L to min(60_000L, durationMs)
+        if (n <= w) return 0L to min(60_000L, durationMs)
 
-        // Somme glissante
+        // Somme glissante : fenêtre de 60 s la plus énergique
         var sum = 0.0
         for (i in 0 until w) sum += rms[i]
         var bestSum = sum
         var bestIdx = 0
-        for (i in 1..rms.size - w) {
+        for (i in 1..n - w) {
             sum += rms[i + w - 1] - rms[i - 1]
             if (sum > bestSum) {
                 bestSum = sum
@@ -354,23 +398,49 @@ class AudioAnalyzer {
             }
         }
 
-        // Recaler le départ sur la vallée d'énergie précédente (transition musicale)
-        val lookBack = (15_000.0 / blockMs).roundToInt()
-        var valleyIdx = bestIdx
-        var valleyVal = Float.MAX_VALUE
-        for (j in max(0, bestIdx - lookBack)..bestIdx) {
+        // RMS lissé (~1 s) pour juger les transitions sans le grain des blocs
+        val k = max(1, (1000.0 / blockMs).roundToInt())
+        val smooth = FloatArray(n)
+        for (i in 0 until n) {
             var s = 0f
             var c = 0
-            for (k in j..min(rms.size - 1, j + 4)) {
-                s += rms[k]; c++
+            for (j in max(0, i - k / 2)..min(n - 1, i + k / 2)) {
+                s += rms[j]; c++
             }
-            val avg = s / c
-            if (avg < valleyVal) {
-                valleyVal = avg
-                valleyIdx = j
+            smooth[i] = s / c
+        }
+
+        // Départ = la montée d'énergie soutenue la plus franche (le « drop »)
+        // autour de la fenêtre : 8 s après moins 8 s avant. Mieux qu'une
+        // vallée : le mode DJ entre là où le morceau décolle, pas sur un creux.
+        val h = max(1, (8_000.0 / blockMs).roundToInt())
+        val lo = max(0, bestIdx - (20_000.0 / blockMs).roundToInt())
+        val hi = min(n - 1, bestIdx + (10_000.0 / blockMs).roundToInt())
+        var riseIdx = bestIdx
+        var riseVal = -Float.MAX_VALUE
+        for (i in lo..hi) {
+            var before = 0f
+            var cb = 0
+            for (j in max(0, i - h) until i) {
+                before += smooth[j]; cb++
+            }
+            var after = 0f
+            var ca = 0
+            for (j in i until min(n, i + h)) {
+                after += smooth[j]; ca++
+            }
+            val rise = (if (ca > 0) after / ca else 0f) - (if (cb > 0) before / cb else 0f)
+            if (rise > riseVal) {
+                riseVal = rise
+                riseIdx = i
             }
         }
-        val startMs = (valleyIdx * blockMs).toLong().coerceIn(0L, max(0L, durationMs - 30_000L))
+
+        // Profil plat (pas de vrai drop) : garder la fenêtre énergique telle quelle
+        val meanRms = rms.sum() / n
+        val startIdx = if (riseVal > 0.05f * meanRms) riseIdx else bestIdx
+
+        val startMs = (startIdx * blockMs).toLong().coerceIn(0L, max(0L, durationMs - 30_000L))
         val segMs = min(60_000L, durationMs - startMs)
         return startMs to segMs
     }
@@ -383,19 +453,25 @@ class AudioAnalyzer {
      */
     private fun probeFirstBeat(context: Context, uri: Uri, bestStartMs: Long, bpm: Float): Long {
         if (bpm <= 0f) return bestStartMs
-        val mono = ArrayList<Float>(400_000)
+        // Tableau primitif (pas d'ArrayList<Float> : ~350 000 Float boxés par
+        // morceau mettaient une vraie pression sur le GC pendant la lecture)
+        var mono = FloatArray(0)
+        var size = 0
         var sr = 0
         AudioDecoder().decode(context, uri, bestStartMs * 1000, 8_000_000) { pcm, frames, s, ch ->
-            if (sr == 0) sr = s
+            if (sr == 0) {
+                sr = s
+                mono = FloatArray(9 * s)
+            }
             for (f in 0 until frames) {
                 var m = 0f
                 val base = f * ch
                 for (c in 0 until min(ch, 2)) m += pcm[base + c]
-                mono.add(m / min(ch, 2))
+                if (size < mono.size) mono[size++] = m / min(ch, 2)
             }
-            mono.size < 8 * s
+            size < 8 * s
         }
-        if (sr == 0 || mono.size < FFT_SIZE * 4) return bestStartMs
+        if (sr == 0 || size < FFT_SIZE * 4) return bestStartMs
 
         val fft = Fft(FFT_SIZE)
         val window = FloatArray(FFT_SIZE) {
@@ -408,7 +484,7 @@ class AudioAnalyzer {
         val flux = ArrayList<Float>()
         var pos = 0
         var first = true
-        while (pos + FFT_SIZE <= mono.size) {
+        while (pos + FFT_SIZE <= size) {
             for (i in 0 until FFT_SIZE) {
                 re[i] = mono[pos + i] * window[i]
                 im[i] = 0f

@@ -10,6 +10,7 @@ import com.pulsemix.app.mix.MixEngine
 import com.pulsemix.app.player.PlayerCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -40,6 +41,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Arrêt propre de l'analyse en cours (reprise possible plus tard). */
+    fun stopScan() = LibraryScanner.requestStop()
+
+    /** Efface les données d'analyse puis relance tout depuis le début. */
+    fun rescanFromScratch() {
+        val folder = folderUri.value ?: return
+        viewModelScope.launch(Dispatchers.Default) {
+            store.resetAnalysis()
+            store.save()
+            LibraryScanner.scan(getApplication(), Uri.parse(folder), store)
+        }
+    }
+
     fun playTrack(track: Track) {
         val list = tracks.value
         val idx = list.indexOfFirst { it.uri == track.uri }.coerceAtLeast(0)
@@ -54,8 +68,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         PlayerCore.playDouce(tracks.value, bpmCutoff)
     }
 
-    fun proposeMixes(): List<MixEngine.MixPlan> =
-        MixEngine.proposeMixes(tracks.value)
+    /**
+     * Calcul lourd (enchaînements O(n²) sur toute la bibliothèque) : toujours
+     * hors du thread UI, sinon l'interface gèle (ANR) quand l'analyse tourne.
+     */
+    suspend fun proposeMixes(): List<MixEngine.MixPlan> =
+        withContext(Dispatchers.Default) { MixEngine.proposeMixes(tracks.value) }
 
     fun startMix(plan: MixEngine.MixPlan, djMode: Boolean) {
         if (djMode) PlayerCore.startDj(plan) else PlayerCore.startMix(plan)

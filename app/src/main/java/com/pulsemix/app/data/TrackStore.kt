@@ -49,8 +49,15 @@ class TrackStore(context: Context) {
     private val _folderUri = MutableStateFlow<String?>(null)
     val folderUri: StateFlow<String?> = _folderUri
 
+    /** Passe à true une fois library.json lu (utile pour restaurer la lecture). */
+    private val _loaded = MutableStateFlow(false)
+    val loaded: StateFlow<Boolean> = _loaded
+
     init {
-        scope.launch { load() }
+        scope.launch {
+            load()
+            _loaded.value = true
+        }
     }
 
     private suspend fun load() = mutex.withLock {
@@ -134,5 +141,17 @@ class TrackStore(context: Context) {
     /** Supprime les morceaux qui ne sont plus dans le dossier. */
     fun retainOnly(uris: Set<String>) {
         _tracks.value = _tracks.value.filter { it.uri in uris }
+    }
+
+    /** Efface toutes les données d'analyse (pour tout réanalyser de zéro). */
+    fun resetAnalysis() {
+        _tracks.value = _tracks.value.map {
+            Track(
+                uri = it.uri,
+                title = it.title,
+                artist = it.artist,
+                durationMs = it.durationMs
+            )
+        }
     }
 }

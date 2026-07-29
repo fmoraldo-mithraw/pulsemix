@@ -50,14 +50,35 @@ fun LibraryScreen(
         )
         Spacer(Modifier.height(12.dp))
 
+        val p = progress
+        val scanning = p != null
+        val unanalyzed = tracks.count { !it.analyzed }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onPickFolder) { Text("Choisir un dossier") }
-            if (folder != null) {
-                OutlinedButton(onClick = { vm.rescan() }) { Text("Analyser à nouveau") }
+            Button(onClick = onPickFolder, enabled = !scanning) {
+                Text("Choisir un dossier")
+            }
+            if (folder != null && scanning) {
+                OutlinedButton(onClick = { vm.stopScan() }) {
+                    Text("Stopper l'analyse")
+                }
+            }
+        }
+        if (folder != null && !scanning) {
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { vm.rescan() }) {
+                    Text(
+                        if (unanalyzed > 0) "Reprendre l'analyse ($unanalyzed restants)"
+                        else "Analyser à nouveau"
+                    )
+                }
+                OutlinedButton(onClick = { vm.rescanFromScratch() }) {
+                    Text("Tout réanalyser")
+                }
             }
         }
 
-        val p = progress
         if (p != null && p.total > 0) {
             Spacer(Modifier.height(12.dp))
             LinearProgressIndicator(
