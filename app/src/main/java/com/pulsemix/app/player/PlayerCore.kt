@@ -292,6 +292,18 @@ object PlayerCore {
         persistState()
     }
 
+    /** Retire un morceau supprimé de la file en cours (hors mode DJ). */
+    fun onTrackDeleted(uri: String) {
+        if (mode.value == PlayerMode.DJ) return // le moteur sautera le fichier
+        val idx = queueTracks.indexOfFirst { it.uri == uri }
+        if (idx < 0) return
+        queueTracks = queueTracks.toMutableList().also { it.removeAt(idx) }
+        if (idx < exo.mediaItemCount) exo.removeMediaItem(idx)
+        phaseStartIndices = phaseStartIndices.map { if (it > idx) it - 1 else it }
+        updateFromExo()
+        persistState()
+    }
+
     fun setSkipIntros(enabled: Boolean) {
         skipIntros.value = enabled
         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
