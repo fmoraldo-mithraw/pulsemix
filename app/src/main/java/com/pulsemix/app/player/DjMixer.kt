@@ -14,8 +14,10 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -45,7 +47,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val BLOCK_FRAMES = 2048
         const val FADE_NORMAL_S = 8.0
         const val FADE_JUMP_S = 4.0
-        const val TAIL_MS = 9_000L
+        // Jonctions adaptatives : long blend quand tempos calés et tonalités
+        // compatibles, coupe franche quand le calage est impossible.
+        const val FADE_LOCKED_HARMONIC_S = 14.0
+        const val FADE_CUT_S = 3.5
+        const val TAIL_MS = 16_000L
         const val HALF_PI = (Math.PI / 2).toFloat()
     }
 
@@ -60,6 +66,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     private var segments: List<Segment> = emptyList()
     private var plan: MixEngine.MixPlan? = null
     private var mixThread: Thread? = null
+    private var phaseLengthFactor = FloatArray(0)
 
     // ------------------------------------------------------------------ API
 
@@ -73,6 +80,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         if (segments.isEmpty()) {
             ui.post { listener.onStopped() }
             return
+        }
+        // Modulation par phase : segments un peu plus longs dans les phases
+        // énergiques (peak), un peu plus courts dans les phases calmes.
+        val phaseEnergy = plan.phases.map { ph ->
+            val analyzed = ph.tracks.filter { it.analyzed }
+            if (analyzed.isEmpty()) 0f
+            else analyzed.map { it.energyPeak }.sum() / analyzed.size
+        }
+        val eMin = phaseEnergy.minOrNull() ?: 0f
+        val eMax = phaseEnergy.maxOrNull() ?: 0f
+        phaseLengthFactor = FloatArray(plan.phases.size) { i ->
+            val t = if (eMax > eMin) (phaseEnergy[i] - eMin) / (eMax - eMin) else 0.5f
+            0.85f + 0.30f * t
         }
         running = true
         paused = false
@@ -111,7 +131,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     // ------------------------------------------------------------------ deck
 
-    private inner class Deck(val segIndex: Int, val segment: Segment, val rate: Float) {
+    private inner class Deck(
+        val segIndex: Int,
+        val segment: Segment,
+        val rate: Float,
+        lengthFactor: Float = 1f
+    ) {
         val track: Track = segment.track
         @Volatile var closed = false
         @Volatile var decoderDone = false
@@ -141,7 +166,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             val best = track.bestStartMs.coerceIn(0L, max(0L, track.durationMs - 15_000L))
             val beat = track.firstBeatMs
             startMs = if (beat in best..(best + track.segmentMs)) beat else best
-            logicalEndMs = min(best + track.segmentMs, track.durationMs)
+            // Modulation par phase, puis ré-arrondi aux phrases de 16 temps
+            // pour que la fin reste sur une frontière musicale.
+            var segMs = (track.segmentMs * lengthFactor).toLong()
+            if (track.bpm > 0f) {
+                val phraseMs = 16.0 * 60_000.0 / track.bpm
+                val phrases = floor(segMs / phraseMs).toLong()
+                if (phrases >= 2) segMs = (phrases * phraseMs).toLong()
+            }
+            logicalEndMs = min(best + segMs, track.durationMs)
             decodeEndMs = min(logicalEndMs + TAIL_MS, track.durationMs)
 
             thread(name = "DjDeck-${track.title.take(12)}") {
@@ -287,7 +320,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         fun openNextValid(fromIndex: Int, rate: Float): Deck? {
             var idx = fromIndex
             while (running && idx < segments.size) {
-                val d = Deck(idx, segments[idx], rate)
+                val factor = phaseLengthFactor.getOrElse(segments[idx].phaseIndex) { 1f }
+                val d = Deck(idx, segments[idx], rate, factor)
                 if (d.open()) return d
                 d.close()
                 idx++
@@ -331,19 +365,26 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         else -> a.segIndex + 1
                     }
                     if (nextIdx < segments.size) {
+                        val rate = computeRate(a, segments[nextIdx].track)
                         val fadeF =
-                            ((if (jumping) FADE_JUMP_S else FADE_NORMAL_S) * OUT_SR).toLong()
+                            (fadeSeconds(a, segments[nextIdx].track, rate, jumping) *
+                                OUT_SR).toLong()
                         if (jumping || a.remainingOut <= fadeF + OUT_SR / 2) {
-                            val rate = computeRate(a, segments[nextIdx].track)
                             val b = openNextValid(nextIdx, rate)
                             if (b != null) {
-                                // Départ aligné sur la grille de beats du deck A
+                                // Départ aligné sur la grille de beats du deck A,
+                                // de préférence sur une fin de mesure (4 temps)
                                 val period = a.beatPeriodFrames
                                 val lead = (OUT_SR * 0.15).toLong()
-                                val k = ceil(
+                                val kBeat = ceil(
                                     (framesGlobal + lead - a.startedAtFrame) / period
                                 ).toLong()
-                                var start = a.startedAtFrame + (k * period).toLong()
+                                val kBar = ((kBeat + 3) / 4) * 4
+                                var start = a.startedAtFrame + (kBar * period).toLong()
+                                if (start - framesGlobal > a.remainingOut) {
+                                    // fin de mesure trop loin : retomber sur le beat
+                                    start = a.startedAtFrame + (kBeat * period).toLong()
+                                }
                                 if (start < framesGlobal) start = framesGlobal
                                 val maxLen = a.remainingOut + a.tailOutFrames -
                                         (start - framesGlobal) - OUT_SR / 10
@@ -441,6 +482,30 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         val t = deck.track
         val p = deck.segment.phaseIndex
         ui.post { listener.onTrackChanged(t, p) }
+    }
+
+    /**
+     * Durée de la jonction selon la qualité du calage :
+     *  - tempos calés ET tonalités compatibles : long blend (14 s), la
+     *    transition peut s'étirer sans accroc ;
+     *  - tempos calés : blend standard (8 s) ;
+     *  - calage impossible (écart > ±8 %, hors double/moitié) : coupe courte
+     *    (3,5 s) — étirer deux tempos non synchrones ferait battre les beats.
+     */
+    private fun fadeSeconds(current: Deck, next: Track, rate: Float, jumping: Boolean): Double {
+        if (jumping) return FADE_JUMP_S
+        val effA = current.track.bpm * current.rate
+        val effB = next.bpm * rate
+        if (effA <= 0f || effB <= 0f) return FADE_NORMAL_S
+        val ratio = effA / effB
+        val lockErr = minOf(
+            abs(ratio - 1f),
+            abs(ratio - 2f) / 2f,
+            abs(ratio - 0.5f) * 2f
+        )
+        if (lockErr > 0.005f) return FADE_CUT_S
+        val harmonic = MixEngine.camelotScore(current.track.camelot, next.camelot)
+        return if (harmonic >= 0.8f) FADE_LOCKED_HARMONIC_S else FADE_NORMAL_S
     }
 
     /** Cale le BPM du morceau entrant sur le BPM effectif du deck actif (±8 %). */
