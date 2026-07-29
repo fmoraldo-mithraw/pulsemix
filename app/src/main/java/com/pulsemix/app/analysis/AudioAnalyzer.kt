@@ -302,8 +302,12 @@ class AudioAnalyzer {
                 raised = true
             }
         }
-        // Correction octave : préférer la plage 75-165
-        if (bestBpm < 75 && bestBpm * 2 <= 190 && scoreOf(bestBpm * 2) > 0.85f * bestScore) {
+        // Correction octave : préférer la plage 75-165. Seuil desserré à 0,75 :
+        // deux fichiers réels (vrais tempos 117,5 et 129) tombaient à moins de
+        // 1 % du seuil de 0,85 côté appli et restaient au demi-tempo. Les
+        // morceaux vraiment lents ne risquent rien : leur candidat double n'a
+        // aucun support dans l'autocorrélation.
+        if (bestBpm < 75 && bestBpm * 2 <= 190 && scoreOf(bestBpm * 2) > 0.75f * bestScore) {
             bestBpm *= 2
             raised = true
         }

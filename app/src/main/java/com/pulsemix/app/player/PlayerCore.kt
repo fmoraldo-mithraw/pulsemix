@@ -485,11 +485,25 @@ object PlayerCore {
             .build()
 
     private fun startService() {
+        // Surtout pas startForegroundService : c'est une promesse que le
+        // service appellera startForeground() sous ~10 s, or MediaSessionService
+        // ne le fait que quand la lecture est réellement active. Une pause
+        // rapide après le lancement rompait la promesse et Android tuait
+        // l'appli 10-30 s plus tard (ForegroundServiceDidNotStartInTimeException,
+        // cf. crash_log). Un simple startService suffit : Media3 se met
+        // lui-même en avant-plan quand la lecture démarre.
         try {
-            ContextCompat.startForegroundService(
-                appContext, Intent(appContext, PlaybackService::class.java)
-            )
+            appContext.startService(Intent(appContext, PlaybackService::class.java))
         } catch (_: Exception) {
+            // App en arrière-plan (rare, les commandes viennent de l'UI) :
+            // là, la version foreground est permise et la lecture qui démarre
+            // fera poster la notification immédiatement.
+            try {
+                ContextCompat.startForegroundService(
+                    appContext, Intent(appContext, PlaybackService::class.java)
+                )
+            } catch (_: Exception) {
+            }
         }
     }
 }
