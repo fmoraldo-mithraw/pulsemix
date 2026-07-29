@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pulsemix.app.data.Track
+import com.pulsemix.app.library.AnalysisService
 import com.pulsemix.app.library.LibraryScanner
 import com.pulsemix.app.mix.MixEngine
 import com.pulsemix.app.player.PlayerCore
@@ -46,9 +47,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun rescan() {
         val folder = folderUri.value ?: return
-        viewModelScope.launch(Dispatchers.Default) {
-            LibraryScanner.scan(getApplication(), Uri.parse(folder), store)
-        }
+        // Service en avant-plan : l'analyse continue appli quittée/écran éteint
+        AnalysisService.start(getApplication(), folder)
     }
 
     /** Arrêt propre de l'analyse en cours (reprise possible plus tard). */
@@ -57,15 +57,44 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Efface les données d'analyse puis relance tout depuis le début. */
     fun rescanFromScratch() {
         val folder = folderUri.value ?: return
-        viewModelScope.launch(Dispatchers.Default) {
-            store.resetAnalysis()
-            store.save()
-            // restoreBackup = false : sans ça, la sauvegarde du dossier de
-            // musique réinjecterait les anciennes analyses.
-            LibraryScanner.scan(
-                getApplication(), Uri.parse(folder), store,
-                restoreBackup = false
-            )
+        AnalysisService.start(getApplication(), folder, fromScratch = true)
+    }
+
+    /** Lit un fichier audio ouvert depuis une autre appli (lecteur par défaut). */
+    fun playExternal(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val mmr = android.media.MediaMetadataRetriever()
+            val track = try {
+                mmr.setDataSource(getApplication<Application>(), uri)
+                Track(
+                    uri = uri.toString(),
+                    title = mmr.extractMetadata(
+                        android.media.MediaMetadataRetriever.METADATA_KEY_TITLE
+                    )?.takeIf { it.isNotBlank() }
+                        ?: (uri.lastPathSegment?.substringAfterLast('/') ?: "Titre"),
+                    artist = mmr.extractMetadata(
+                        android.media.MediaMetadataRetriever.METADATA_KEY_ARTIST
+                    ) ?: "",
+                    durationMs = mmr.extractMetadata(
+                        android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+                    )?.toLongOrNull() ?: 0L
+                )
+            } catch (_: Exception) {
+                Track(
+                    uri = uri.toString(),
+                    title = uri.lastPathSegment?.substringAfterLast('/') ?: "Titre",
+                    artist = "",
+                    durationMs = 0L
+                )
+            } finally {
+                try {
+                    mmr.release()
+                } catch (_: Exception) {
+                }
+            }
+            withContext(Dispatchers.Main) {
+                PlayerCore.playNormal(listOf(track), 0)
+            }
         }
     }
 
