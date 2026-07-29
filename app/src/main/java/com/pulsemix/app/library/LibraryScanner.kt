@@ -26,6 +26,15 @@ object LibraryScanner {
     @Volatile
     private var scanning = false
 
+    @Volatile
+    private var stopRequested = false
+
+    /** Arrête proprement l'analyse en cours (l'état est sauvegardé ; la
+     *  reprise sautera les morceaux déjà analysés). */
+    fun requestStop() {
+        stopRequested = true
+    }
+
     private val audioExtensions = setOf(
         "mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "wav", "wma", "mp4"
     )
@@ -34,6 +43,7 @@ object LibraryScanner {
         withContext(Dispatchers.Default) {
             if (scanning) return@withContext
             scanning = true
+            stopRequested = false
             try {
                 val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext
                 val files = ArrayList<DocumentFile>()
@@ -50,6 +60,7 @@ object LibraryScanner {
 
                 val analyzer = AudioAnalyzer()
                 for (doc in audioFiles) {
+                    if (stopRequested) break
                     val uriStr = doc.uri.toString()
                     val existing = known[uriStr]
                     if (existing != null && existing.analyzed) {
@@ -62,10 +73,13 @@ object LibraryScanner {
 
                     val meta = readMetadata(context, doc.uri, name)
                     val features = try {
-                        analyzer.analyze(context, doc.uri, meta.third)
+                        analyzer.analyze(context, doc.uri, meta.third) { !stopRequested }
                     } catch (_: Exception) {
                         null
                     }
+                    // Stop demandé pendant le décodage : ne pas enregistrer ce
+                    // morceau comme « analysé en échec », la reprise le refera.
+                    if (stopRequested && features == null) break
                     val track = if (features != null) {
                         Track(
                             uri = uriStr,

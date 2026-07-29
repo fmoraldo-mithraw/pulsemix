@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -40,6 +42,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -296,9 +299,17 @@ fun PlayerScreen(
 
     // ----------------------------------------------------- feuille des mix
     if (showMixSheet) {
-        val plans = remember(tracks) { vm.proposeMixes() }
+        // Plans figés à l'ouverture et calculés en arrière-plan : pas de
+        // recalcul sur le thread UI à chaque morceau analysé pendant le scroll.
+        var plans by remember { mutableStateOf<List<MixEngine.MixPlan>?>(null) }
+        LaunchedEffect(Unit) { plans = vm.proposeMixes() }
         ModalBottomSheet(onDismissRequest = { showMixSheet = false }) {
-            Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
                 Text(
                     if (mixSheetDj) "Mode DJ — choisis ton mix"
                     else "Choisis ton mix",
@@ -314,21 +325,36 @@ fun PlayerScreen(
                     )
                 }
                 Spacer(Modifier.height(12.dp))
-                if (plans.isEmpty()) {
-                    Text(
-                        "Pas assez de morceaux analysés. Ajoute un dossier dans " +
-                            "la bibliothèque et laisse l'analyse se terminer."
-                    )
-                    Spacer(Modifier.height(24.dp))
-                } else {
-                    plans.forEach { plan ->
-                        MixPlanCard(plan, mixSheetDj) {
-                            vm.startMix(plan, mixSheetDj)
-                            showMixSheet = false
+                val currentPlans = plans
+                when {
+                    currentPlans == null -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text("Préparation des mix…")
                         }
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(24.dp))
                     }
-                    Spacer(Modifier.height(24.dp))
+                    currentPlans.isEmpty() -> {
+                        Text(
+                            "Pas assez de morceaux analysés. Ajoute un dossier dans " +
+                                "la bibliothèque et laisse l'analyse se terminer."
+                        )
+                        Spacer(Modifier.height(24.dp))
+                    }
+                    else -> {
+                        currentPlans.forEach { plan ->
+                            MixPlanCard(plan, mixSheetDj) {
+                                vm.startMix(plan, mixSheetDj)
+                                showMixSheet = false
+                            }
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        Spacer(Modifier.height(24.dp))
+                    }
                 }
             }
         }
