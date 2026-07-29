@@ -101,7 +101,10 @@ fun LibraryScreen(
                 "Aucun morceau pour l'instant. Choisis un dossier contenant tes " +
                     "fichiers audio (mp3, m4a, flac, ogg, wav…) : chaque morceau " +
                     "sera analysé une seule fois (BPM, tonalité, énergie, " +
-                    "meilleure minute).",
+                    "meilleure minute).\n\n" +
+                    "Après une réinstallation, re-choisis simplement le même " +
+                    "dossier : les analyses sont restaurées automatiquement " +
+                    "depuis la sauvegarde qu'il contient (PulseMix.library.json).",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )

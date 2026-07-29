@@ -9,6 +9,7 @@ import com.pulsemix.app.library.LibraryScanner
 import com.pulsemix.app.mix.MixEngine
 import com.pulsemix.app.player.PlayerCore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -28,6 +29,15 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val planName = PlayerCore.planName
     val phaseNames = PlayerCore.phaseNames
     val currentPhase = PlayerCore.currentPhase
+
+    init {
+        // Scan automatique au démarrage : rafraîchit la bibliothèque, restaure
+        // la sauvegarde du dossier de musique si besoin et la maintient à jour.
+        viewModelScope.launch {
+            store.loaded.first { it }
+            if (folderUri.value != null) rescan()
+        }
+    }
 
     fun onFolderPicked(uri: Uri) {
         store.setFolder(uri.toString())
