@@ -56,6 +56,9 @@ object LibraryScanner {
             scanning = true
             stopRequested = false
             try {
+                // Affichage immédiat : le parcours du dossier (SAF) peut
+                // prendre plusieurs secondes avant le premier fichier analysé.
+                _progress.value = Progress(0, 0, "")
                 val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext
                 val files = ArrayList<DocumentFile>()
                 walk(root, files, 0)
