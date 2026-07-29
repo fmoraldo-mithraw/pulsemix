@@ -60,11 +60,17 @@ class AudioDecoder {
             var inputDone = false
             var outputDone = false
             var keepGoing = true
+            // Garde-fou : certains fichiers corrompus font tourner le codec
+            // sans jamais produire de sortie ni d'erreur. ~8 s sans progrès
+            // -> on abandonne le fichier au lieu de bloquer l'analyse.
+            var idleRounds = 0
 
             while (!outputDone && keepGoing) {
+                var progressed = false
                 if (!inputDone) {
                     val inIx = codec.dequeueInputBuffer(10_000)
                     if (inIx >= 0) {
+                        progressed = true
                         val buf = codec.getInputBuffer(inIx)
                         val size = if (buf != null) extractor.readSampleData(buf, 0) else -1
                         val sampleTime = extractor.sampleTime
@@ -83,6 +89,7 @@ class AudioDecoder {
                 val outIx = codec.dequeueOutputBuffer(info, 10_000)
                 when {
                     outIx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        progressed = true
                         val f = codec.outputFormat
                         if (f.containsKey(MediaFormat.KEY_SAMPLE_RATE))
                             sampleRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
@@ -93,6 +100,7 @@ class AudioDecoder {
                                 AudioFormat.ENCODING_PCM_FLOAT
                     }
                     outIx >= 0 -> {
+                        progressed = true
                         if (info.size > 0 && info.presentationTimeUs >= startUs) {
                             val ob = codec.getOutputBuffer(outIx)
                             if (ob != null) {
@@ -123,6 +131,12 @@ class AudioDecoder {
                             keepGoing = false
                         }
                     }
+                }
+                if (progressed) {
+                    idleRounds = 0
+                } else if (++idleRounds > 400) {
+                    // ~8 s sans entrée ni sortie : fichier indécodable, abandon
+                    return false
                 }
             }
             return true

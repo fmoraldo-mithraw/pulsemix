@@ -79,19 +79,29 @@ fun LibraryScreen(
             }
         }
 
-        if (p != null && p.total > 0) {
+        if (p != null) {
             Spacer(Modifier.height(12.dp))
-            LinearProgressIndicator(
-                progress = { p.done.toFloat() / p.total },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                "Analyse ${p.done}/${p.total} — ${p.currentName}",
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
+            if (p.total > 0) {
+                LinearProgressIndicator(
+                    progress = { p.done.toFloat() / p.total },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "Analyse ${p.done}/${p.total} — ${p.currentName}",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            } else {
+                // Parcours du dossier en cours : barre indéterminée
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    "Préparation de l'analyse — parcours du dossier…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
         }
 
         Spacer(Modifier.height(12.dp))
