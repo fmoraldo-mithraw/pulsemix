@@ -30,6 +30,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val planName = PlayerCore.planName
     val phaseNames = PlayerCore.phaseNames
     val currentPhase = PlayerCore.currentPhase
+    val skipIntros = PlayerCore.skipIntros
 
     init {
         // Scan automatique au démarrage : rafraîchit la bibliothèque, restaure
@@ -122,6 +123,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun startMix(plan: MixEngine.MixPlan, djMode: Boolean) {
         if (djMode) PlayerCore.startDj(plan) else PlayerCore.startMix(plan)
     }
+
+    fun setSkipIntros(enabled: Boolean) = PlayerCore.setSkipIntros(enabled)
 
     fun togglePlayPause() = PlayerCore.togglePlayPause()
     fun next() = PlayerCore.next()

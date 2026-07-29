@@ -122,6 +122,7 @@ object LibraryScanner {
                             bestStartMs = features.bestStartMs,
                             segmentMs = features.segmentMs,
                             firstBeatMs = features.firstBeatMs,
+                            musicStartMs = features.musicStartMs,
                             analyzed = features.bpm > 0f
                         )
                     } else {

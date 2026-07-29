@@ -21,6 +21,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -77,6 +78,25 @@ fun LibraryScreen(
                 OutlinedButton(onClick = { vm.rescanFromScratch() }) {
                     Text("Tout réanalyser")
                 }
+            }
+        }
+
+        val skipIntros by vm.skipIntros.collectAsStateWithLifecycle()
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(
+                checked = skipIntros,
+                onCheckedChange = { vm.setSkipIntros(it) }
+            )
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text("Sauter les intros parlées", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Démarre au début de la musique quand un sketch précède " +
+                        "le morceau (s'applique aux prochaines lectures).",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
             }
         }
 

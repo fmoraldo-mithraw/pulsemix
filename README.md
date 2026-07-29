@@ -55,6 +55,11 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   (Clé publique par construction : ne pas publier sur un store avec.)
   Si une version installée avait été signée autrement, il faut désinstaller
   une dernière fois.
+- **Sauter les intros parlées** (option, désactivée par défaut) : quand un
+  sketch ou un préambule parlé précède le morceau, la lecture démarre au
+  début détecté de la musique (première fenêtre d'énergie soutenue au
+  niveau musical du morceau ; nécessite une réanalyse pour les morceaux
+  déjà analysés).
 - **Musique douce** : un curseur de douceur (très doux par défaut) filtre
   strictement — seuls les morceaux sous le seuil entrent, selon un score en
   rangs percentiles de ta bibliothèque (énergie 45 %, brillance 20 %,
