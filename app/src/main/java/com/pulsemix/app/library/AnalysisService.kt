@@ -32,6 +32,7 @@ class AnalysisService : Service() {
     companion object {
         private const val EXTRA_FOLDER = "folder"
         private const val EXTRA_FROM_SCRATCH = "fromScratch"
+        private const val ACTION_STOP = "com.pulsemix.app.analysis.STOP"
         private const val CHANNEL_ID = "analysis"
         private const val NOTIF_ID = 2
 
@@ -64,6 +65,13 @@ class AnalysisService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // startForeground immédiat : obligation liée à startForegroundService
         startForeground(NOTIF_ID, buildNotification("Préparation de l'analyse…", 0, 0))
+
+        // Bouton « Arrêter » de la notification : arrêt propre, le service se
+        // termine dès que le scan a lâché le fichier en cours.
+        if (intent?.action == ACTION_STOP) {
+            LibraryScanner.requestStop()
+            return START_NOT_STICKY
+        }
 
         val folder = intent?.getStringExtra(EXTRA_FOLDER)
         if (folder == null) {
@@ -125,12 +133,22 @@ class AnalysisService : Service() {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val stopPi = PendingIntent.getService(
+            this, 1,
+            Intent(this, AnalysisService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val b = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_app)
             .setContentTitle("PulseMix — analyse")
             .setContentText(text)
             .setContentIntent(pi)
             .setOngoing(true)
+            .addAction(
+                Notification.Action.Builder(
+                    null as android.graphics.drawable.Icon?, "Arrêter", stopPi
+                ).build()
+            )
         if (total > 0) b.setProgress(total, done, false)
         else b.setProgress(0, 0, true)
         return b.build()
