@@ -66,6 +66,11 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
     un saut de phase — et départ de la jonction calé sur une fin de mesure.
   Les segments sont en outre modulés par la phase du mix (plus longs au
   peak, plus courts dans les phases calmes).
+  Après chaque transition, le tempo **revient doucement vers le naturel**
+  (~0,4 %/s, comme un pitch ramené à zéro) : les ralentissements de calage
+  ne s'accumulent plus de morceau en morceau. Et sur les passages forts où
+  les basses manquent, un **renfort dynamique des basses** (< 120 Hz,
+  jusqu'à ~+3,5 dB, lissé) les remonte discrètement.
   Pendant le mode DJ, ExoPlayer boucle une piste silencieuse à volume nul pour
   conserver le focus audio et la session active : les boutons Bluetooth
   continuent de piloter le moteur DJ.

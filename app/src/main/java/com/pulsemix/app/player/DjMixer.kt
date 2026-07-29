@@ -53,6 +53,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val FADE_CUT_S = 3.5
         const val TAIL_MS = 16_000L
         const val HALF_PI = (Math.PI / 2).toFloat()
+        // One-pole ~120 Hz à 44,1 kHz pour l'extraction des basses
+        const val BASS_ALPHA = 0.017f
     }
 
     private val ui = Handler(Looper.getMainLooper())
@@ -154,6 +156,34 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var finished = false
             private set
 
+        // Retour progressif au tempo naturel après un calage (pitch ridé par
+        // un DJ) : curRate glisse vers 1.0 une fois le crossfade terminé.
+        @Volatile var curRate: Float = rate
+            private set
+        private var rampStarted = false
+        private var beatPhase = 0.0 // en battements, tenue à jour dès la rampe
+
+        /** Phase de battement à un instant donné (exacte avant toute rampe). */
+        fun beatPhaseAt(frame: Long): Double =
+            if (!rampStarted) (frame - startedAtFrame) / beatPeriodFrames
+            else beatPhase
+
+        /** Avance la phase d'un bloc (à appeler quand la rampe est active). */
+        fun advancePhase(frames: Int) {
+            if (rampStarted) beatPhase += frames / beatPeriodFrames
+        }
+
+        /** Rapproche le tempo du naturel d'un petit pas (hors crossfade). */
+        fun nudgeTowardNatural(step: Float, frameNow: Long) {
+            if (curRate == 1f) return
+            if (!rampStarted) {
+                beatPhase = (frameNow - startedAtFrame) / beatPeriodFrames
+                rampStarted = true
+            }
+            curRate = if (curRate > 1f) max(1f, curRate - step)
+            else min(1f, curRate + step)
+        }
+
         private var ratio = 1.0
         private var srcPos = 1.0
         private var prevL = 0f; private var prevR = 0f
@@ -211,7 +241,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         fun open(): Boolean {
             openLatch.await(4, TimeUnit.SECONDS)
             if (srcSr == 0) return false
-            ratio = srcSr.toDouble() * rate / OUT_SR
+            ratio = srcSr.toDouble() * curRate / OUT_SR
             pullSrcFrame()
             pullSrcFrame()
             srcPos = 0.0
@@ -226,9 +256,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
         val remainingOut: Long get() = max(0L, totalOutFrames - framesOut)
 
-        /** Période de beat en frames de sortie, à ce rate. */
+        /** Période de beat en frames de sortie, au rate courant. */
         val beatPeriodFrames: Double
-            get() = OUT_SR * 60.0 / (track.bpm.toDouble() * rate)
+            get() = OUT_SR * 60.0 / (track.bpm.toDouble() * curRate)
 
         private fun pullSrcFrame(): Boolean {
             while (true) {
@@ -256,6 +286,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         /** Écrit `frames` frames stéréo dans dst à partir de dstFrameOffset. */
         fun read(dst: FloatArray, dstFrameOffset: Int, frames: Int): Int {
             if (finished || closed) return 0
+            ratio = srcSr.toDouble() * curRate / OUT_SR
             var out = 0
             while (out < frames) {
                 while (srcPos >= 1.0) {
@@ -317,6 +348,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var endFadeFrames = -1L
         var blockCount = 0
 
+        // Renfort dynamique des basses
+        var lpL = 0f
+        var lpR = 0f
+        var bassGain = 0f
+        var recentPeak = 0f
+
         fun openNextValid(fromIndex: Int, rate: Float): Deck? {
             var idx = fromIndex
             while (running && idx < segments.size) {
@@ -347,6 +384,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
                 val a = deckA ?: break
 
+                // Hors crossfade : le deck actif revient doucement vers son
+                // tempo naturel (~0,4 %/s) pour que les ralentissements de
+                // calage ne s'accumulent pas de morceau en morceau.
+                if (deckB == null) a.nudgeTowardNatural(0.0002f, framesGlobal)
+
                 // Saut de phase demandé alors qu'une transition est déjà chargée
                 val pj = pendingJump
                 if (pj != -1 && deckB != null &&
@@ -373,18 +415,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             val b = openNextValid(nextIdx, rate)
                             if (b != null) {
                                 // Départ aligné sur la grille de beats du deck A,
-                                // de préférence sur une fin de mesure (4 temps)
+                                // de préférence sur une fin de mesure (4 temps).
+                                // La phase de battement reste exacte même si le
+                                // tempo du deck A est revenu vers son naturel.
                                 val period = a.beatPeriodFrames
-                                val lead = (OUT_SR * 0.15).toLong()
-                                val kBeat = ceil(
-                                    (framesGlobal + lead - a.startedAtFrame) / period
-                                ).toLong()
-                                val kBar = ((kBeat + 3) / 4) * 4
-                                var start = a.startedAtFrame + (kBar * period).toLong()
-                                if (start - framesGlobal > a.remainingOut) {
-                                    // fin de mesure trop loin : retomber sur le beat
-                                    start = a.startedAtFrame + (kBeat * period).toLong()
-                                }
+                                val phaseNow = a.beatPhaseAt(framesGlobal)
+                                val leadBeats = (OUT_SR * 0.15) / period
+                                val nextBeat = ceil(phaseNow + leadBeats)
+                                val nextBar = ceil((phaseNow + leadBeats) / 4.0) * 4.0
+                                val toBeat = ((nextBeat - phaseNow) * period).toLong()
+                                val toBar = ((nextBar - phaseNow) * period).toLong()
+                                var start = framesGlobal +
+                                    if (toBar <= a.remainingOut) toBar else toBeat
                                 if (start < framesGlobal) start = framesGlobal
                                 val maxLen = a.remainingOut + a.tailOutFrames -
                                         (start - framesGlobal) - OUT_SR / 10
@@ -417,6 +459,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     }
                 }
 
+                var blockSq = 0.0
+                var bassSq = 0.0
                 for (i in 0 until BLOCK_FRAMES) {
                     val gf = framesGlobal + i
                     var gA = 1f
@@ -433,11 +477,34 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     }
                     val l = (tmpA[i * 2] * gA + tmpB[i * 2] * gB) * master
                     val r = (tmpA[i * 2 + 1] * gA + tmpB[i * 2 + 1] * gB) * master
-                    out[i * 2] = l.coerceIn(-1f, 1f)
-                    out[i * 2 + 1] = r.coerceIn(-1f, 1f)
+                    // Renfort dynamique des basses : extraction < ~120 Hz
+                    // (one-pole), boost lissé appliqué sur les passages forts
+                    // où les basses manquent.
+                    lpL += BASS_ALPHA * (l - lpL)
+                    lpR += BASS_ALPHA * (r - lpR)
+                    blockSq += (l * l + r * r).toDouble()
+                    bassSq += (lpL * lpL + lpR * lpR).toDouble()
+                    val lb = l + bassGain * lpL
+                    val rb = r + bassGain * lpR
+                    out[i * 2] = lb.coerceIn(-1f, 1f)
+                    out[i * 2 + 1] = rb.coerceIn(-1f, 1f)
+                }
+                // Mise à jour du boost pour le bloc suivant
+                run {
+                    val blockRms = kotlin.math.sqrt(blockSq / (2 * BLOCK_FRAMES)).toFloat()
+                    recentPeak = max(blockRms, recentPeak * 0.9995f)
+                    val loud = recentPeak > 1e-3f && blockRms > 0.75f * recentPeak
+                    val ratio = if (blockRms > 1e-4f)
+                        kotlin.math.sqrt(bassSq / (2 * BLOCK_FRAMES)).toFloat() / blockRms
+                    else 1f
+                    val target = if (loud && ratio < 0.30f)
+                        min(0.5f, (0.30f - ratio) * 2.5f)
+                    else 0f
+                    bassGain += 0.02f * (target - bassGain)
                 }
                 audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
                 framesGlobal += BLOCK_FRAMES
+                a.advancePhase(BLOCK_FRAMES)
 
                 // Fin du crossfade : B devient le deck actif
                 if (b != null && framesGlobal >= fadeStartF + fadeLenF) {
@@ -494,7 +561,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
      */
     private fun fadeSeconds(current: Deck, next: Track, rate: Float, jumping: Boolean): Double {
         if (jumping) return FADE_JUMP_S
-        val effA = current.track.bpm * current.rate
+        val effA = current.track.bpm * current.curRate
         val effB = next.bpm * rate
         if (effA <= 0f || effB <= 0f) return FADE_NORMAL_S
         val ratio = effA / effB
@@ -510,7 +577,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     /** Cale le BPM du morceau entrant sur le BPM effectif du deck actif (±8 %). */
     private fun computeRate(current: Deck, next: Track): Float {
-        val effBpm = current.track.bpm * current.rate
+        val effBpm = current.track.bpm * current.curRate
         if (effBpm <= 0f || next.bpm <= 0f) return 1f
         val base = effBpm / next.bpm
         val candidates = floatArrayOf(base, base * 2f, base / 2f)
