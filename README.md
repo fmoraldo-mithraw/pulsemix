@@ -22,9 +22,11 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
     mixage harmonique.
   - **Énergie** : RMS moyen/pic, centroïde spectral (brillance), densité
     d'attaques.
-  - **Meilleure minute** : fenêtre de 60 s la plus énergique, calée sur le
-    **drop** (la montée d'énergie soutenue la plus franche autour de la
-    fenêtre), avec une **ancre de premier beat** pour le calage DJ.
+  - **Meilleur passage** : départ calé sur le **drop** (la montée d'énergie
+    soutenue la plus franche autour de la fenêtre la plus énergique), fin à
+    la première **retombée durable** d'énergie (40-90 s, arrondie aux
+    phrases de 16 temps), plafonnée à 60 % de la durée sur les morceaux
+    courts, avec une **ancre de premier beat** pour le calage DJ.
   - **Contrôles** : l'analyse peut être stoppée proprement, reprise là où
     elle en était, ou relancée de zéro depuis la bibliothèque.
 - **Reprise de session** : l'état de lecture (mode, file, mix, phase, morceau
@@ -58,7 +60,12 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
     tempo) ;
   - son premier beat est **aligné à l'échantillon près** sur la grille de
     beats du deck actif ;
-  - **crossfade equal-power** de 8 s (4 s sur un saut de phase).
+  - **crossfade equal-power adaptatif** : 14 s quand tempos calés et
+    tonalités compatibles, 8 s quand seuls les tempos sont calés, coupe
+    courte de 3,5 s quand le calage est impossible (écart > ±8 %), 4 s sur
+    un saut de phase — et départ de la jonction calé sur une fin de mesure.
+  Les segments sont en outre modulés par la phase du mix (plus longs au
+  peak, plus courts dans les phases calmes).
   Pendant le mode DJ, ExoPlayer boucle une piste silencieuse à volume nul pour
   conserver le focus audio et la session active : les boutons Bluetooth
   continuent de piloter le moteur DJ.

@@ -83,7 +83,7 @@ class AudioAnalyzer {
             val fftWinSec = max(1f, (state.fftEnd - state.fftStart).toFloat() / sr)
             val onsetRate = countOnsets(state.flux) / fftWinSec
 
-            val (bestStartMs, segmentMs) = bestSegment(rms, blockMs, durationMs)
+            val (bestStartMs, segmentMs) = bestSegment(rms, blockMs, durationMs, bpm)
             val firstBeatMs = probeFirstBeat(context, uri, bestStartMs, bpm)
 
             Features(
@@ -381,9 +381,17 @@ class AudioAnalyzer {
 
     // -------------------------------------------------------- meilleure minute
 
-    private fun bestSegment(rms: List<Float>, blockMs: Double, durationMs: Long): Pair<Long, Long> {
+    private fun bestSegment(
+        rms: List<Float>,
+        blockMs: Double,
+        durationMs: Long,
+        bpm: Float
+    ): Pair<Long, Long> {
         if (durationMs <= 75_000 || rms.size < 20) {
-            return 0L to min(60_000L, durationMs)
+            // Morceau court : au plus 60 % de la durée, pour ne pas tout jouer
+            val seg = min(60_000L, durationMs * 6 / 10)
+                .coerceAtLeast(min(durationMs, 20_000L))
+            return 0L to seg
         }
         val n = rms.size
         val w = max(1, (60_000.0 / blockMs).roundToInt())
@@ -444,8 +452,48 @@ class AudioAnalyzer {
         val meanRms = rms.sum() / n
         val startIdx = if (riseVal > 0.05f * meanRms) riseIdx else bestIdx
 
+        // ---- Durée adaptative : jouer la section, pas une minute arbitraire.
+        // On suit l'énergie lissée après le départ et on coupe à la première
+        // retombée durable (fin de section), bornée entre 40 et 90 s.
+        val plateauEnd = min(n - 1, startIdx + (15_000.0 / blockMs).roundToInt())
+        var plateau = 0f
+        var pc = 0
+        for (j in startIdx..plateauEnd) {
+            plateau += smooth[j]; pc++
+        }
+        plateau /= max(1, pc)
+
+        val sustain = max(1, (4_000.0 / blockMs).roundToInt())
+        val i0 = startIdx + (40_000.0 / blockMs).roundToInt()
+        val i1 = min(n - 1, startIdx + (90_000.0 / blockMs).roundToInt())
+        var cutIdx = i1
+        var i = i0
+        while (i < i1) {
+            var s = 0f
+            var c = 0
+            for (j in i until min(n, i + sustain)) {
+                s += smooth[j]; c++
+            }
+            if (c > 0 && s / c < 0.75f * plateau) {
+                cutIdx = i
+                break
+            }
+            i++
+        }
+
         val startMs = (startIdx * blockMs).toLong().coerceIn(0L, max(0L, durationMs - 30_000L))
-        val segMs = min(60_000L, durationMs - startMs)
+        var segMs = ((cutIdx - startIdx) * blockMs).toLong().coerceIn(40_000L, 90_000L)
+        // Morceau court : plafonner à 60 % de la durée totale
+        if (durationMs < 120_000L) segMs = min(segMs, durationMs * 6 / 10)
+        segMs = min(segMs, durationMs - startMs)
+
+        // Arrondir aux phrases musicales (16 temps) : la transition DJ tombe
+        // sur une fin de phrase, pas au milieu d'une mesure.
+        if (bpm > 0f) {
+            val phraseMs = 16.0 * 60_000.0 / bpm
+            val phrases = floor(segMs / phraseMs).toLong()
+            if (phrases >= 2) segMs = (phrases * phraseMs).toLong()
+        }
         return startMs to segMs
     }
 
