@@ -49,6 +49,7 @@ class AudioAnalyzer {
         val bestStartMs: Long,
         val segmentMs: Long,
         val firstBeatMs: Long,
+        val musicStartMs: Long,
         val durationMs: Long
     )
 
@@ -85,6 +86,7 @@ class AudioAnalyzer {
 
             val (bestStartMs, segmentMs) = bestSegment(rms, blockMs, durationMs, bpm)
             val firstBeatMs = probeFirstBeat(context, uri, bestStartMs, bpm)
+            val musicStartMs = detectMusicStart(rms, blockMs)
 
             Features(
                 bpm = bpm,
@@ -98,6 +100,7 @@ class AudioAnalyzer {
                 bestStartMs = bestStartMs,
                 segmentMs = segmentMs,
                 firstBeatMs = firstBeatMs,
+                musicStartMs = musicStartMs,
                 durationMs = durationMs
             )
         }
@@ -509,6 +512,50 @@ class AudioAnalyzer {
             if (phrases >= 2) segMs = (phrases * phraseMs).toLong()
         }
         return startMs to segMs
+    }
+
+    // --------------------------------------------------- début de la musique
+
+    /**
+     * Détecte le début réel de la musique quand le morceau est préfacé d'un
+     * sketch ou d'une intro parlée : première fenêtre de 8 s dont l'énergie
+     * lissée se maintient à au moins 50 % du niveau « musique » du morceau
+     * (75e percentile). En deçà de 5 s, on considère que la musique commence
+     * tout de suite ; le saut est plafonné à 90 s.
+     */
+    private fun detectMusicStart(rms: List<Float>, blockMs: Double): Long {
+        val n = rms.size
+        if (n < 40) return 0L
+
+        // RMS lissé (~1 s)
+        val k = max(1, (1000.0 / blockMs).roundToInt())
+        val smooth = FloatArray(n)
+        for (i in 0 until n) {
+            var s = 0f
+            var c = 0
+            for (j in max(0, i - k / 2)..min(n - 1, i + k / 2)) {
+                s += rms[j]; c++
+            }
+            smooth[i] = s / c
+        }
+
+        val sorted = smooth.sorted()
+        val musicLevel = sorted[(0.75 * (n - 1)).toInt()]
+        if (musicLevel <= 0f) return 0L
+
+        val win = max(1, (8_000.0 / blockMs).roundToInt())
+        val cap = min(n - win, (90_000.0 / blockMs).toInt())
+        var i = 0
+        while (i < cap) {
+            var s = 0f
+            for (j in i until i + win) s += smooth[j]
+            if (s / win >= 0.5f * musicLevel) break
+            i++
+        }
+        // Musique quasi immédiate : pas d'intro à sauter
+        if (i * blockMs < 5_000.0) return 0L
+        // Petit pré-roll d'une demi-seconde avant le départ détecté
+        return (i * blockMs - 500).toLong().coerceAtLeast(0L)
     }
 
     // ------------------------------------------------------- ancre de premier beat

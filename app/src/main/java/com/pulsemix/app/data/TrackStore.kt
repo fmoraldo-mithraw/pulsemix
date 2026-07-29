@@ -29,6 +29,8 @@ data class Track(
     val bestStartMs: Long = 0L,
     val segmentMs: Long = 60_000L,
     val firstBeatMs: Long = 0L,
+    /** Début réel de la musique (saut des intros parlées/sketchs). */
+    val musicStartMs: Long = 0L,
     val analyzed: Boolean = false
 )
 
@@ -109,6 +111,7 @@ class TrackStore(context: Context) {
             o.put("bestStartMs", t.bestStartMs)
             o.put("segmentMs", t.segmentMs)
             o.put("firstBeatMs", t.firstBeatMs)
+            o.put("musicStartMs", t.musicStartMs)
             o.put("analyzed", t.analyzed)
             return o
         }
@@ -128,6 +131,7 @@ class TrackStore(context: Context) {
             bestStartMs = o.optLong("bestStartMs", 0L),
             segmentMs = o.optLong("segmentMs", 60_000L),
             firstBeatMs = o.optLong("firstBeatMs", 0L),
+            musicStartMs = o.optLong("musicStartMs", 0L),
             analyzed = o.optBoolean("analyzed", false)
         )
     }

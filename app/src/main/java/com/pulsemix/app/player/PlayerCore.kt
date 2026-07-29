@@ -48,6 +48,9 @@ object PlayerCore {
     private var initialized = false
     private val handler = Handler(Looper.getMainLooper())
 
+    /** Option opt-in : sauter les intros parlées (sketchs) au lancement. */
+    val skipIntros = MutableStateFlow(false)
+
     val mode = MutableStateFlow(PlayerMode.NORMAL)
     val currentTrack = MutableStateFlow<Track?>(null)
     val isPlaying = MutableStateFlow(false)
@@ -71,6 +74,9 @@ object PlayerCore {
         initialized = true
         appContext = context.applicationContext
         stateStore = PlaybackStateStore(appContext)
+        skipIntros.value = appContext
+            .getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getBoolean("skipIntros", false)
 
         exo = ExoPlayer.Builder(appContext)
             .setWakeMode(C.WAKE_MODE_LOCAL)
@@ -286,6 +292,12 @@ object PlayerCore {
         persistState()
     }
 
+    fun setSkipIntros(enabled: Boolean) {
+        skipIntros.value = enabled
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit().putBoolean("skipIntros", enabled).apply()
+    }
+
     fun setShuffle(enabled: Boolean) {
         shuffle.value = enabled
         if (mode.value == PlayerMode.NORMAL || mode.value == PlayerMode.DOUCE) {
@@ -490,8 +502,8 @@ object PlayerCore {
         initialized = false
     }
 
-    private fun mediaItem(t: Track): MediaItem =
-        MediaItem.Builder()
+    private fun mediaItem(t: Track): MediaItem {
+        val b = MediaItem.Builder()
             .setUri(t.uri)
             .setMediaId(t.uri)
             .setMediaMetadata(
@@ -500,7 +512,17 @@ object PlayerCore {
                     .setArtist(t.artist.ifBlank { null })
                     .build()
             )
-            .build()
+        // Option « sauter les intros parlées » : démarrer au début détecté de
+        // la musique (sketchs, préambules parlés)
+        if (skipIntros.value && t.musicStartMs > 1_500L) {
+            b.setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(t.musicStartMs)
+                    .build()
+            )
+        }
+        return b.build()
+    }
 
     private fun startService() {
         // Surtout pas startForegroundService : c'est une promesse que le
