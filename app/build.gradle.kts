@@ -16,9 +16,27 @@ android {
         versionName = "1.0"
     }
 
+    // Clé de signature partagée, committée dans le dépôt : tous les builds
+    // (debug comme release, quelle que soit la machine) ont la même signature,
+    // donc un nouvel APK met toujours à jour l'app installée au lieu d'entrer
+    // en conflit avec elle. Ne pas publier cette app sur un store avec cette
+    // clé (elle est publique par construction).
+    signingConfigs {
+        create("shared") {
+            storeFile = rootProject.file("keystore/pulsemix.jks")
+            storePassword = "pulsemix"
+            keyAlias = "pulsemix"
+            keyPassword = "pulsemix"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("shared")
         }
     }
     compileOptions {

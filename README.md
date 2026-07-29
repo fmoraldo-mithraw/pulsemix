@@ -32,6 +32,17 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   fermeture, une mise en veille ou un plantage, l'appli repart au même
   endroit (en pause). En cas de crash, la trace est écrite dans
   `Android/data/com.pulsemix.app/files/crash_log.txt`.
+- **Bibliothèque durable** : les analyses sont aussi sauvegardées dans le
+  dossier de musique (`PulseMix.library.json`). Après une désinstallation ou
+  sur un autre appareil, re-choisir le dossier restaure tout sans réanalyser.
+  À la désinstallation, Android propose en plus de conserver les données de
+  l'app (`hasFragileUserData`).
+- **Mises à jour d'APK sans conflit** : tous les builds (debug et release)
+  sont signés avec la clé partagée `keystore/pulsemix.jks` committée dans le
+  dépôt — un nouvel APK met à jour l'app installée au lieu d'être refusé.
+  (Clé publique par construction : ne pas publier sur un store avec.)
+  Si une version installée avait été signée autrement, il faut désinstaller
+  une dernière fois.
 - **Musique douce** : seuil de BPM réglable (60–120) + tri par « douceur »
   (énergie, brillance, densité d'attaques basses par rapport au reste de ta
   bibliothèque).

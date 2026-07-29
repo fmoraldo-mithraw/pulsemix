@@ -263,6 +263,7 @@ fun PlayerScreen(
     // ------------------------------------------------------- dialogue Douce
     if (showDouceDialog) {
         var cutoff by remember { mutableFloatStateOf(95f) }
+        val matching = vm.softCount(cutoff)
         AlertDialog(
             onDismissRequest = { showDouceDialog = false },
             title = { Text("Musique douce") },
@@ -280,16 +281,20 @@ fun PlayerScreen(
                         valueRange = 60f..120f
                     )
                     Text(
-                        "${vm.softCount(cutoff)} morceau(x) correspondant(s)",
+                        if (matching > 0) "$matching morceau(x) correspondant(s)"
+                        else "Aucun morceau sous ce seuil — monte le curseur.",
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    vm.playDouce(cutoff)
-                    showDouceDialog = false
-                }) { Text("Lancer") }
+                Button(
+                    enabled = matching > 0,
+                    onClick = {
+                        vm.playDouce(cutoff)
+                        showDouceDialog = false
+                    }
+                ) { Text("Lancer") }
             },
             dismissButton = {
                 TextButton(onClick = { showDouceDialog = false }) { Text("Annuler") }
