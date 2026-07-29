@@ -121,20 +121,14 @@ fun PlayerScreen(
         Spacer(Modifier.height(24.dp))
 
         // ---------------------------------------------------- morceau courant
-        Box(
-            Modifier
-                .size(180.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(24.dp)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                if (mode == PlayerMode.DJ) "🎧" else "🎵",
-                style = MaterialTheme.typography.displayLarge
-            )
-        }
+        TrackArtwork(
+            uri = track?.uri,
+            modifier = Modifier.size(180.dp),
+            corner = 24.dp,
+            targetPx = 512,
+            fallback = if (mode == PlayerMode.DJ) "🎧" else "🎵",
+            fallbackStyle = MaterialTheme.typography.displayLarge
+        )
         Spacer(Modifier.height(16.dp))
 
         Text(

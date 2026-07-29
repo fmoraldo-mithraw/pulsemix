@@ -101,6 +101,24 @@ object PlayerCore {
             override fun onTrackChanged(track: Track, phaseIndex: Int) {
                 currentTrack.value = track
                 currentPhase.value = phaseIndex
+                // La notification média suit ExoPlayer, qui joue la piste
+                // silencieuse en DJ : recopier le morceau réel dans ses
+                // métadonnées pour que notification, Bluetooth et voiture
+                // affichent le bon titre.
+                if (mode.value == PlayerMode.DJ && exo.mediaItemCount > 0) {
+                    val cur = exo.getMediaItemAt(0)
+                    exo.replaceMediaItem(
+                        0,
+                        cur.buildUpon()
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle(track.title)
+                                    .setArtist(track.artist.ifBlank { null })
+                                    .build()
+                            )
+                            .build()
+                    )
+                }
                 persistState()
             }
 

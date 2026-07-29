@@ -19,6 +19,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,8 +43,23 @@ private val PulseColors = darkColorScheme(
 
 class MainActivity : ComponentActivity() {
 
+    // Fichier audio ouvert depuis une autre appli (lecteur par défaut)
+    private val externalUri = mutableStateOf<android.net.Uri?>(null)
+
+    private fun handleViewIntent(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
+            externalUri.value = intent.data
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleViewIntent(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleViewIntent(intent)
 
         if (Build.VERSION.SDK_INT >= 33) {
             registerForActivityResult(
@@ -55,6 +71,15 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = PulseColors) {
                 val vm: PlayerViewModel = viewModel()
                 var screen by remember { mutableStateOf(0) }
+
+                val toPlay by externalUri
+                LaunchedEffect(toPlay) {
+                    toPlay?.let {
+                        vm.playExternal(it)
+                        externalUri.value = null
+                        screen = 0
+                    }
+                }
 
                 val folderPicker = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenDocumentTree()

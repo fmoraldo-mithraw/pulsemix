@@ -6,6 +6,8 @@ import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import com.pulsemix.app.MainActivity
 
 /**
@@ -62,6 +64,24 @@ class PlaybackService : MediaSessionService() {
 
         mediaSession = MediaSession.Builder(this, forwarding)
             .setSessionActivity(sessionIntent)
+            .setCallback(object : MediaSession.Callback {
+                // « Play » depuis la voiture / le casque alors que rien n'est
+                // chargé : reprendre la file restaurée (reprise de session).
+                override fun onPlaybackResumption(
+                    mediaSession: MediaSession,
+                    controller: MediaSession.ControllerInfo
+                ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                    val exo = PlayerCore.exo
+                    val items = (0 until exo.mediaItemCount).map { exo.getMediaItemAt(it) }
+                    return Futures.immediateFuture(
+                        MediaSession.MediaItemsWithStartPosition(
+                            items,
+                            exo.currentMediaItemIndex.coerceAtLeast(0),
+                            exo.currentPosition.coerceAtLeast(0L)
+                        )
+                    )
+                }
+            })
             .build()
     }
 

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -147,6 +148,15 @@ private fun TrackRow(track: Track, maxEnergy: Float, onClick: () -> Unit) {
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        TrackArtwork(
+            uri = track.uri,
+            modifier = Modifier.size(44.dp),
+            corner = 8.dp,
+            targetPx = 96,
+            fallback = "🎵",
+            fallbackStyle = MaterialTheme.typography.titleMedium
+        )
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 track.title,

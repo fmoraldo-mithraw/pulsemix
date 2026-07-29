@@ -10,9 +10,19 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   que décode Android). Sélection d'un dossier (Storage Access Framework, aucun
   accès global au stockage), play/pause, précédent/suivant, shuffle, barre de
   progression.
-- **Bluetooth / casque / notification** : MediaSession Media3, donc les
-  commandes AVRCP (autoradio, enceinte, montre, écouteurs) fonctionnent
-  partout. En Mix et DJ, *next/previous* changent de **phase**.
+- **Bluetooth / casque / voiture / notification** : MediaSession Media3, donc
+  les commandes AVRCP (autoradio, enceinte, montre, écouteurs) fonctionnent
+  partout, et la notification média affiche titre + play/pause/suivant/
+  précédent — y compris en mode DJ (le morceau réellement joué est recopié
+  dans les métadonnées). « Play » depuis la voiture relance la dernière file
+  restaurée. En Mix et DJ, *next/previous* changent de **phase**.
+- **Jaquettes** : pochettes embarquées affichées sur l'écran lecteur et en
+  vignettes dans la bibliothèque (cache mémoire).
+- **Lecteur audio par défaut** : PulseMix s'ouvre sur les fichiers audio
+  (gestionnaire de fichiers, navigateur…) et les lit directement.
+- **Analyse en tâche de fond** : l'analyse tourne dans un service en
+  avant-plan avec notification de progression et wake lock — elle continue
+  écran éteint ou appli quittée.
 - **Analyse au premier scan** (stockée dans `library.json`, une seule fois par
   fichier) :
   - **BPM** : enveloppe d'attaques par flux spectral (FFT 2048, hop 1024) +
