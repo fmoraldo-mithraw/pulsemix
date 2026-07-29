@@ -150,6 +150,11 @@ class TrackStore(context: Context) {
 
     fun get(uri: String): Track? = _tracks.value.firstOrNull { it.uri == uri }
 
+    /** Retire un morceau de la bibliothèque (clé = uri). */
+    fun remove(uri: String) {
+        _tracks.value = _tracks.value.filter { it.uri != uri }
+    }
+
     /** Supprime les morceaux qui ne sont plus dans le dossier. */
     fun retainOnly(uris: Set<String>) {
         _tracks.value = _tracks.value.filter { it.uri in uris }

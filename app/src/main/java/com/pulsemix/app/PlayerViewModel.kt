@@ -126,6 +126,25 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSkipIntros(enabled: Boolean) = PlayerCore.setSkipIntros(enabled)
 
+    /** Supprime définitivement un morceau du disque et de la bibliothèque. */
+    fun deleteTrack(track: Track) {
+        PlayerCore.onTrackDeleted(track.uri)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                android.provider.DocumentsContract.deleteDocument(
+                    getApplication<Application>().contentResolver,
+                    Uri.parse(track.uri)
+                )
+            } catch (_: Exception) {
+                // permission en écriture absente (ancien choix de dossier) ou
+                // fichier déjà disparu : on retire quand même de la
+                // bibliothèque ; re-choisir le dossier accordera l'écriture.
+            }
+            store.remove(track.uri)
+            store.save()
+        }
+    }
+
     fun togglePlayPause() = PlayerCore.togglePlayPause()
     fun next() = PlayerCore.next()
     fun previous() = PlayerCore.previous()

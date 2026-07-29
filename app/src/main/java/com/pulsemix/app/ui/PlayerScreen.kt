@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
@@ -78,6 +79,7 @@ fun PlayerScreen(
     var showDouceDialog by remember { mutableStateOf(false) }
     var showMixSheet by remember { mutableStateOf(false) }
     var mixSheetDj by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -243,7 +245,15 @@ fun PlayerScreen(
                 )
             ) { Icon(Icons.Rounded.SkipNext, "Suivant") }
 
-            Spacer(Modifier.size(48.dp))
+            IconButton(
+                onClick = { if (track != null) showDeleteDialog = true },
+                enabled = track != null
+            ) {
+                Icon(
+                    Icons.Rounded.Delete, "Supprimer le morceau",
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+            }
         }
 
         if (tracks.isEmpty()) {
@@ -252,6 +262,30 @@ fun PlayerScreen(
                 Text("Choisir un dossier de musique")
             }
         }
+    }
+
+    // -------------------------------------------------- confirmation suppression
+    val toDelete = track
+    if (showDeleteDialog && toDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Supprimer ce morceau ?") },
+            text = {
+                Text(
+                    "« ${toDelete.title} » sera supprimé du téléphone et de la " +
+                        "bibliothèque. Cette action est définitive."
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    vm.deleteTrack(toDelete)
+                    showDeleteDialog = false
+                }) { Text("Supprimer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) { Text("Annuler") }
+            }
+        )
     }
 
     // ------------------------------------------------------- dialogue Douce

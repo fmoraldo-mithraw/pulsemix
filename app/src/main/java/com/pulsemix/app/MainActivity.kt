@@ -85,8 +85,12 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenDocumentTree()
                 ) { uri ->
                     if (uri != null) {
+                        // Lecture + écriture : l'écriture permet la
+                        // suppression de morceaux depuis l'appli
                         contentResolver.takePersistableUriPermission(
-                            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                         )
                         vm.onFolderPicked(uri)
                     }
