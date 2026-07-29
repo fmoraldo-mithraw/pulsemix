@@ -40,7 +40,17 @@ object LibraryScanner {
         "mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "wav", "wma", "mp4"
     )
 
-    suspend fun scan(context: Context, treeUri: Uri, store: TrackStore) =
+    /**
+     * @param restoreBackup false pour un « tout réanalyser » : la sauvegarde
+     * présente dans le dossier est supprimée au lieu d'être restaurée, sinon
+     * elle réinjecterait les anciennes analyses et annulerait la réanalyse.
+     */
+    suspend fun scan(
+        context: Context,
+        treeUri: Uri,
+        store: TrackStore,
+        restoreBackup: Boolean = true
+    ) =
         withContext(Dispatchers.Default) {
             if (scanning) return@withContext
             scanning = true
@@ -57,7 +67,14 @@ object LibraryScanner {
                 // Restaurer la sauvegarde stockée dans le dossier de musique :
                 // après une désinstallation (ou sur un autre appareil), les
                 // analyses reviennent sans refaire le travail.
-                restoreFromFolderBackup(context, root, audioFiles, store)
+                if (restoreBackup) {
+                    restoreFromFolderBackup(context, root, audioFiles, store)
+                } else {
+                    try {
+                        findBackup(root)?.delete()
+                    } catch (_: Exception) {
+                    }
+                }
 
                 val known = store.tracks.value.associateBy { it.uri }
                 val total = audioFiles.size

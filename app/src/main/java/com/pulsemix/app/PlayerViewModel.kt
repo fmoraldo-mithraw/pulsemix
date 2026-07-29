@@ -50,7 +50,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.Default) {
             store.resetAnalysis()
             store.save()
-            LibraryScanner.scan(getApplication(), Uri.parse(folder), store)
+            // restoreBackup = false : sans ça, la sauvegarde du dossier de
+            // musique réinjecterait les anciennes analyses.
+            LibraryScanner.scan(
+                getApplication(), Uri.parse(folder), store,
+                restoreBackup = false
+            )
         }
     }
 
