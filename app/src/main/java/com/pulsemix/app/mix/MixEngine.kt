@@ -295,10 +295,10 @@ object MixEngine {
                 0.25f * percentileRank(centroids, t.centroid) +
                 0.20f * percentileRank(onsets, t.onsetRate)
 
-        var candidates = analyzed.filter { it.bpm <= bpmCutoff }
-        if (candidates.size < 5) {
-            candidates = analyzed.filter { it.bpm <= bpmCutoff + 15f }
-        }
+        // Seuil strict : ne jamais dépasser le BPM choisi par l'utilisateur
+        // (l'ancien élargissement silencieux de +15 BPM faisait entrer des
+        // morceaux plus rapides que demandé).
+        val candidates = analyzed.filter { it.bpm <= bpmCutoff }
         return candidates.sortedBy { softScore(it) }
     }
 }

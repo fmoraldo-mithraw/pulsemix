@@ -85,7 +85,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun setShuffle(enabled: Boolean) = PlayerCore.setShuffle(enabled)
     fun seekTo(fraction: Float) = PlayerCore.seekToFraction(fraction)
 
-    /** Nombre de morceaux « doux » pour un seuil de BPM donné (aperçu du dialogue). */
+    /** Nombre de morceaux « doux » pour un seuil de BPM donné (aperçu du dialogue).
+     *  Simple comptage : pas de tri O(n²) sur le thread UI à chaque cran du curseur. */
     fun softCount(bpmCutoff: Float): Int =
-        MixEngine.softSelection(tracks.value, bpmCutoff).size
+        tracks.value.count { it.analyzed && it.bpm > 0f && it.bpm <= bpmCutoff }
 }

@@ -68,60 +68,68 @@ class TrackStore(context: Context) {
             val arr = root.optJSONArray("tracks") ?: JSONArray()
             val list = ArrayList<Track>(arr.length())
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                list.add(
-                    Track(
-                        uri = o.getString("uri"),
-                        title = o.optString("title", "?"),
-                        artist = o.optString("artist", ""),
-                        durationMs = o.optLong("durationMs", 0L),
-                        bpm = o.optDouble("bpm", 0.0).toFloat(),
-                        keyName = o.optString("keyName", "--"),
-                        camelot = o.optString("camelot", "--"),
-                        energyMean = o.optDouble("energyMean", 0.0).toFloat(),
-                        energyPeak = o.optDouble("energyPeak", 0.0).toFloat(),
-                        centroid = o.optDouble("centroid", 0.0).toFloat(),
-                        onsetRate = o.optDouble("onsetRate", 0.0).toFloat(),
-                        bestStartMs = o.optLong("bestStartMs", 0L),
-                        segmentMs = o.optLong("segmentMs", 60_000L),
-                        firstBeatMs = o.optLong("firstBeatMs", 0L),
-                        analyzed = o.optBoolean("analyzed", false)
-                    )
-                )
+                list.add(trackFromJson(arr.getJSONObject(i)))
             }
             _tracks.value = list.sortedBy { it.title.lowercase() }
         } catch (_: Exception) {
         }
     }
 
+    /** Le contenu de la bibliothèque en JSON (fichier local et sauvegarde SAF). */
+    fun exportJson(): String {
+        val root = JSONObject()
+        root.put("folder", _folderUri.value ?: "")
+        val arr = JSONArray()
+        for (t in _tracks.value) arr.put(trackToJson(t))
+        root.put("tracks", arr)
+        return root.toString()
+    }
+
     suspend fun save() = mutex.withLock {
         try {
-            val root = JSONObject()
-            root.put("folder", _folderUri.value ?: "")
-            val arr = JSONArray()
-            for (t in _tracks.value) {
-                val o = JSONObject()
-                o.put("uri", t.uri)
-                o.put("title", t.title)
-                o.put("artist", t.artist)
-                o.put("durationMs", t.durationMs)
-                o.put("bpm", t.bpm.toDouble())
-                o.put("keyName", t.keyName)
-                o.put("camelot", t.camelot)
-                o.put("energyMean", t.energyMean.toDouble())
-                o.put("energyPeak", t.energyPeak.toDouble())
-                o.put("centroid", t.centroid.toDouble())
-                o.put("onsetRate", t.onsetRate.toDouble())
-                o.put("bestStartMs", t.bestStartMs)
-                o.put("segmentMs", t.segmentMs)
-                o.put("firstBeatMs", t.firstBeatMs)
-                o.put("analyzed", t.analyzed)
-                arr.put(o)
-            }
-            root.put("tracks", arr)
-            file.writeText(root.toString())
+            file.writeText(exportJson())
         } catch (_: Exception) {
         }
+    }
+
+    companion object {
+        fun trackToJson(t: Track): JSONObject {
+            val o = JSONObject()
+            o.put("uri", t.uri)
+            o.put("title", t.title)
+            o.put("artist", t.artist)
+            o.put("durationMs", t.durationMs)
+            o.put("bpm", t.bpm.toDouble())
+            o.put("keyName", t.keyName)
+            o.put("camelot", t.camelot)
+            o.put("energyMean", t.energyMean.toDouble())
+            o.put("energyPeak", t.energyPeak.toDouble())
+            o.put("centroid", t.centroid.toDouble())
+            o.put("onsetRate", t.onsetRate.toDouble())
+            o.put("bestStartMs", t.bestStartMs)
+            o.put("segmentMs", t.segmentMs)
+            o.put("firstBeatMs", t.firstBeatMs)
+            o.put("analyzed", t.analyzed)
+            return o
+        }
+
+        fun trackFromJson(o: JSONObject): Track = Track(
+            uri = o.getString("uri"),
+            title = o.optString("title", "?"),
+            artist = o.optString("artist", ""),
+            durationMs = o.optLong("durationMs", 0L),
+            bpm = o.optDouble("bpm", 0.0).toFloat(),
+            keyName = o.optString("keyName", "--"),
+            camelot = o.optString("camelot", "--"),
+            energyMean = o.optDouble("energyMean", 0.0).toFloat(),
+            energyPeak = o.optDouble("energyPeak", 0.0).toFloat(),
+            centroid = o.optDouble("centroid", 0.0).toFloat(),
+            onsetRate = o.optDouble("onsetRate", 0.0).toFloat(),
+            bestStartMs = o.optLong("bestStartMs", 0L),
+            segmentMs = o.optLong("segmentMs", 60_000L),
+            firstBeatMs = o.optLong("firstBeatMs", 0L),
+            analyzed = o.optBoolean("analyzed", false)
+        )
     }
 
     fun setFolder(uri: String) {

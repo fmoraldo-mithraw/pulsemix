@@ -9,6 +9,7 @@
     <application
         android:name=".PulseMixApp"
         android:allowBackup="true"
+        android:hasFragileUserData="true"
         android:icon="@drawable/ic_app"
         android:label="@string/app_name"
         android:theme="@style/Theme.PulseMix">
