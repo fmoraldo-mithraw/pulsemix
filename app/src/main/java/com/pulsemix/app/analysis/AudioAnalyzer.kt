@@ -318,6 +318,20 @@ class AudioAnalyzer {
             bestBpm /= 2
         }
 
+        // Affinage parabolique du pic : la grille de 0,5 BPM devient continue.
+        // Moins d'erreur de tempo = moins de dérive de beats pendant les
+        // crossfades du mode DJ.
+        run {
+            val sm = scoreOf(bestBpm - 0.5)
+            val sc = scoreOf(bestBpm)
+            val sp = scoreOf(bestBpm + 0.5)
+            val den = (sm - 2 * sc + sp).toDouble()
+            if (sm > 0f && sp > 0f && den < 0) {
+                val off = 0.5 * (sm - sp) / den // en pas de 0,5 BPM
+                bestBpm += (off * 0.5).coerceIn(-0.5, 0.5)
+            }
+        }
+
         val mean = scoreSum / max(1, scoreCount)
         val conf = if (mean > 0) min(1f, (bestScore / mean - 1f) / 3f) else 0f
         return (Math.round(bestBpm * 10.0) / 10.0).toFloat() to max(0f, conf)
@@ -570,7 +584,33 @@ class AudioAnalyzer {
                 best = i
             }
         }
-        return bestStartMs + (best * hopMs).toLong()
+
+        // Affinage à l'échantillon près : la résolution du flux est d'un hop
+        // (~23 ms) ; on cherche la montée d'énergie la plus franche autour du
+        // hop retenu par fenêtres de 64 échantillons (~1,5 ms). Un calage plus
+        // précis = des transitions DJ plus nettes.
+        val center = (best + 1) * HOP
+        val lo = max(0, center - HOP)
+        val hi = min(size, center + 2 * HOP)
+        var bestPos = center
+        var bestRise = -Float.MAX_VALUE
+        var prevE = 0f
+        var p = lo
+        while (p + 64 <= hi) {
+            var e = 0f
+            for (k in p until p + 64) {
+                val v = mono[k]
+                e += v * v
+            }
+            val rise = e - prevE
+            if (rise > bestRise) {
+                bestRise = rise
+                bestPos = p
+            }
+            prevE = e
+            p += 64
+        }
+        return bestStartMs + bestPos.toLong() * 1000L / sr
     }
 
     private fun percentile(values: List<Float>, p: Float): Float {
