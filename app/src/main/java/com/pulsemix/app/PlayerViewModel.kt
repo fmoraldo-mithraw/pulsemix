@@ -201,6 +201,21 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleSpeedBoost() = PlayerCore.toggleSpeedBoost()
     fun setBassLevel(level: Int) = PlayerCore.setBassLevel(level)
     fun setSpeedLevel(level: Int) = PlayerCore.setSpeedLevel(level)
+
+    // Panneau « Effets »
+    val trebleLevel = PlayerCore.trebleLevel
+    val filterLevel = PlayerCore.filterLevel
+    val echoLevel = PlayerCore.echoLevel
+    val panLevel = PlayerCore.panLevel
+    val gateLevel = PlayerCore.gateLevel
+    val liveLoop = PlayerCore.liveLoop
+    fun setTrebleLevel(level: Int) = PlayerCore.setTrebleLevel(level)
+    fun setFilterLevel(level: Int) = PlayerCore.setFilterLevel(level)
+    fun setEchoLevel(level: Int) = PlayerCore.setEchoLevel(level)
+    fun setPanLevel(level: Int) = PlayerCore.setPanLevel(level)
+    fun setGateLevel(level: Int) = PlayerCore.setGateLevel(level)
+    fun setLiveLoop(active: Boolean) = PlayerCore.setLiveLoop(active)
+    fun resetEffects() = PlayerCore.resetEffects()
     fun rehearseTransitions(plan: MixEngine.MixPlan) =
         PlayerCore.rehearseTransitions(plan)
 

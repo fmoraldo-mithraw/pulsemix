@@ -93,6 +93,56 @@ object PlayerCore {
         speedLevel.value = level.coerceIn(-3, 3)
     }
 
+    /**
+     * Effets live du panneau « Effets ». Aigus et filtre s'appliquent dans
+     * tous les modes (via l'égaliseur système) ; écho, auto-pan, gate et
+     * boucle live sont rendus par le moteur DJ uniquement.
+     */
+    val trebleLevel = MutableStateFlow(0)   // aigus : ±2,5 dB par cran
+    val filterLevel = MutableStateFlow(0)   // >0 passe-haut, <0 passe-bas
+    val echoLevel = MutableStateFlow(0)     // écho calé tempo (DJ), 0..3
+    val panLevel = MutableStateFlow(0)      // auto-pan (DJ), ±3 = vitesse/sens
+    val gateLevel = MutableStateFlow(0)     // gate rythmique (DJ), 0..3
+    val liveLoop = MutableStateFlow(false)  // boucle live 4 temps (DJ, maintenu)
+    private var trebleExtraDb = 0f
+
+    fun setTrebleLevel(level: Int) {
+        trebleLevel.value = level.coerceIn(-3, 3)
+    }
+
+    fun setFilterLevel(level: Int) {
+        filterLevel.value = level.coerceIn(-3, 3)
+        applyEqTo(eqExo, includeFilter = true)
+    }
+
+    fun setEchoLevel(level: Int) {
+        echoLevel.value = level.coerceIn(0, 3)
+    }
+
+    fun setPanLevel(level: Int) {
+        panLevel.value = level.coerceIn(-3, 3)
+    }
+
+    fun setGateLevel(level: Int) {
+        gateLevel.value = level.coerceIn(0, 3)
+    }
+
+    fun setLiveLoop(active: Boolean) {
+        liveLoop.value = active
+    }
+
+    /** Remet tous les effets live à zéro. */
+    fun resetEffects() {
+        bassLevel.value = 0
+        speedLevel.value = 0
+        trebleLevel.value = 0
+        echoLevel.value = 0
+        panLevel.value = 0
+        gateLevel.value = 0
+        liveLoop.value = false
+        setFilterLevel(0)
+    }
+
     val mode = MutableStateFlow(PlayerMode.NORMAL)
     val currentTrack = MutableStateFlow<Track?>(null)
 
@@ -222,7 +272,8 @@ object PlayerCore {
 
         // Égaliseur sur la session ExoPlayer
         eqExo = try {
-            android.media.audiofx.Equalizer(0, exo.audioSessionId).also { applyEqTo(it) }
+            android.media.audiofx.Equalizer(0, exo.audioSessionId)
+                .also { applyEqTo(it, includeFilter = true) }
         } catch (_: Exception) {
             null
         }
@@ -255,7 +306,7 @@ object PlayerCore {
                         bassBoostExtraDb = if (targetDb > bassBoostExtraDb)
                             (bassBoostExtraDb + 0.5f).coerceAtMost(targetDb)
                         else (bassBoostExtraDb - 0.5f).coerceAtLeast(targetDb)
-                        applyEqTo(eqExo)
+                        applyEqTo(eqExo, includeFilter = true)
                     }
                     val targetSpeed = 1f + 0.04f * speedLevel.value
                     if (exoSpeed != targetSpeed) {
@@ -264,6 +315,15 @@ object PlayerCore {
                         else (exoSpeed - 0.004f).coerceAtLeast(targetSpeed)
                         exo.setPlaybackSpeed(exoSpeed)
                     }
+                }
+                // Rampe des aigus : s'applique aux deux sessions EQ (exo + DJ)
+                val trebleTarget = 2.5f * trebleLevel.value
+                if (trebleExtraDb != trebleTarget) {
+                    trebleExtraDb = if (trebleTarget > trebleExtraDb)
+                        (trebleExtraDb + 0.5f).coerceAtMost(trebleTarget)
+                    else (trebleExtraDb - 0.5f).coerceAtLeast(trebleTarget)
+                    applyEqTo(eqExo, includeFilter = true)
+                    applyEqTo(eqDj)
                 }
                 // Sauvegarde régulière de la position pendant la lecture, pour
                 // pouvoir reprendre au même endroit même après un plantage.
@@ -508,24 +568,43 @@ object PlayerCore {
             .putFloat("eqMid", mid)
             .putFloat("eqTreble", treble)
             .apply()
-        applyEqTo(eqExo)
+        applyEqTo(eqExo, includeFilter = true)
         applyEqTo(eqDj)
     }
 
-    /** Répartit graves/médiums/aigus sur les bandes de l'égaliseur système. */
-    private fun applyEqTo(eq: android.media.audiofx.Equalizer?) {
+    /**
+     * Répartit graves/médiums/aigus sur les bandes de l'égaliseur système.
+     * includeFilter : approxime le filtre DJ (passe-haut/passe-bas par crans)
+     * en creusant les bandes — utilisé pour la session ExoPlayer seulement,
+     * le moteur DJ ayant son vrai filtre balayé.
+     */
+    private fun applyEqTo(
+        eq: android.media.audiofx.Equalizer?,
+        includeFilter: Boolean = false
+    ) {
         eq ?: return
         try {
             val (bass, mid, treble) = eqBands.value
+            val fl = if (includeFilter) filterLevel.value else 0
+            var bassAdj = 0f
+            var midAdj = 0f
+            var trebAdj = 0f
+            if (fl > 0) { // passe-haut : couper les graves, puis les médiums
+                bassAdj = -5f * fl
+                midAdj = -3f * (fl - 1).coerceAtLeast(0)
+            } else if (fl < 0) { // passe-bas : couper les aigus, puis les médiums
+                trebAdj = -5f * -fl
+                midAdj = -3f * (-fl - 1).coerceAtLeast(0)
+            }
             eq.enabled = bass != 0f || mid != 0f || treble != 0f ||
-                bassBoostExtraDb != 0f
+                bassBoostExtraDb != 0f || trebleExtraDb != 0f || fl != 0
             val range = eq.bandLevelRange
             for (i in 0 until eq.numberOfBands) {
                 val centerHz = eq.getCenterFreq(i.toShort()) / 1000
                 val db = when {
-                    centerHz < 250 -> bass + bassBoostExtraDb
-                    centerHz < 4000 -> mid
-                    else -> treble
+                    centerHz < 250 -> bass + bassBoostExtraDb + bassAdj
+                    centerHz < 4000 -> mid + midAdj
+                    else -> treble + trebleExtraDb + trebAdj
                 }
                 val level = (db * 100).toInt()
                     .coerceIn(range[0].toInt(), range[1].toInt())
