@@ -322,6 +322,40 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             return true
         }
 
+        // Boucle live (bouton maintenu) : les 4 derniers temps tournent en
+        // boucle pendant que la lecture continue « en dessous » (slip) — au
+        // relâchement, le morceau reprend là où il serait arrivé.
+        private var liveData: FloatArray? = null
+        private var liveLen = 0
+        private var liveXf = 0
+        private var livePos = 0
+
+        fun startLiveLoop() {
+            if (liveData != null) return
+            val period = beatPeriodFrames
+            if (period <= 0.0 || period.isNaN()) return
+            val len = (4.0 * period).toInt()
+            if (len < OUT_SR / 4 || len + 512 > loopFilled) return
+            var xf = min(2_205, len / 8)
+            if (len + xf > loopFilled) xf = loopFilled - len
+            val total = len + xf
+            val data = FloatArray(total * 2)
+            var src = (loopWritePos - total + loopCapacity) % loopCapacity
+            for (k in 0 until total) {
+                data[k * 2] = loopCapture[src * 2]
+                data[k * 2 + 1] = loopCapture[src * 2 + 1]
+                src = (src + 1) % loopCapacity
+            }
+            liveLen = len
+            liveXf = xf
+            livePos = xf
+            liveData = data
+        }
+
+        fun stopLiveLoop() {
+            liveData = null
+        }
+
         init {
             val best = track.bestStartMs.coerceIn(0L, max(0L, track.durationMs - 15_000L))
             val beat = track.firstBeatMs
@@ -478,6 +512,23 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 loopCapture[loopWritePos * 2 + 1] = r
                 loopWritePos = (loopWritePos + 1) % loopCapacity
                 if (loopFilled < loopCapacity) loopFilled++
+                // Boucle live active : la sortie vient de la boucle, le flux
+                // vient d'avancer d'une frame en dessous (slip)
+                val lv = liveData
+                if (lv != null && liveLen > 0) {
+                    var sL = lv[livePos * 2]
+                    var sR = lv[livePos * 2 + 1]
+                    if (liveXf > 0 && livePos >= liveLen) {
+                        val q = livePos - liveLen
+                        val t = (q + 1).toFloat() / liveXf
+                        sL = sL * (1f - t) + lv[q * 2] * t
+                        sR = sR * (1f - t) + lv[q * 2 + 1] * t
+                    }
+                    dst[i] = sL
+                    dst[i + 1] = sR
+                    livePos++
+                    if (livePos >= liveLen + liveXf) livePos = liveXf
+                }
                 srcPos += ratio
                 out++
                 framesOut++
@@ -538,6 +589,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var manualBass = 0f
         // Limiteur doux de sortie (attaque rapide, relâche lente)
         var limGain = 1f
+        // Effets live du panneau « Effets » : filtre maître balayé, écho calé
+        // sur le tempo, auto-pan, gate rythmique
+        var filtSm = 0f
+        var filtLpL = 0f
+        var filtLpR = 0f
+        val echoDly = FloatArray(OUT_SR * 2) // 1 s stéréo
+        var echoDlyPos = 0
+        var echoSm = 0f
+        var panPhase = 0.0
+        var gatePhase = 0.0
+        var gateSm = 1f
 
         // Répétition : avance rapide jusqu'aux ~15 dernières secondes du deck
         fun fastForward(d: Deck) {
@@ -594,6 +656,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     val target = 1f + 0.04f * PlayerCore.speedLevel.value
                     a.nudgeTowardNatural(0.0002f, framesGlobal, target)
                 }
+
+                // Boucle live (bouton maintenu dans le panneau Effets)
+                if (PlayerCore.liveLoop.value) a.startLiveLoop()
+                else a.stopLiveLoop()
 
                 // Saut de phase demandé alors qu'une transition est déjà chargée
                 val pj = pendingJump
@@ -708,6 +774,34 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 }
                 var subA = 0f
                 var subB = 0f
+                // Effets live : cibles lissées et paramètres du bloc
+                filtSm += (PlayerCore.filterLevel.value - filtSm)
+                    .coerceIn(-0.08f, 0.08f)
+                echoSm += (PlayerCore.echoLevel.value - echoSm)
+                    .coerceIn(-0.05f, 0.05f)
+                val filtOn = abs(filtSm) > 0.05f
+                val fAlpha = if (filtOn) {
+                    val t = abs(filtSm) / 3f
+                    // >0 : passe-haut 60 Hz -> 2,5 kHz ; <0 : passe-bas
+                    // 12 kHz -> 400 Hz (par crans, glissé en douceur)
+                    val fc = if (filtSm > 0f) 60f * 42f.pow(t)
+                    else 12_000f * 0.033f.pow(t)
+                    1f - exp(-2f * Math.PI.toFloat() * fc / OUT_SR)
+                } else 0f
+                val echoOn = echoSm > 0.05f
+                val echoDelay = (a.beatPeriodFrames / 2.0).toInt()
+                    .coerceIn(2_205, OUT_SR - 1) // ½ temps
+                val echoWet = 0.13f * echoSm
+                val echoFb = 0.17f * echoSm
+                val panLvl = PlayerCore.panLevel.value
+                val panStep = if (panLvl != 0)
+                    (if (panLvl > 0) 1 else -1) * 2.0 * Math.PI /
+                        (OUT_SR * 12.0 / (1 shl (abs(panLvl) - 1)))
+                else 0.0
+                val gateDepth = when (PlayerCore.gateLevel.value) {
+                    1 -> 0.5f; 2 -> 0.75f; 3 -> 0.95f; else -> 0f
+                }
+                val gateStep = 1.0 / a.beatPeriodFrames
                 for (i in 0 until BLOCK_FRAMES) {
                     val gf = framesGlobal + i
                     var gA = 1f
@@ -856,6 +950,51 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         eb[echoPos * 2] = eL * ECHO_FEEDBACK + feedL
                         eb[echoPos * 2 + 1] = eR * ECHO_FEEDBACK + feedR
                         echoPos = (echoPos + 1) % n
+                    }
+                    // ---- Effets live (panneau Effets) ----
+                    // Filtre maître : passe-haut (crans +) ou passe-bas (crans -)
+                    if (filtOn) {
+                        filtLpL += fAlpha * (l - filtLpL)
+                        filtLpR += fAlpha * (r - filtLpR)
+                        if (filtSm > 0f) {
+                            l -= filtLpL
+                            r -= filtLpR
+                        } else {
+                            l = filtLpL
+                            r = filtLpR
+                        }
+                    } else {
+                        filtLpL = l
+                        filtLpR = r
+                    }
+                    // Écho calé sur le tempo (½ temps, dose par crans)
+                    if (echoOn) {
+                        var rp = echoDlyPos - echoDelay
+                        if (rp < 0) rp += OUT_SR
+                        val dL = echoDly[rp * 2]
+                        val dR = echoDly[rp * 2 + 1]
+                        echoDly[echoDlyPos * 2] = l + dL * echoFb
+                        echoDly[echoDlyPos * 2 + 1] = r + dR * echoFb
+                        echoDlyPos++
+                        if (echoDlyPos >= OUT_SR) echoDlyPos = 0
+                        l += dL * echoWet
+                        r += dR * echoWet
+                    }
+                    // Gate rythmique : hachage en croches calé sur le beat
+                    if (gateDepth > 0f) {
+                        gatePhase += gateStep
+                        val frac = (gatePhase * 2.0) % 1.0
+                        val target = if (frac < 0.55) 1f else 1f - gateDepth
+                        gateSm += 0.004f * (target - gateSm)
+                        l *= gateSm
+                        r *= gateSm
+                    } else gateSm = 1f
+                    // Auto-pan : le son tourne lentement (sens et vitesse par crans)
+                    if (panStep != 0.0) {
+                        panPhase += panStep
+                        val c = kotlin.math.cos(panPhase).toFloat()
+                        l *= 0.7f + 0.3f * c
+                        r *= 0.7f - 0.3f * c
                     }
                     // Renfort dynamique des basses : extraction < ~120 Hz
                     // (one-pole), boost lissé appliqué sur les passages forts

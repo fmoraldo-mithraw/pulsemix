@@ -27,7 +27,14 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Audiotrack
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.FilterAlt
+import androidx.compose.material.icons.rounded.Loop
+import androidx.compose.material.icons.rounded.ThreeSixty
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Waves
 import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Speed
@@ -114,6 +121,7 @@ fun PlayerScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
+    var showFxSheet by remember { mutableStateOf(false) }
     val sleepRemaining by vm.sleepRemainingMs.collectAsStateWithLifecycle()
 
     // Pas de défilement vertical : tout l'écran lecteur tient à l'écran
@@ -335,22 +343,23 @@ fun PlayerScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
+            // Panneau « Effets » : tous les contrôles à crans y ont déménagé
             val bassLevel by vm.bassLevel.collectAsStateWithLifecycle()
             val speedLevel by vm.speedLevel.collectAsStateWithLifecycle()
-            BoostButton(
-                icon = Icons.Rounded.GraphicEq,
-                label = "Bass boost",
-                level = bassLevel,
-                onToggle = { vm.toggleBassBoost() },
-                onLevel = { vm.setBassLevel(it) }
-            )
-            BoostButton(
-                icon = Icons.Rounded.Speed,
-                label = "Speed boost",
-                level = speedLevel,
-                onToggle = { vm.toggleSpeedBoost() },
-                onLevel = { vm.setSpeedLevel(it) }
-            )
+            val trebleLevel by vm.trebleLevel.collectAsStateWithLifecycle()
+            val filterLevel by vm.filterLevel.collectAsStateWithLifecycle()
+            val echoLevel by vm.echoLevel.collectAsStateWithLifecycle()
+            val panLevel by vm.panLevel.collectAsStateWithLifecycle()
+            val gateLevel by vm.gateLevel.collectAsStateWithLifecycle()
+            val fxActive = bassLevel != 0 || speedLevel != 0 || trebleLevel != 0 ||
+                filterLevel != 0 || echoLevel != 0 || panLevel != 0 || gateLevel != 0
+            IconButton(onClick = { showFxSheet = true }) {
+                Icon(
+                    Icons.Rounded.Tune, "Effets",
+                    tint = if (fxActive) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
             if (mode == PlayerMode.DJ) {
                 val recording by vm.djRecording.collectAsStateWithLifecycle()
                 IconButton(onClick = { vm.toggleDjRecording() }) {
@@ -452,6 +461,10 @@ fun PlayerScreen(
     }
 
     // ------------------------------------------------------- file d'attente
+    if (showFxSheet) {
+        FxSheet(vm, dj = mode == PlayerMode.DJ) { showFxSheet = false }
+    }
+
     if (showQueueSheet) {
         val queue by vm.queue.collectAsStateWithLifecycle()
         var showSavePlaylist by remember { mutableStateOf(false) }
@@ -840,7 +853,9 @@ private fun BoostButton(
     label: String,
     level: Int,
     onToggle: () -> Unit,
-    onLevel: (Int) -> Unit
+    onLevel: (Int) -> Unit,
+    minLevel: Int = -3,
+    enabled: Boolean = true
 ) {
     // Course courte : les boutons sont bas sur l'écran, il faut peu de place
     // vers le bas pour descendre d'un cran.
@@ -848,6 +863,8 @@ private fun BoostButton(
     val curLevel by rememberUpdatedState(level)
     val setLevel by rememberUpdatedState(onLevel)
     val toggle by rememberUpdatedState(onToggle)
+    val en by rememberUpdatedState(enabled)
+    val minL by rememberUpdatedState(minLevel)
     val haptics = LocalHapticFeedback.current
     // Jauge de glissade : visible pendant l'appui long, se remplit vers le
     // haut ou le bas ; pleine = le prochain cran est franchi.
@@ -858,9 +875,11 @@ private fun BoostButton(
             .size(48.dp)
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { toggle() },
+                    onTap = { if (en) toggle() },
                     onLongPress = {
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (en) haptics.performHapticFeedback(
+                            HapticFeedbackType.LongPress
+                        )
                     }
                 )
             }
@@ -870,11 +889,13 @@ private fun BoostButton(
                 var totalDy = 0f
                 detectDragGesturesAfterLongPress(
                     onDragStart = {
-                        startLevel = curLevel
-                        lastSent = curLevel
-                        totalDy = 0f
-                        dragging = true
-                        dragProgress = 0f
+                        if (en) {
+                            startLevel = curLevel
+                            lastSent = curLevel
+                            totalDy = 0f
+                            dragging = true
+                            dragProgress = 0f
+                        }
                     },
                     onDragEnd = {
                         dragging = false
@@ -886,21 +907,23 @@ private fun BoostButton(
                     },
                     onDrag = { change, amount ->
                         change.consume()
-                        // Mapping sur le déplacement TOTAL depuis l'appui :
-                        // symétrique haut/bas, et on peut monter puis
-                        // redescendre dans le même geste sans à-coup.
-                        totalDy -= amount.y
-                        val steps = (totalDy / stepPx).toInt()
-                        val newLevel = (startLevel + steps).coerceIn(-3, 3)
-                        if (newLevel != lastSent) {
-                            lastSent = newLevel
-                            setLevel(newLevel)
-                            haptics.performHapticFeedback(
-                                HapticFeedbackType.LongPress
-                            )
+                        if (dragging) {
+                            // Mapping sur le déplacement TOTAL depuis l'appui :
+                            // symétrique haut/bas, et on peut monter puis
+                            // redescendre dans le même geste sans à-coup.
+                            totalDy -= amount.y
+                            val steps = (totalDy / stepPx).toInt()
+                            val newLevel = (startLevel + steps).coerceIn(minL, 3)
+                            if (newLevel != lastSent) {
+                                lastSent = newLevel
+                                setLevel(newLevel)
+                                haptics.performHapticFeedback(
+                                    HapticFeedbackType.LongPress
+                                )
+                            }
+                            dragProgress =
+                                (totalDy / stepPx - steps).coerceIn(-1f, 1f)
                         }
-                        dragProgress =
-                            (totalDy / stepPx - steps).coerceIn(-1f, 1f)
                     }
                 )
             },
@@ -918,6 +941,7 @@ private fun BoostButton(
         Icon(
             icon, label,
             tint = when {
+                !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
                 level > 0 -> MaterialTheme.colorScheme.primary
                 level < 0 -> MaterialTheme.colorScheme.tertiary
                 else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
@@ -996,5 +1020,168 @@ private fun BoostDragGauge(level: Int, progress: Float, modifier: Modifier = Mod
                 )
             }
         }
+    }
+}
+
+/**
+ * Panneau « Effets » : tous les contrôles live à crans (tap = on/off,
+ * appui long + glisser = régler), plus la boucle live (maintenir).
+ * Écho, auto-pan, gate et boucle sont rendus par le moteur DJ uniquement.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FxSheet(vm: PlayerViewModel, dj: Boolean, onDismiss: () -> Unit) {
+    val bass by vm.bassLevel.collectAsStateWithLifecycle()
+    val treble by vm.trebleLevel.collectAsStateWithLifecycle()
+    val filter by vm.filterLevel.collectAsStateWithLifecycle()
+    val speed by vm.speedLevel.collectAsStateWithLifecycle()
+    val echo by vm.echoLevel.collectAsStateWithLifecycle()
+    val pan by vm.panLevel.collectAsStateWithLifecycle()
+    val gate by vm.gateLevel.collectAsStateWithLifecycle()
+    val loop by vm.liveLoop.collectAsStateWithLifecycle()
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Effets",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { vm.resetEffects() }) { Text("Réinitialiser") }
+            }
+            Text(
+                "Tap : activer/couper. Appui long puis glisser : régler par crans.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+            Spacer(Modifier.height(56.dp)) // place pour les jauges de glissade
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                FxControl("Basses", Icons.Rounded.GraphicEq, bass,
+                    onToggle = { vm.toggleBassBoost() },
+                    onLevel = { vm.setBassLevel(it) })
+                FxControl("Aigus", Icons.Rounded.Audiotrack, treble,
+                    onToggle = { vm.setTrebleLevel(if (treble == 0) 2 else 0) },
+                    onLevel = { vm.setTrebleLevel(it) })
+                FxControl("Filtre", Icons.Rounded.FilterAlt, filter,
+                    onToggle = { vm.setFilterLevel(if (filter == 0) 2 else 0) },
+                    onLevel = { vm.setFilterLevel(it) })
+                FxControl("Vitesse", Icons.Rounded.Speed, speed,
+                    onToggle = { vm.toggleSpeedBoost() },
+                    onLevel = { vm.setSpeedLevel(it) })
+            }
+            Spacer(Modifier.height(64.dp)) // place pour les jauges de glissade
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                FxControl("Écho", Icons.Rounded.Waves, echo,
+                    minLevel = 0, enabled = dj,
+                    onToggle = { vm.setEchoLevel(if (echo == 0) 2 else 0) },
+                    onLevel = { vm.setEchoLevel(it) })
+                FxControl("Auto-pan", Icons.Rounded.ThreeSixty, pan,
+                    enabled = dj,
+                    onToggle = { vm.setPanLevel(if (pan == 0) 1 else 0) },
+                    onLevel = { vm.setPanLevel(it) })
+                FxControl("Gate", Icons.Rounded.BarChart, gate,
+                    minLevel = 0, enabled = dj,
+                    onToggle = { vm.setGateLevel(if (gate == 0) 2 else 0) },
+                    onLevel = { vm.setGateLevel(it) })
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    HoldLoopButton(
+                        active = loop,
+                        enabled = dj,
+                        onHold = { vm.setLiveLoop(it) }
+                    )
+                    Text(
+                        "Boucle",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (dj) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                    )
+                }
+            }
+            if (!dj) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Écho, auto-pan, gate et boucle ne sont actifs qu'en mode DJ.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FxControl(
+    label: String,
+    icon: ImageVector,
+    level: Int,
+    minLevel: Int = -3,
+    enabled: Boolean = true,
+    onToggle: () -> Unit,
+    onLevel: (Int) -> Unit
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        BoostButton(
+            icon = icon,
+            label = label,
+            level = level,
+            onToggle = onToggle,
+            onLevel = onLevel,
+            minLevel = minLevel,
+            enabled = enabled
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+        )
+    }
+}
+
+/** Boucle live : maintenir = les 4 derniers temps tournent en boucle,
+ *  relâcher = le morceau reprend là où il serait arrivé (slip). */
+@Composable
+private fun HoldLoopButton(active: Boolean, enabled: Boolean, onHold: (Boolean) -> Unit) {
+    val hold by rememberUpdatedState(onHold)
+    val en by rememberUpdatedState(enabled)
+    val haptics = LocalHapticFeedback.current
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(onPress = {
+                    if (en) {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        hold(true)
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            hold(false)
+                        }
+                    }
+                })
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            Icons.Rounded.Loop, "Boucle live (maintenir)",
+            tint = when {
+                !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                active -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            }
+        )
     }
 }
