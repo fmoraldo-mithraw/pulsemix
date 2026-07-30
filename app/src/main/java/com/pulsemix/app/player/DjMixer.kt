@@ -61,6 +61,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Bass swap : atténuation des basses du deck « en retrait » pendant
         // le crossfade (une seule ligne de basse à la fois)
         const val BASS_SWAP_CUT = 0.85f
+        // Boucle de sortie : durée maximale rejouée en boucle (garde-fou)
+        const val LOOP_MAX_OUT: Long = 30L * 44_100L
     }
 
     /** Détecteur d'attaques (kicks) sur l'enveloppe de basses d'un deck. */
@@ -248,6 +250,40 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         private var curFrames = 0
         private var curPos = 0
 
+        // Boucle de sortie (« loop out ») : capture circulaire des derniers
+        // battements produits ; à la fin du passage fort, les 8 derniers
+        // battements sont rejoués en boucle sous le fondu de sortie.
+        private val loopCapacity: Int =
+            if (track.bpm > 0f) (8.0 * 60.0 / track.bpm * OUT_SR / 0.9).toInt() + 2
+            else OUT_SR * 4
+        private val loopCapture = FloatArray(loopCapacity * 2)
+        private var loopWritePos = 0
+        private var loopFilled = 0
+        private var loopData: FloatArray? = null
+        private var loopPos = 0
+        private var loopedOut = 0L
+
+        /** Active la boucle de sortie. @return false si trop peu de matière. */
+        private fun startLoop(): Boolean {
+            if (loopData != null) return true
+            val period = beatPeriodFrames
+            if (period <= 0.0 || period.isNaN()) return false
+            var len = (8.0 * period).toInt()
+            if (len > loopFilled) len = loopFilled
+            if (len < OUT_SR / 2) return false
+            val data = FloatArray(len * 2)
+            var src = (loopWritePos - len + loopCapacity) % loopCapacity
+            for (k in 0 until len) {
+                data[k * 2] = loopCapture[src * 2]
+                data[k * 2 + 1] = loopCapture[src * 2 + 1]
+                src = (src + 1) % loopCapacity
+            }
+            loopData = data
+            loopPos = 0
+            loopedOut = 0
+            return true
+        }
+
         init {
             val best = track.bestStartMs.coerceIn(0L, max(0L, track.durationMs - 15_000L))
             val beat = track.firstBeatMs
@@ -277,11 +313,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             }
             leadMs = min(leadMs, anchor) // pas avant le début du fichier
             startMs = anchor - leadMs
-            logicalEndMs = min(
-                anchor + segMs + (FADE_LOCKED_HARMONIC_S * 1000).toLong(),
-                track.durationMs
-            )
-            decodeEndMs = min(logicalEndMs + TAIL_MS, track.durationMs)
+            // La fin logique = fin du passage fort : au-delà, la boucle de
+            // sortie (8 derniers battements) prend le relais sous le fondu.
+            logicalEndMs = min(anchor + segMs, track.durationMs)
+            decodeEndMs = min(logicalEndMs + 2_000, track.durationMs)
 
             thread(name = "DjDeck-${track.title.take(12)}") {
                 AudioDecoder().decode(
@@ -365,17 +400,46 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             ratio = srcSr.toDouble() * curRate / OUT_SR
             var out = 0
             while (out < frames) {
-                while (srcPos >= 1.0) {
-                    if (!pullSrcFrame()) {
+                // Boucle de sortie active : rejouer les derniers battements
+                val ld = loopData
+                if (ld != null) {
+                    if (loopedOut >= LOOP_MAX_OUT) {
                         finished = true
                         return out
                     }
+                    val i = (dstFrameOffset + out) * 2
+                    dst[i] = ld[loopPos * 2]
+                    dst[i + 1] = ld[loopPos * 2 + 1]
+                    loopPos = (loopPos + 1) % (ld.size / 2)
+                    loopedOut++
+                    out++
+                    framesOut++
+                    continue
+                }
+                // Fin du passage fort : basculer sur la boucle
+                if (framesOut >= totalOutFrames && startLoop()) continue
+                while (srcPos >= 1.0) {
+                    if (!pullSrcFrame()) {
+                        if (!startLoop()) {
+                            finished = true
+                            return out
+                        }
+                        break
+                    }
                     srcPos -= 1.0
                 }
+                if (loopData != null) continue
                 val fr = srcPos.toFloat()
                 val i = (dstFrameOffset + out) * 2
-                dst[i] = (prevL + (nextL - prevL) * fr) * gain
-                dst[i + 1] = (prevR + (nextR - prevR) * fr) * gain
+                val l = (prevL + (nextL - prevL) * fr) * gain
+                val r = (prevR + (nextR - prevR) * fr) * gain
+                dst[i] = l
+                dst[i + 1] = r
+                // Capture circulaire pour la boucle de sortie
+                loopCapture[loopWritePos * 2] = l
+                loopCapture[loopWritePos * 2 + 1] = r
+                loopWritePos = (loopWritePos + 1) % loopCapacity
+                if (loopFilled < loopCapacity) loopFilled++
                 srcPos += ratio
                 out++
                 framesOut++
@@ -524,7 +588,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 var start = framesGlobal +
                                     if (toBar <= a.remainingOut) toBar else toBeat
                                 if (start < framesGlobal) start = framesGlobal
-                                val maxLen = a.remainingOut + a.tailOutFrames -
+                                // La boucle de sortie prolonge le deck A sous
+                                // le fondu : la capacité inclut LOOP_MAX_OUT
+                                val maxLen = a.remainingOut + LOOP_MAX_OUT -
                                         (start - framesGlobal) - OUT_SR / 10
                                 fadeStartF = start
                                 fadeLenF = min(fadeF, max(OUT_SR / 4L, maxLen))
