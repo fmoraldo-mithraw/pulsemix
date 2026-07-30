@@ -82,6 +82,9 @@ object PlayerCore {
 
     val mode = MutableStateFlow(PlayerMode.NORMAL)
     val currentTrack = MutableStateFlow<Track?>(null)
+
+    /** Morceau qui suivra (file ou plan DJ) — pour la vue waveform. */
+    val nextTrack = MutableStateFlow<Track?>(null)
     val isPlaying = MutableStateFlow(false)
     val progress = MutableStateFlow(0f)
     val shuffle = MutableStateFlow(false)
@@ -151,6 +154,7 @@ object PlayerCore {
                 prevDjUri = currentTrack.value?.uri
                 currentTrack.value = track
                 currentPhase.value = phaseIndex
+                nextTrack.value = djNextAfter(track.uri)
                 recordHistory(track.uri)
                 // La notification média suit ExoPlayer, qui joue la piste
                 // silencieuse en DJ : recopier le morceau réel dans ses
@@ -749,6 +753,7 @@ object PlayerCore {
                 val phase = saved.currentPhase.coerceIn(0, restored.phases.size - 1)
                 currentPhase.value = phase
                 currentTrack.value = restored.phases[phase].tracks.firstOrNull()
+                nextTrack.value = currentTrack.value?.let { djNextAfter(it.uri) }
                 // Le moteur DJ repartira au début de cette phase au prochain play
                 // (voir togglePlayPause) : pas de lecture surprise au démarrage.
             }
@@ -776,9 +781,20 @@ object PlayerCore {
 
     // -------------------------------------------------------------- interne
 
+    /** Morceau qui suivra `uri` dans le plan DJ (mêmes filtres que le moteur). */
+    private fun djNextAfter(uri: String): Track? {
+        val flat = plan?.phases?.flatMap { ph ->
+            ph.tracks.filter { it.analyzed && it.bpm > 0f }
+        } ?: return null
+        val i = flat.indexOfFirst { it.uri == uri }
+        return if (i >= 0) flat.getOrNull(i + 1) else null
+    }
+
     private fun updateFromExo() {
         val idx = exo.currentMediaItemIndex
         currentTrack.value = queueTracks.getOrNull(idx)
+        // Suivant selon l'ordre réel de lecture (shuffle compris)
+        nextTrack.value = queueTracks.getOrNull(exo.nextMediaItemIndex)
         if (mode.value == PlayerMode.MIX) {
             var phase = 0
             for ((i, start) in phaseStartIndices.withIndex()) {

@@ -145,14 +145,33 @@ fun PlayerScreen(
         Spacer(Modifier.height(12.dp))
 
         // ---------------------------------------------------- morceau courant
-        TrackArtwork(
-            uri = track?.uri,
-            modifier = Modifier.size(120.dp),
-            corner = 18.dp,
-            targetPx = 512,
-            fallback = if (mode == PlayerMode.DJ) "🎧" else "🎵",
-            fallbackStyle = MaterialTheme.typography.displayMedium
-        )
+        // Un tap sur la pochette bascule vers la vue waveform (onde du
+        // morceau + position + transitions + morceau suivant), et inversement.
+        var showWave by remember { mutableStateOf(false) }
+        val nextTrack by vm.nextTrack.collectAsStateWithLifecycle()
+        if (showWave) {
+            WaveformPanel(
+                track = track,
+                next = nextTrack,
+                dj = mode == PlayerMode.DJ,
+                progress = progress,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(120.dp)
+                    .clickable { showWave = false }
+            )
+        } else {
+            TrackArtwork(
+                uri = track?.uri,
+                modifier = Modifier
+                    .size(120.dp)
+                    .clickable { showWave = true },
+                corner = 18.dp,
+                targetPx = 512,
+                fallback = if (mode == PlayerMode.DJ) "🎧" else "🎵",
+                fallbackStyle = MaterialTheme.typography.displayMedium
+            )
+        }
         Spacer(Modifier.height(10.dp))
 
         Text(
