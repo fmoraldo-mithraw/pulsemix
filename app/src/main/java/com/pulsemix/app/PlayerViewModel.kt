@@ -128,9 +128,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      * Calcul lourd (enchaînements O(n²) sur toute la bibliothèque) : toujours
      * hors du thread UI, sinon l'interface gèle (ANR) quand l'analyse tourne.
      */
-    suspend fun proposeMixes(dj: Boolean, targetMinutes: Int?): List<MixEngine.MixPlan> =
+    suspend fun proposeMixes(
+        dj: Boolean,
+        targetMinutes: Int?,
+        genre: String? = null
+    ): List<MixEngine.MixPlan> =
         withContext(Dispatchers.Default) {
-            MixEngine.proposeMixes(tracks.value, dj, targetMinutes)
+            MixEngine.proposeMixes(tracks.value, dj, targetMinutes, genre)
         }
 
     /** Lance un mix « comme ce morceau » (même style/énergie). */
@@ -172,6 +176,52 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun removeFromQueue(index: Int) = PlayerCore.removeFromQueue(index)
     fun playQueueItem(index: Int) = PlayerCore.playQueueItem(index)
     fun moveQueueItem(from: Int, to: Int) = PlayerCore.moveQueueItem(from, to)
+
+    // ------------------------------------------------------------ v1.3
+    val djRecording = PlayerCore.djRecording
+    val playlists = com.pulsemix.app.data.PlaylistStore.playlists
+
+    fun toggleDjRecording() = PlayerCore.toggleDjRecording()
+    fun markBadTransition() = PlayerCore.markBadTransition()
+    fun rehearseTransitions(plan: MixEngine.MixPlan) =
+        PlayerCore.rehearseTransitions(plan)
+
+    fun genres(): List<Pair<String, Int>> = MixEngine.genresOf(tracks.value)
+
+    fun savePlaylistFromQueue(name: String) =
+        com.pulsemix.app.data.PlaylistStore.save(name, queue.value.map { it.uri })
+
+    fun playPlaylist(p: com.pulsemix.app.data.Playlist) {
+        val byUri = tracks.value.associateBy { it.uri }
+        val list = p.uris.mapNotNull { byUri[it] }
+        if (list.isNotEmpty()) PlayerCore.playNormal(list, 0)
+    }
+
+    fun deletePlaylist(name: String) = com.pulsemix.app.data.PlaylistStore.delete(name)
+
+    fun exportPlaylist(p: com.pulsemix.app.data.Playlist) =
+        com.pulsemix.app.data.PlaylistStore.exportM3u(
+            getApplication(), p, tracks.value.associate { it.uri to it.title }
+        )
+
+    /** Définit le meilleur passage à la main (verrouillé contre la réanalyse). */
+    fun setManualSegment(track: Track, startMs: Long, durMs: Long) =
+        updateTrack(track.uri) {
+            it.copy(
+                bestStartMs = startMs,
+                segmentMs = durMs,
+                firstBeatMs = startMs,
+                segmentLocked = true
+            )
+        }
+
+    fun unlockSegment(track: Track) = updateTrack(track.uri) {
+        it.copy(segmentLocked = false)
+    }
+
+    /** Pré-écoute d'un passage arbitraire (réglage du segment manuel). */
+    fun previewSegment(track: Track, startMs: Long, durMs: Long) =
+        PlayerCore.playPreview(track.copy(bestStartMs = startMs, segmentMs = durMs))
 
     fun startMix(plan: MixEngine.MixPlan, djMode: Boolean) {
         if (djMode) PlayerCore.startDj(plan) else PlayerCore.startMix(plan)

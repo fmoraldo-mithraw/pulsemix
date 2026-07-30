@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -34,10 +35,13 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -70,10 +74,13 @@ fun LibraryScreen(
     var search by remember { mutableStateOf("") }
     var sortMode by remember { mutableStateOf(SortMode.TITRE) }
     var compatOnly by remember { mutableStateOf(false) }
+    var failedOnly by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<Track?>(null) }
     var bpmEditFor by remember { mutableStateOf<Track?>(null) }
+    var segmentEditFor by remember { mutableStateOf<Track?>(null) }
     var deleteFor by remember { mutableStateOf<Track?>(null) }
+    val playlists by vm.playlists.collectAsStateWithLifecycle()
 
     Column(modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -102,6 +109,29 @@ fun LibraryScreen(
                 IconButton(onClick = { vm.removeFolder(f) }) {
                     Icon(
                         Icons.Rounded.Close, "Retirer le dossier",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                }
+            }
+        }
+
+        // ----------------------------------------------------------- playlists
+        for (pl in playlists) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "♪ ${pl.name} (${pl.uris.size})",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                IconButton(onClick = { vm.playPlaylist(pl) }) {
+                    Icon(Icons.Rounded.PlayArrow, "Lire la playlist")
+                }
+                TextButton(onClick = { vm.exportPlaylist(pl) }) { Text("m3u") }
+                IconButton(onClick = { vm.deletePlaylist(pl.name) }) {
+                    Icon(
+                        Icons.Rounded.Close, "Supprimer la playlist",
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )
                 }
@@ -201,11 +231,17 @@ fun LibraryScreen(
                     enabled = current != null,
                     label = { Text("Compatibles") }
                 )
+                FilterChip(
+                    selected = failedOnly,
+                    onClick = { failedOnly = !failedOnly },
+                    label = { Text("Non analysés ($unanalyzed)") }
+                )
             }
             Spacer(Modifier.height(6.dp))
 
             val cur = current
             val displayed = tracks
+                .filter { !failedOnly || !it.analyzed }
                 .filter {
                     search.isBlank() ||
                         it.title.contains(search, ignoreCase = true) ||
@@ -280,6 +316,9 @@ fun LibraryScreen(
                     TextButton(onClick = { bpmEditFor = opt; optionsFor = null }) {
                         Text("Corriger le BPM (${opt.bpm})")
                     }
+                    TextButton(onClick = { segmentEditFor = opt; optionsFor = null }) {
+                        Text("Définir le meilleur passage…")
+                    }
                     TextButton(onClick = { deleteFor = opt; optionsFor = null }) {
                         Text("Supprimer le fichier…", color = MaterialTheme.colorScheme.error)
                     }
@@ -346,6 +385,66 @@ fun LibraryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { bpmEditFor = null }) { Text("Annuler") }
+            }
+        )
+    }
+
+    // ------------------------------------------------ meilleur passage manuel
+    val segTrack = segmentEditFor
+    if (segTrack != null) {
+        val maxStartS = ((segTrack.durationMs - 20_000L).coerceAtLeast(0L) / 1000L)
+            .toFloat()
+        var startS by remember(segTrack) {
+            mutableFloatStateOf(
+                (segTrack.bestStartMs / 1000L).toFloat().coerceIn(0f, maxStartS)
+            )
+        }
+        var durS by remember(segTrack) {
+            mutableIntStateOf((segTrack.segmentMs / 1000L).toInt().coerceIn(20, 90))
+        }
+        AlertDialog(
+            onDismissRequest = { segmentEditFor = null },
+            title = { Text("Meilleur passage (mode DJ)") },
+            text = {
+                Column {
+                    Text(
+                        "Départ : %d:%02d".format(
+                            startS.toInt() / 60, startS.toInt() % 60
+                        )
+                    )
+                    Slider(
+                        value = startS,
+                        onValueChange = { startS = it },
+                        valueRange = 0f..maxStartS.coerceAtLeast(1f)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for (d in listOf(30, 45, 60, 90)) {
+                            FilterChip(
+                                selected = durS == d,
+                                onClick = { durS = d },
+                                label = { Text("${d}s") }
+                            )
+                        }
+                    }
+                    TextButton(onClick = {
+                        vm.previewSegment(segTrack, startS.toLong() * 1000, durS * 1000L)
+                    }) { Text("▶ Écouter ce passage") }
+                    if (segTrack.segmentLocked) {
+                        TextButton(onClick = {
+                            vm.unlockSegment(segTrack)
+                            segmentEditFor = null
+                        }) { Text("Déverrouiller (réanalysable)") }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    vm.setManualSegment(segTrack, startS.toLong() * 1000, durS * 1000L)
+                    segmentEditFor = null
+                }) { Text("Enregistrer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { segmentEditFor = null }) { Text("Annuler") }
             }
         )
     }

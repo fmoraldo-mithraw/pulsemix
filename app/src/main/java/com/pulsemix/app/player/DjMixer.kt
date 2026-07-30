@@ -87,6 +87,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     @Volatile private var pendingJump = -1
     @Volatile private var currentPhaseIndex = 0
     @Volatile private var startSegIndex = 0
+    @Volatile private var rehearsal = false
+    @Volatile private var recorder: MixRecorder? = null
+
+    /** Active/coupe l'enregistrement du set (fichier M4A). */
+    fun setRecorder(r: MixRecorder?) {
+        val old = recorder
+        recorder = r
+        old?.stop()
+    }
 
     private var segments: List<Segment> = emptyList()
     private var plan: MixEngine.MixPlan? = null
@@ -95,9 +104,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     // ------------------------------------------------------------------ API
 
-    /** @param startPhase phase de départ (reprise après fermeture/plantage). */
-    fun start(plan: MixEngine.MixPlan, startPhase: Int = 0) {
+    /**
+     * @param startPhase phase de départ (reprise après fermeture/plantage).
+     * @param rehearsalMode true = répétition des transitions : chaque morceau
+     * est avancé jusqu'à ses ~15 dernières secondes, on n'entend que les
+     * jonctions.
+     */
+    fun start(plan: MixEngine.MixPlan, startPhase: Int = 0, rehearsalMode: Boolean = false) {
         stop()
+        rehearsal = rehearsalMode
         this.plan = plan
         segments = plan.phases.flatMapIndexed { pi, phase ->
             phase.tracks.filter { it.analyzed && it.bpm > 0f }.map { Segment(it, pi) }
@@ -394,6 +409,24 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var mixLpR = 0f
         var bassGain = 0f
         var recentPeak = 0f
+        // Limiteur doux de sortie (attaque rapide, relâche lente)
+        var limGain = 1f
+
+        // Répétition : avance rapide jusqu'aux ~15 dernières secondes du deck
+        fun fastForward(d: Deck) {
+            if (!rehearsal) return
+            val tailFrames = 15L * OUT_SR
+            var w = 0
+            while (running && d.remainingOut > tailFrames) {
+                if (d.read(tmpA, 0, BLOCK_FRAMES) == 0) break
+                if (++w % 8 == 0) {
+                    java.util.Arrays.fill(out, 0f)
+                    audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
+                }
+            }
+            // recaler la grille de beats sur la position réellement atteinte
+            d.startedAtFrame = framesGlobal - d.framesOut
+        }
 
         fun openNextValid(fromIndex: Int, rate: Float): Deck? {
             var idx = fromIndex
@@ -414,6 +447,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             deckA.startedAtFrame = 0L
             currentPhaseIndex = deckA.segment.phaseIndex
             announce(deckA)
+            fastForward(deckA)
 
             while (running) {
                 // Pause (miroir du bouton play/pause et du Bluetooth)
@@ -575,8 +609,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     bassSq += (mixLpL * mixLpL + mixLpR * mixLpR).toDouble()
                     val lb = l + bassGain * mixLpL
                     val rb = r + bassGain * mixLpR
-                    out[i * 2] = lb.coerceIn(-1f, 1f)
-                    out[i * 2 + 1] = rb.coerceIn(-1f, 1f)
+                    // Limiteur doux : évite l'écrêtage brut quand normalisation,
+                    // renfort de basses et EQ s'empilent
+                    val peak = max(abs(lb), abs(rb))
+                    if (peak * limGain > 0.98f) limGain = 0.98f / peak
+                    else limGain += (1f - limGain) * 0.0008f
+                    out[i * 2] = (lb * limGain).coerceIn(-1f, 1f)
+                    out[i * 2 + 1] = (rb * limGain).coerceIn(-1f, 1f)
                 }
                 // Verrouillage actif : si les kicks des deux decks dérivent
                 // pendant le fade, micro-corriger le rate de l'entrant.
@@ -608,6 +647,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     bassGain += 0.02f * (target - bassGain)
                 }
                 audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
+                recorder?.write(out, BLOCK_FRAMES * 2)
                 framesGlobal += BLOCK_FRAMES
                 a.advancePhase(BLOCK_FRAMES)
 
@@ -619,6 +659,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     fadeStartF = -1L
                     currentPhaseIndex = b.segment.phaseIndex
                     announce(b)
+                    fastForward(b)
                 }
 
                 // Fin de set
@@ -638,6 +679,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             }
         } catch (_: Exception) {
         } finally {
+            recorder?.stop()
+            recorder = null
             deckA?.close()
             deckB?.close()
             try {

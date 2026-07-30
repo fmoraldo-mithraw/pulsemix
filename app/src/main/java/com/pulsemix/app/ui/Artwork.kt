@@ -42,10 +42,32 @@ object ArtworkCache {
     private val misses: MutableSet<String> =
         Collections.newSetFromMap(ConcurrentHashMap())
 
+    private fun diskFile(context: Context, uri: String): java.io.File {
+        val dir = java.io.File(context.cacheDir, "artwork").apply { mkdirs() }
+        val md = java.security.MessageDigest.getInstance("MD5")
+            .digest(uri.toByteArray())
+        return java.io.File(dir, md.joinToString("") { "%02x".format(it) } + ".jpg")
+    }
+
     suspend fun load(context: Context, uri: String, targetPx: Int): Bitmap? =
         withContext(Dispatchers.IO) {
             cache.get(uri)?.let { return@withContext it }
             if (uri in misses) return@withContext null
+
+            // Cache disque : scroll instantané dès le premier lancement
+            val disk = diskFile(context, uri)
+            if (disk.exists()) {
+                val fromDisk = try {
+                    BitmapFactory.decodeFile(disk.absolutePath)
+                } catch (_: Exception) {
+                    null
+                }
+                if (fromDisk != null) {
+                    cache.put(uri, fromDisk)
+                    return@withContext fromDisk
+                }
+            }
+
             val mmr = MediaMetadataRetriever()
             try {
                 mmr.setDataSource(context, Uri.parse(uri))
@@ -57,10 +79,18 @@ object ArtworkCache {
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                     var sample = 1
-                    while (bounds.outWidth / (sample * 2) >= targetPx) sample *= 2
+                    while (bounds.outWidth / (sample * 2) >= 512) sample *= 2
                     val opts = BitmapFactory.Options().apply { inSampleSize = sample }
                     val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                    if (bmp != null) cache.put(uri, bmp) else misses.add(uri)
+                    if (bmp != null) {
+                        cache.put(uri, bmp)
+                        try {
+                            java.io.FileOutputStream(disk).use {
+                                bmp.compress(Bitmap.CompressFormat.JPEG, 85, it)
+                            }
+                        } catch (_: Exception) {
+                        }
+                    } else misses.add(uri)
                     bmp
                 }
             } catch (_: Exception) {

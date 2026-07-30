@@ -2,6 +2,7 @@ package com.pulsemix.app.mix
 
 import com.pulsemix.app.data.PlayHistory
 import com.pulsemix.app.data.Track
+import com.pulsemix.app.data.TransitionFeedback
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.random.Random
@@ -130,17 +131,76 @@ object MixEngine {
         // Anti-répétition (48 h) et petit bonus favori
         val recency = PlayHistory.penalty(cand.uri) * 3f
         val favBonus = if (cand.favorite) 0.5f else 0f
-        return delta + dirPenalty - harmonic + recency - favBonus
+        // Jamais deux morceaux du même artiste d'affilée (si évitable)
+        val sameArtist = if (cand.artist.isNotBlank() &&
+            cand.artist.equals(prev.artist, ignoreCase = true)
+        ) 6f else 0f
+        // Paires marquées « transition ratée » par l'utilisateur
+        val badPair = if (TransitionFeedback.isBad(prev.uri, cand.uri)) 10f else 0f
+        return delta + dirPenalty - harmonic + recency - favBonus + sameArtist + badPair
     }
 
     // -------------------------------------------------------- propositions
 
+    // --------------------------------------------------------------- genres
+
+    fun normalizeGenre(raw: String?): String =
+        raw?.trim()?.lowercase()?.substringBefore(';')?.substringBefore('/')
+            ?.trim() ?: ""
+
+    /** Genres présents (normalisés) avec leur nombre de morceaux analysés. */
+    fun genresOf(all: List<Track>): List<Pair<String, Int>> =
+        all.filter { it.analyzed && it.genre.isNotBlank() && it.genre != "-" }
+            .groupBy { it.genre }
+            .map { it.key to it.value.size }
+            .sortedByDescending { it.second }
+
+    /**
+     * Morceaux d'un genre ET des genres « adjacents » : ceux dont le profil
+     * acoustique moyen (BPM, énergie, brillance) est proche du genre choisi.
+     */
+    fun filterByGenre(all: List<Track>, genre: String): List<Track> {
+        val analyzed = all.filter { it.analyzed && it.bpm > 0f }
+        val byGenre = analyzed
+            .filter { it.genre.isNotBlank() && it.genre != "-" }
+            .groupBy { it.genre }
+        val seedTracks = byGenre[genre] ?: return analyzed
+
+        fun profile(tracks: List<Track>): Triple<Float, Float, Float> = Triple(
+            tracks.map { it.bpm }.average().toFloat(),
+            tracks.map { it.energyMean }.average().toFloat(),
+            tracks.map { it.centroid }.average().toFloat()
+        )
+
+        val bpmSpan = (analyzed.maxOf { it.bpm } - analyzed.minOf { it.bpm })
+            .coerceAtLeast(1f)
+        val eSpan = (analyzed.maxOf { it.energyMean } - analyzed.minOf { it.energyMean })
+            .coerceAtLeast(1e-4f)
+        val cSpan = (analyzed.maxOf { it.centroid } - analyzed.minOf { it.centroid })
+            .coerceAtLeast(1f)
+
+        val seed = profile(seedTracks)
+        val adjacent = byGenre.filterKeys { it != genre }
+            .filter { (_, tracks) ->
+                val p = profile(tracks)
+                val d = abs(p.first - seed.first) / bpmSpan +
+                    abs(p.second - seed.second) / eSpan +
+                    abs(p.third - seed.third) / cSpan
+                d < 0.45f
+            }
+            .keys
+
+        return analyzed.filter { it.genre == genre || it.genre in adjacent }
+    }
+
     fun proposeMixes(
         all: List<Track>,
         dj: Boolean = false,
-        targetMinutes: Int? = null
+        targetMinutes: Int? = null,
+        genre: String? = null
     ): List<MixPlan> {
-        val tracks = all.filter { it.analyzed && it.bpm > 0f && !it.excluded }
+        val base = if (genre != null) filterByGenre(all, genre) else all
+        val tracks = base.filter { it.analyzed && it.bpm > 0f && !it.excluded }
         if (tracks.size < 4) return emptyList()
 
         val plans = ArrayList<MixPlan>()

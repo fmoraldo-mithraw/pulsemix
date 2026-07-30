@@ -21,8 +21,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.FiberManualRecord
+import androidx.compose.material.icons.rounded.ThumbDown
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
@@ -51,6 +54,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -297,6 +301,22 @@ fun PlayerScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
+            if (mode == PlayerMode.DJ) {
+                val recording by vm.djRecording.collectAsStateWithLifecycle()
+                IconButton(onClick = { vm.toggleDjRecording() }) {
+                    Icon(
+                        Icons.Rounded.FiberManualRecord, "Enregistrer le set",
+                        tint = if (recording) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+                IconButton(onClick = { vm.markBadTransition() }) {
+                    Icon(
+                        Icons.Rounded.ThumbDown, "Transition ratée",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+            }
         }
 
         if (tracks.isEmpty()) {
@@ -384,13 +404,48 @@ fun PlayerScreen(
     // ------------------------------------------------------- file d'attente
     if (showQueueSheet) {
         val queue by vm.queue.collectAsStateWithLifecycle()
+        var showSavePlaylist by remember { mutableStateOf(false) }
         ModalBottomSheet(onDismissRequest = { showQueueSheet = false }) {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                Text(
-                    "File d'attente",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "File d'attente",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (queue.isNotEmpty()) {
+                        TextButton(onClick = { showSavePlaylist = true }) {
+                            Text("Enregistrer…")
+                        }
+                    }
+                }
+                if (showSavePlaylist) {
+                    var name by remember { mutableStateOf("") }
+                    AlertDialog(
+                        onDismissRequest = { showSavePlaylist = false },
+                        title = { Text("Enregistrer comme playlist") },
+                        text = {
+                            OutlinedTextField(
+                                value = name,
+                                onValueChange = { name = it },
+                                label = { Text("Nom") },
+                                singleLine = true
+                            )
+                        },
+                        confirmButton = {
+                            Button(onClick = {
+                                vm.savePlaylistFromQueue(name.trim())
+                                showSavePlaylist = false
+                            }) { Text("Enregistrer") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showSavePlaylist = false }) {
+                                Text("Annuler")
+                            }
+                        }
+                    )
+                }
                 if (mode == PlayerMode.DJ) {
                     Text(
                         "En mode DJ, la file n'est pas éditable.",
@@ -509,11 +564,15 @@ fun PlayerScreen(
         // Plans figés à l'ouverture et calculés en arrière-plan : pas de
         // recalcul sur le thread UI à chaque morceau analysé pendant le scroll.
         var targetMin by remember { mutableStateOf<Int?>(null) }
+        var selectedGenre by remember { mutableStateOf<String?>(null) }
         var refreshKey by remember { mutableStateOf(0) }
         var plans by remember { mutableStateOf<List<MixEngine.MixPlan>?>(null) }
-        LaunchedEffect(targetMin, refreshKey) {
+        val genres = remember(refreshKey) {
+            vm.genres().filter { it.second >= 4 }.take(8)
+        }
+        LaunchedEffect(targetMin, refreshKey, selectedGenre) {
             plans = null
-            plans = vm.proposeMixes(mixSheetDj, targetMin)
+            plans = vm.proposeMixes(mixSheetDj, targetMin, selectedGenre)
         }
         ModalBottomSheet(onDismissRequest = { showMixSheet = false }) {
             Column(
@@ -557,6 +616,33 @@ fun PlayerScreen(
                         )
                     }
                 }
+                if (genres.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = selectedGenre == null,
+                            onClick = { selectedGenre = null },
+                            label = { Text("Tous genres") }
+                        )
+                        for ((g, count) in genres) {
+                            FilterChip(
+                                selected = selectedGenre == g,
+                                onClick = {
+                                    selectedGenre = if (selectedGenre == g) null else g
+                                },
+                                label = { Text("$g ($count)") }
+                            )
+                        }
+                    }
+                    Text(
+                        "Un genre sélectionné inclut aussi les genres au profil proche.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 val currentPlans = plans
                 when {
@@ -587,6 +673,10 @@ fun PlayerScreen(
                                         if (p === plan) removeTrackFromPlan(p, tr) else p
                                     }
                                 },
+                                onRehearse = {
+                                    vm.rehearseTransitions(plan)
+                                    showMixSheet = false
+                                },
                                 onStart = {
                                     vm.startMix(plan, mixSheetDj)
                                     showMixSheet = false
@@ -616,6 +706,7 @@ private fun MixPlanCard(
     plan: MixEngine.MixPlan,
     dj: Boolean,
     onRemoveTrack: (Track) -> Unit,
+    onRehearse: () -> Unit,
     onStart: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -677,6 +768,11 @@ private fun MixPlanCard(
             Spacer(Modifier.height(10.dp))
             Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
                 Text(if (dj) "Lancer en DJ" else "Lancer le mix")
+            }
+            if (dj) {
+                TextButton(onClick = onRehearse, modifier = Modifier.fillMaxWidth()) {
+                    Text("Répéter les transitions (jonctions seules)")
+                }
             }
         }
     }
