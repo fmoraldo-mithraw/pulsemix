@@ -567,9 +567,8 @@ fun PlayerScreen(
         var selectedGenre by remember { mutableStateOf<String?>(null) }
         var refreshKey by remember { mutableStateOf(0) }
         var plans by remember { mutableStateOf<List<MixEngine.MixPlan>?>(null) }
-        val genres = remember(refreshKey) {
-            vm.genres().filter { it.second >= 4 }.take(8)
-        }
+        // Tous les types existants de la bibliothèque, triés par effectif
+        val genres = remember(refreshKey) { vm.genres() }
         LaunchedEffect(targetMin, refreshKey, selectedGenre) {
             plans = null
             plans = vm.proposeMixes(mixSheetDj, targetMin, selectedGenre)
