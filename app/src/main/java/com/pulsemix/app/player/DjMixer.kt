@@ -272,33 +272,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         private var curFrames = 0
         private var curPos = 0
 
-        // Boucle d'entrée (« loop in ») : les 8 premiers battements du passage
-        // fort sont capturés au vol puis rejoués en boucle sous le fondu
-        // d'entrée, avant que le flux ne continue naturellement.
-        // La boucle démarre à ~50 ms après l'ancre : les 50 premières ms
-        // servent d'amorce pour fondre la couture de boucle (sans crossfade,
-        // le raccord claque — « bégaiement » — dès que la grille BPM est
-        // imparfaite). La longueur musicale de la boucle reste 8 temps.
-        private val introLoopFrames: Int =
-            if (track.bpm > 0f) (8.0 * OUT_SR * 60.0 / (track.bpm * rate)).toInt()
-            else 0
-        private val introXfade: Int =
-            if (introLoopFrames > 0) min(2_205, introLoopFrames / 8) else 0
-        private val introBufFrames: Int = introLoopFrames + introXfade
-        private val introTotalFrames: Long = run {
-            val lead = (FADE_NORMAL_S * OUT_SR).toLong()
-            if (introLoopFrames <= 0) 0L
-            else {
-                var t = introBufFrames.toLong()
-                while (t < lead) t += introLoopFrames
-                t
-            }
-        }
-        private val introBuf = FloatArray(max(1, introBufFrames) * 2)
-        private var introCaptured = 0
-        private var introServed = 0L
-        private var introPos = introXfade
-
         // Boucle de sortie (« loop out ») : capture circulaire des derniers
         // battements produits ; à la fin du passage fort, les 8 derniers
         // battements sont rejoués en boucle sous le fondu de sortie.
@@ -357,10 +330,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val phrases = floor(segMs / phraseMs).toLong()
                 if (phrases >= 2) segMs = (phrases * phraseMs).toLong()
             }
-            // Transitions AUTOUR du passage fort, pas dedans : le deck démarre
-            // pile sur le passage fort ; ses 8 premiers battements tournent en
-            // boucle (« loop in ») sous le fondu d'entrée, puis le morceau
-            // continue naturellement. À l'autre bout, la boucle de sortie
+            // Le deck démarre pile sur le passage fort et déroule le morceau
+            // naturellement sous le fondu d'entrée (pas de boucle de début :
+            // essayée, jugée décevante). À l'autre bout, la boucle de sortie
             // (8 derniers battements) prend le relais sous le fondu de sortie.
             startMs = anchor
             logicalEndMs = min(anchor + segMs, track.durationMs)
@@ -408,8 +380,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         }
 
         val totalOutFrames: Long
-            get() = ((logicalEndMs - startMs) / 1000.0 * OUT_SR / rate).toLong() +
-                max(0L, introTotalFrames - introBufFrames)
+            get() = ((logicalEndMs - startMs) / 1000.0 * OUT_SR / rate).toLong()
 
         val tailOutFrames: Long
             get() = ((decodeEndMs - logicalEndMs) / 1000.0 * OUT_SR / rate).toLong()
@@ -452,32 +423,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             ratio = srcSr.toDouble() * curRate / OUT_SR
             var out = 0
             while (out < frames) {
-                // Boucle d'entrée : rejouer les 8 premiers battements capturés
-                if (introServed < introTotalFrames && introCaptured >= introBufFrames) {
-                    val i = (dstFrameOffset + out) * 2
-                    var sL = introBuf[introPos * 2]
-                    var sR = introBuf[introPos * 2 + 1]
-                    if (introXfade > 0 && introPos >= introLoopFrames) {
-                        // Couture : fondre la fin de boucle vers l'amorce qui
-                        // mène naturellement au début — sauf au dernier
-                        // passage, qui enchaîne sur le flux sans reboucler.
-                        val untilEnd = introBufFrames - introPos
-                        if (introTotalFrames - introServed > untilEnd) {
-                            val q = introPos - introLoopFrames
-                            val t = (q + 1).toFloat() / introXfade
-                            sL = sL * (1f - t) + introBuf[q * 2] * t
-                            sR = sR * (1f - t) + introBuf[q * 2 + 1] * t
-                        }
-                    }
-                    dst[i] = sL
-                    dst[i + 1] = sR
-                    introPos++
-                    if (introPos >= introBufFrames) introPos = introXfade
-                    introServed++
-                    out++
-                    framesOut++
-                    continue
-                }
                 // Boucle de sortie active : rejouer les derniers battements
                 val ld = loopData
                 if (ld != null) {
@@ -523,13 +468,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val r = (prevR + (nextR - prevR) * fr) * gain
                 dst[i] = l
                 dst[i + 1] = r
-                // Capture du premier cycle (+ amorce) pour la boucle d'entrée
-                if (introCaptured < introBufFrames) {
-                    introBuf[introCaptured * 2] = l
-                    introBuf[introCaptured * 2 + 1] = r
-                    introCaptured++
-                    introServed++
-                }
                 // Capture circulaire pour la boucle de sortie
                 loopCapture[loopWritePos * 2] = l
                 loopCapture[loopWritePos * 2 + 1] = r
