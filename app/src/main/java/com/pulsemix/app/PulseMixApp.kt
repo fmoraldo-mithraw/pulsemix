@@ -2,6 +2,7 @@ package com.pulsemix.app
 
 import android.app.Application
 import android.content.Context
+import com.pulsemix.app.data.PlayHistory
 import com.pulsemix.app.data.TrackStore
 import com.pulsemix.app.player.PlayerCore
 
@@ -14,6 +15,7 @@ object Graph {
         val firstInit = !::store.isInitialized
         if (firstInit) {
             store = TrackStore(context)
+            PlayHistory.init(context)
         }
         PlayerCore.init(context)
         // Reprendre la dernière session (morceau + position) après une

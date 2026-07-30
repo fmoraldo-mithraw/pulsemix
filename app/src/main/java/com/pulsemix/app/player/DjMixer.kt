@@ -39,6 +39,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         fun onTrackChanged(track: Track, phaseIndex: Int)
         fun onProgress(progress: Float)
         fun onStopped()
+        /** Session audio du moteur DJ (pour y attacher l'égaliseur). */
+        fun onSessionReady(sessionId: Int) {}
     }
 
     private data class Segment(val track: Track, val phaseIndex: Int)
@@ -161,6 +163,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         lengthFactor: Float = 1f
     ) {
         val track: Track = segment.track
+
+        // Normalisation du volume : atténue/renforce vers un niveau commun
+        val gain: Float =
+            if (PlayerCore.normalizeVolume.value && track.energyMean > 0.01f)
+                (0.18f / track.energyMean).coerceIn(0.6f, 1.6f)
+            else 1f
+
         @Volatile var closed = false
         @Volatile var decoderDone = false
         @Volatile var srcSr = 0
@@ -330,8 +339,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 }
                 val fr = srcPos.toFloat()
                 val i = (dstFrameOffset + out) * 2
-                dst[i] = prevL + (nextL - prevL) * fr
-                dst[i + 1] = prevR + (nextR - prevR) * fr
+                dst[i] = (prevL + (nextL - prevL) * fr) * gain
+                dst[i + 1] = (prevR + (nextR - prevR) * fr) * gain
                 srcPos += ratio
                 out++
                 framesOut++
@@ -400,6 +409,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
         try {
             audioTrack.play()
+            ui.post { listener.onSessionReady(audioTrack.audioSessionId) }
             deckA = openNextValid(startSegIndex, 1f) ?: return
             deckA.startedAtFrame = 0L
             currentPhaseIndex = deckA.segment.phaseIndex

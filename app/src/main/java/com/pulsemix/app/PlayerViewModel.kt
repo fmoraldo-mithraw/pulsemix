@@ -19,7 +19,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val store = Graph.store
 
     val tracks = store.tracks
-    val folderUri = store.folderUri
+    val folders = store.folders
     val scanProgress = LibraryScanner.progress
 
     val mode = PlayerCore.mode
@@ -31,25 +31,36 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val phaseNames = PlayerCore.phaseNames
     val currentPhase = PlayerCore.currentPhase
     val skipIntros = PlayerCore.skipIntros
+    val normalizeVolume = PlayerCore.normalizeVolume
+    val eqBands = PlayerCore.eqBands
+    val sleepRemainingMs = PlayerCore.sleepRemainingMs
+    val queue = PlayerCore.queue
 
     init {
         // Scan automatique au démarrage : rafraîchit la bibliothèque, restaure
-        // la sauvegarde du dossier de musique si besoin et la maintient à jour.
+        // les sauvegardes des dossiers si besoin et les maintient à jour.
         viewModelScope.launch {
             store.loaded.first { it }
-            if (folderUri.value != null) rescan()
+            if (folders.value.isNotEmpty()) rescan()
         }
     }
 
     fun onFolderPicked(uri: Uri) {
-        store.setFolder(uri.toString())
+        store.addFolder(uri.toString())
+        viewModelScope.launch(Dispatchers.IO) { store.save() }
+        rescan()
+    }
+
+    fun removeFolder(uri: String) {
+        store.removeFolder(uri)
+        viewModelScope.launch(Dispatchers.IO) { store.save() }
         rescan()
     }
 
     fun rescan() {
-        val folder = folderUri.value ?: return
+        if (folders.value.isEmpty()) return
         // Service en avant-plan : l'analyse continue appli quittée/écran éteint
-        AnalysisService.start(getApplication(), folder)
+        AnalysisService.start(getApplication())
     }
 
     /** Arrêt propre de l'analyse en cours (reprise possible plus tard). */
@@ -57,8 +68,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Efface les données d'analyse puis relance tout depuis le début. */
     fun rescanFromScratch() {
-        val folder = folderUri.value ?: return
-        AnalysisService.start(getApplication(), folder, fromScratch = true)
+        if (folders.value.isEmpty()) return
+        AnalysisService.start(getApplication(), fromScratch = true)
     }
 
     /** Lit un fichier audio ouvert depuis une autre appli (lecteur par défaut). */
@@ -117,8 +128,49 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      * Calcul lourd (enchaînements O(n²) sur toute la bibliothèque) : toujours
      * hors du thread UI, sinon l'interface gèle (ANR) quand l'analyse tourne.
      */
-    suspend fun proposeMixes(): List<MixEngine.MixPlan> =
-        withContext(Dispatchers.Default) { MixEngine.proposeMixes(tracks.value) }
+    suspend fun proposeMixes(dj: Boolean, targetMinutes: Int?): List<MixEngine.MixPlan> =
+        withContext(Dispatchers.Default) {
+            MixEngine.proposeMixes(tracks.value, dj, targetMinutes)
+        }
+
+    /** Lance un mix « comme ce morceau » (même style/énergie). */
+    fun startSimilar(seed: Track, djMode: Boolean) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val plan = MixEngine.similarPlan(tracks.value, seed) ?: return@launch
+            withContext(Dispatchers.Main) {
+                if (djMode) PlayerCore.startDj(plan) else PlayerCore.startMix(plan)
+            }
+        }
+    }
+
+    /** Pré-écoute du meilleur passage. */
+    fun preview(track: Track) = PlayerCore.playPreview(track)
+
+    fun toggleFavorite(track: Track) = updateTrack(track.uri) {
+        it.copy(favorite = !it.favorite)
+    }
+
+    fun toggleExcluded(track: Track) = updateTrack(track.uri) {
+        it.copy(excluded = !it.excluded)
+    }
+
+    /** Corrige le BPM à la main (verrouillé contre la réanalyse). */
+    fun setManualBpm(track: Track, bpm: Float) = updateTrack(track.uri) {
+        it.copy(bpm = bpm, bpmLocked = true, analyzed = true)
+    }
+
+    fun unlockBpm(track: Track) = updateTrack(track.uri) { it.copy(bpmLocked = false) }
+
+    private fun updateTrack(uri: String, transform: (Track) -> Track) {
+        store.update(uri, transform)
+        viewModelScope.launch(Dispatchers.IO) { store.save() }
+    }
+
+    fun setNormalizeVolume(enabled: Boolean) = PlayerCore.setNormalizeVolume(enabled)
+    fun setEq(bass: Float, mid: Float, treble: Float) = PlayerCore.setEq(bass, mid, treble)
+    fun setSleepTimer(minutes: Int?) = PlayerCore.setSleepTimer(minutes)
+    fun removeFromQueue(index: Int) = PlayerCore.removeFromQueue(index)
+    fun playQueueItem(index: Int) = PlayerCore.playQueueItem(index)
 
     fun startMix(plan: MixEngine.MixPlan, djMode: Boolean) {
         if (djMode) PlayerCore.startDj(plan) else PlayerCore.startMix(plan)

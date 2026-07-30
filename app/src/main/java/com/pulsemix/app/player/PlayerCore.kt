@@ -51,6 +51,18 @@ object PlayerCore {
     /** Option opt-in : sauter les intros parlées (sketchs) au lancement. */
     val skipIntros = MutableStateFlow(false)
 
+    /** Normalisation du volume entre morceaux (activée par défaut). */
+    val normalizeVolume = MutableStateFlow(true)
+
+    /** Égaliseur simple : graves / médiums / aigus en dB (-6..+6). */
+    val eqBands = MutableStateFlow(Triple(0f, 0f, 0f))
+
+    /** Minuterie de sommeil : ms restantes, null si inactive. */
+    val sleepRemainingMs = MutableStateFlow<Long?>(null)
+
+    /** File en cours (édition type playlist). */
+    val queue = MutableStateFlow<List<Track>>(emptyList())
+
     val mode = MutableStateFlow(PlayerMode.NORMAL)
     val currentTrack = MutableStateFlow<Track?>(null)
     val isPlaying = MutableStateFlow(false)
@@ -63,6 +75,14 @@ object PlayerCore {
     private var plan: MixEngine.MixPlan? = null
     private var phaseStartIndices: List<Int> = emptyList()
     private var queueTracks: List<Track> = emptyList()
+        set(value) {
+            field = value
+            queue.value = value
+        }
+    private var sleepDeadline = 0L
+    private var eqExo: android.media.audiofx.Equalizer? = null
+    private var eqDj: android.media.audiofx.Equalizer? = null
+    private var lastRecordedUri: String? = null
 
     // Persistance de l'état de lecture (reprise après fermeture/veille/plantage)
     private lateinit var stateStore: PlaybackStateStore
@@ -74,9 +94,14 @@ object PlayerCore {
         initialized = true
         appContext = context.applicationContext
         stateStore = PlaybackStateStore(appContext)
-        skipIntros.value = appContext
-            .getSharedPreferences("settings", Context.MODE_PRIVATE)
-            .getBoolean("skipIntros", false)
+        val prefs = appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        skipIntros.value = prefs.getBoolean("skipIntros", false)
+        normalizeVolume.value = prefs.getBoolean("normalizeVolume", true)
+        eqBands.value = Triple(
+            prefs.getFloat("eqBass", 0f),
+            prefs.getFloat("eqMid", 0f),
+            prefs.getFloat("eqTreble", 0f)
+        )
 
         exo = ExoPlayer.Builder(appContext)
             .setWakeMode(C.WAKE_MODE_LOCAL)
@@ -107,6 +132,7 @@ object PlayerCore {
             override fun onTrackChanged(track: Track, phaseIndex: Int) {
                 currentTrack.value = track
                 currentPhase.value = phaseIndex
+                recordHistory(track.uri)
                 // La notification média suit ExoPlayer, qui joue la piste
                 // silencieuse en DJ : recopier le morceau réel dans ses
                 // métadonnées pour que notification, Bluetooth et voiture
@@ -137,8 +163,32 @@ object PlayerCore {
                     exo.stop()
                     isPlaying.value = false
                 }
+                try {
+                    eqDj?.release()
+                } catch (_: Exception) {
+                }
+                eqDj = null
+            }
+
+            override fun onSessionReady(sessionId: Int) {
+                try {
+                    eqDj?.release()
+                } catch (_: Exception) {
+                }
+                eqDj = try {
+                    android.media.audiofx.Equalizer(0, sessionId).also { applyEqTo(it) }
+                } catch (_: Exception) {
+                    null
+                }
             }
         })
+
+        // Égaliseur sur la session ExoPlayer
+        eqExo = try {
+            android.media.audiofx.Equalizer(0, exo.audioSessionId).also { applyEqTo(it) }
+        } catch (_: Exception) {
+            null
+        }
 
         // Ticker de progression pour les modes ExoPlayer
         handler.post(object : Runnable {
@@ -148,6 +198,18 @@ object PlayerCore {
                     if (d > 0) progress.value =
                         (exo.currentPosition.toFloat() / d).coerceIn(0f, 1f)
                 }
+                // Minuterie de sommeil : fondu sur les 30 dernières secondes,
+                // puis pause (tous modes : la pause est routée vers le DJ).
+                if (sleepDeadline > 0) {
+                    val rem = sleepDeadline - System.currentTimeMillis()
+                    sleepRemainingMs.value = rem.coerceAtLeast(0L)
+                    if (rem <= 0) {
+                        exo.pause()
+                        sleepDeadline = 0L
+                        sleepRemainingMs.value = null
+                    }
+                }
+                if (mode.value != PlayerMode.DJ) applyVolume()
                 // Sauvegarde régulière de la position pendant la lecture, pour
                 // pouvoir reprendre au même endroit même après un plantage.
                 if (isPlaying.value &&
@@ -290,6 +352,129 @@ object PlayerCore {
         val d = exo.duration
         if (d > 0) exo.seekTo((d * f.coerceIn(0f, 1f)).toLong())
         persistState()
+    }
+
+    // -------------------------------------------------- volume / EQ / sommeil
+
+    /** Gain de normalisation (atténue les morceaux masterisés fort). */
+    private fun normGain(t: Track?): Float {
+        if (!normalizeVolume.value) return 1f
+        val e = t?.energyMean ?: return 1f
+        if (e <= 0.01f) return 1f
+        return (0.18f / e).coerceIn(0.45f, 1f)
+    }
+
+    private fun applyVolume() {
+        if (mode.value == PlayerMode.DJ) return // piste silencieuse à 0
+        var v = normGain(currentTrack.value)
+        val rem = sleepRemainingMs.value
+        if (rem != null && rem < 30_000L) v *= (rem / 30_000f).coerceIn(0f, 1f)
+        exo.volume = v.coerceIn(0f, 1f)
+    }
+
+    fun setNormalizeVolume(enabled: Boolean) {
+        normalizeVolume.value = enabled
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit().putBoolean("normalizeVolume", enabled).apply()
+        if (mode.value != PlayerMode.DJ) applyVolume()
+    }
+
+    /** minutes = null pour annuler. */
+    fun setSleepTimer(minutes: Int?) {
+        if (minutes == null) {
+            sleepDeadline = 0L
+            sleepRemainingMs.value = null
+        } else {
+            sleepDeadline = System.currentTimeMillis() + minutes * 60_000L
+            sleepRemainingMs.value = minutes * 60_000L
+        }
+        if (mode.value != PlayerMode.DJ) applyVolume()
+    }
+
+    fun setEq(bass: Float, mid: Float, treble: Float) {
+        eqBands.value = Triple(bass, mid, treble)
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
+            .putFloat("eqBass", bass)
+            .putFloat("eqMid", mid)
+            .putFloat("eqTreble", treble)
+            .apply()
+        applyEqTo(eqExo)
+        applyEqTo(eqDj)
+    }
+
+    /** Répartit graves/médiums/aigus sur les bandes de l'égaliseur système. */
+    private fun applyEqTo(eq: android.media.audiofx.Equalizer?) {
+        eq ?: return
+        try {
+            val (bass, mid, treble) = eqBands.value
+            eq.enabled = bass != 0f || mid != 0f || treble != 0f
+            val range = eq.bandLevelRange
+            for (i in 0 until eq.numberOfBands) {
+                val centerHz = eq.getCenterFreq(i.toShort()) / 1000
+                val db = when {
+                    centerHz < 250 -> bass
+                    centerHz < 4000 -> mid
+                    else -> treble
+                }
+                val level = (db * 100).toInt()
+                    .coerceIn(range[0].toInt(), range[1].toInt())
+                eq.setBandLevel(i.toShort(), level.toShort())
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    // ----------------------------------------------------- file & pré-écoute
+
+    /** Pré-écoute du « meilleur passage » d'un morceau. */
+    fun playPreview(t: Track) {
+        stopDjIfNeeded()
+        mode.value = PlayerMode.NORMAL
+        clearPlanState()
+        queueTracks = listOf(t)
+        val end = if (t.durationMs > 0) minOf(t.durationMs, t.bestStartMs + t.segmentMs)
+        else t.bestStartMs + t.segmentMs
+        val item = MediaItem.Builder()
+            .setUri(t.uri)
+            .setMediaId(t.uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle("${t.title} (meilleur passage)")
+                    .setArtist(t.artist.ifBlank { null })
+                    .build()
+            )
+            .setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(t.bestStartMs)
+                    .setEndPositionMs(end)
+                    .build()
+            )
+            .build()
+        exo.setMediaItem(item)
+        exo.repeatMode = Player.REPEAT_MODE_OFF
+        exo.prepare()
+        exo.play()
+        startService()
+        updateFromExo()
+    }
+
+    /** Retire un élément de la file en cours (édition type playlist). */
+    fun removeFromQueue(index: Int) {
+        if (mode.value == PlayerMode.DJ) return
+        if (index < 0 || index >= queueTracks.size) return
+        queueTracks = queueTracks.toMutableList().also { it.removeAt(index) }
+        if (index < exo.mediaItemCount) exo.removeMediaItem(index)
+        phaseStartIndices = phaseStartIndices.map { if (it > index) it - 1 else it }
+        updateFromExo()
+        persistState()
+    }
+
+    /** Saute directement à un élément de la file. */
+    fun playQueueItem(index: Int) {
+        if (mode.value == PlayerMode.DJ) return
+        if (index < 0 || index >= exo.mediaItemCount) return
+        exo.seekTo(index, 0)
+        exo.play()
     }
 
     /** Retire un morceau supprimé de la file en cours (hors mode DJ). */
@@ -492,6 +677,14 @@ object PlayerCore {
             }
             currentPhase.value = phase
         }
+        applyVolume()
+        recordHistory(currentTrack.value?.uri)
+    }
+
+    private fun recordHistory(uri: String?) {
+        if (uri == null || uri == lastRecordedUri) return
+        lastRecordedUri = uri
+        com.pulsemix.app.data.PlayHistory.record(uri)
     }
 
     private fun clearPlanState() {

@@ -55,6 +55,24 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   (Clé publique par construction : ne pas publier sur un store avec.)
   Si une version installée avait été signée autrement, il faut désinstaller
   une dernière fois.
+- **Écran Réglages** : saut des intros parlées, normalisation du volume
+  (activée par défaut, appliquée aussi aux decks DJ), égaliseur
+  graves/médiums/aigus (lecture classique et moteur DJ).
+- **Bibliothèque enrichie** : recherche (titre/artiste), tri (titre, BPM,
+  énergie, tonalité), filtre « compatibles avec le morceau en cours »
+  (BPM ±8 % double/moitié compris + roue Camelot), **multi-dossiers**,
+  statistiques (répartition des tempos et tonalités), et un menu par morceau :
+  pré-écoute du meilleur passage, mix/DJ « comme ce morceau » (similarité de
+  style et d'énergie), favori, exclusion des mix, correction manuelle du BPM
+  (tap tempo, verrouillée contre la réanalyse), suppression du fichier.
+- **Mix évolués** : plan « Auto-DJ » (toute la bibliothèque enchaînée),
+  durée cible (30 min / 1 h / 2 h), propositions régénérables, plans
+  éditables avant lancement (retirer des morceaux), **file d'attente
+  éditable pendant la lecture** (retirer, sauter à un morceau), et
+  anti-répétition sur 48 h entre les sessions.
+- **Minuterie de sommeil** : 15/30/60/90 min, fondu sur les 30 dernières
+  secondes puis pause.
+- **Analyse parallèle** : deux fichiers analysés à la fois.
 - **Sauter les intros parlées** (option, désactivée par défaut) : quand un
   sketch ou un préambule parlé précède le morceau, la lecture démarre au
   début détecté de la musique (première fenêtre d'énergie soutenue au
