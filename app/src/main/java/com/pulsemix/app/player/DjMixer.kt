@@ -213,7 +213,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         @Volatile var closed = false
         @Volatile var decoderDone = false
         @Volatile var srcSr = 0
-        val queue = ArrayBlockingQueue<FloatArray>(48)
+        // ~4 s de son décodé d'avance : quand on change d'appli, le
+        // chargement de l'autre appli accapare le CPU et les décodeurs
+        // prennent du retard — cette réserve absorbe le pic sans saccade.
+        val queue = ArrayBlockingQueue<FloatArray>(192)
         private val openLatch = CountDownLatch(1)
 
         val startMs: Long

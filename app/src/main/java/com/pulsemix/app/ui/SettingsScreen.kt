@@ -96,6 +96,38 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         }) { Text("Autoriser PulseMix en arrière-plan") }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
+        // Notifications coupées (permission refusée au premier lancement ?) :
+        // la notification de lecture ne peut alors jamais s'afficher.
+        if (!androidx.core.app.NotificationManagerCompat.from(context)
+                .areNotificationsEnabled()
+        ) {
+            Text("Notifications", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Les notifications de PulseMix sont désactivées : la " +
+                    "notification de lecture (titre, play/pause, suivant, " +
+                    "précédent) ne peut pas s'afficher. Active-les dans les " +
+                    "réglages Android.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+            androidx.compose.material3.OutlinedButton(onClick = {
+                try {
+                    context.startActivity(
+                        android.content.Intent(
+                            android.provider.Settings
+                                .ACTION_APP_NOTIFICATION_SETTINGS
+                        ).putExtra(
+                            android.provider.Settings.EXTRA_APP_PACKAGE,
+                            context.packageName
+                        )
+                    )
+                } catch (_: Exception) {
+                }
+            }) { Text("Activer les notifications") }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        }
+
         Text("Égaliseur", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         EqSlider("Graves", eq.first) { vm.setEq(it, eq.second, eq.third) }

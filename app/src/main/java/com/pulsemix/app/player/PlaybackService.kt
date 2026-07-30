@@ -25,6 +25,13 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         PlayerCore.init(applicationContext)
 
+        // Fournisseur de notification média explicite (titre + play/pause +
+        // suivant/précédent) : ne pas dépendre du comportement par défaut.
+        setMediaNotificationProvider(
+            androidx.media3.session.DefaultMediaNotificationProvider.Builder(this)
+                .build()
+        )
+
         val forwarding = object : ForwardingPlayer(PlayerCore.exo) {
             override fun seekToNext() {
                 PlayerCore.next()
