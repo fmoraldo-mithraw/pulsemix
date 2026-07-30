@@ -864,7 +864,6 @@ private fun BoostButton(
     icon: ImageVector,
     label: String,
     level: Int,
-    onToggle: () -> Unit,
     onLevel: (Int) -> Unit,
     minLevel: Int = -3,
     enabled: Boolean = true
@@ -874,7 +873,6 @@ private fun BoostButton(
     val stepPx = with(LocalDensity.current) { 32.dp.toPx() }
     val curLevel by rememberUpdatedState(level)
     val setLevel by rememberUpdatedState(onLevel)
-    val toggle by rememberUpdatedState(onToggle)
     val en by rememberUpdatedState(enabled)
     val minL by rememberUpdatedState(minLevel)
     val haptics = LocalHapticFeedback.current
@@ -887,7 +885,12 @@ private fun BoostButton(
             .size(48.dp)
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { if (en) toggle() },
+                    // Tap : +1 cran, puis retour à 0 après le maximum
+                    onTap = {
+                        if (en) {
+                            setLevel(if (curLevel >= 3) 0 else curLevel + 1)
+                        }
+                    },
                     onLongPress = {
                         if (en) haptics.performHapticFeedback(
                             HapticFeedbackType.LongPress
@@ -1078,16 +1081,12 @@ private fun FxSheet(vm: PlayerViewModel, dj: Boolean, onDismiss: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 FxControl("Basses", Icons.Rounded.GraphicEq, bass,
-                    onToggle = { vm.toggleBassBoost() },
                     onLevel = { vm.setBassLevel(it) })
                 FxControl("Aigus", Icons.Rounded.Audiotrack, treble,
-                    onToggle = { vm.setTrebleLevel(if (treble == 0) 2 else 0) },
                     onLevel = { vm.setTrebleLevel(it) })
                 FxControl("Filtre", Icons.Rounded.FilterAlt, filter,
-                    onToggle = { vm.setFilterLevel(if (filter == 0) 2 else 0) },
                     onLevel = { vm.setFilterLevel(it) })
                 FxControl("Vitesse", Icons.Rounded.Speed, speed,
-                    onToggle = { vm.toggleSpeedBoost() },
                     onLevel = { vm.setSpeedLevel(it) })
             }
             Spacer(Modifier.height(64.dp)) // place pour les jauges de glissade
@@ -1097,24 +1096,24 @@ private fun FxSheet(vm: PlayerViewModel, dj: Boolean, onDismiss: () -> Unit) {
             ) {
                 FxControl("Écho", Icons.Rounded.Waves, echo,
                     minLevel = 0, enabled = dj,
-                    onToggle = { vm.setEchoLevel(if (echo == 0) 2 else 0) },
                     onLevel = { vm.setEchoLevel(it) })
                 FxControl("Auto-pan", Icons.Rounded.Autorenew, pan,
                     enabled = dj,
-                    onToggle = { vm.setPanLevel(if (pan == 0) 1 else 0) },
                     onLevel = { vm.setPanLevel(it) })
                 FxControl("Gate", Icons.Rounded.BarChart, gate,
                     minLevel = 0, enabled = dj,
-                    onToggle = { vm.setGateLevel(if (gate == 0) 2 else 0) },
                     onLevel = { vm.setGateLevel(it) })
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    val loopBeats by vm.liveLoopBeats.collectAsStateWithLifecycle()
                     HoldLoopButton(
                         active = loop,
+                        beats = loopBeats,
                         enabled = dj,
-                        onHold = { vm.setLiveLoop(it) }
+                        onHold = { vm.setLiveLoop(it) },
+                        onToggleSize = { vm.toggleLiveLoopSize() }
                     )
                     Text(
-                        "Boucle",
+                        "Boucle ($loopBeats t.)",
                         style = MaterialTheme.typography.labelSmall,
                         color = if (dj) MaterialTheme.colorScheme.onSurface
                         else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
@@ -1140,7 +1139,6 @@ private fun FxControl(
     level: Int,
     minLevel: Int = -3,
     enabled: Boolean = true,
-    onToggle: () -> Unit,
     onLevel: (Int) -> Unit
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1148,7 +1146,6 @@ private fun FxControl(
             icon = icon,
             label = label,
             level = level,
-            onToggle = onToggle,
             onLevel = onLevel,
             minLevel = minLevel,
             enabled = enabled
@@ -1162,28 +1159,48 @@ private fun FxControl(
     }
 }
 
-/** Boucle live : maintenir = les 4 derniers temps tournent en boucle,
- *  relâcher = le morceau reprend là où il serait arrivé (slip). */
+/** Boucle live : tap = taille 4 ↔ 8 temps ; maintenir = les derniers temps
+ *  tournent en boucle ; relâcher = un dernier passage complet de la boucle,
+ *  puis le morceau reprend là où il serait arrivé (slip). */
 @Composable
-private fun HoldLoopButton(active: Boolean, enabled: Boolean, onHold: (Boolean) -> Unit) {
+private fun HoldLoopButton(
+    active: Boolean,
+    beats: Int,
+    enabled: Boolean,
+    onHold: (Boolean) -> Unit,
+    onToggleSize: () -> Unit
+) {
     val hold by rememberUpdatedState(onHold)
+    val toggleSize by rememberUpdatedState(onToggleSize)
     val en by rememberUpdatedState(enabled)
     val haptics = LocalHapticFeedback.current
     Box(
         modifier = Modifier
             .size(48.dp)
             .pointerInput(Unit) {
-                detectTapGestures(onPress = {
-                    if (en) {
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        hold(true)
-                        try {
-                            tryAwaitRelease()
-                        } finally {
+                var holding = false
+                detectTapGestures(
+                    // Tap : change la taille de la prochaine boucle
+                    onTap = { if (en) toggleSize() },
+                    // Appui long : la boucle démarre...
+                    onLongPress = {
+                        if (en) {
+                            haptics.performHapticFeedback(
+                                HapticFeedbackType.LongPress
+                            )
+                            hold(true)
+                            holding = true
+                        }
+                    },
+                    // ...et s'arrête au relâchement (dernier passage)
+                    onPress = {
+                        tryAwaitRelease()
+                        if (holding) {
+                            holding = false
                             hold(false)
                         }
                     }
-                })
+                )
             },
         contentAlignment = Alignment.Center
     ) {
@@ -1195,5 +1212,16 @@ private fun HoldLoopButton(active: Boolean, enabled: Boolean, onHold: (Boolean) 
                 else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             }
         )
+        if (beats == 8 && enabled) {
+            Text(
+                "×2",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 2.dp, end = 2.dp)
+            )
+        }
     }
 }

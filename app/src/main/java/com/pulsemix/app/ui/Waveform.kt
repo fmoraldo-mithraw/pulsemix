@@ -93,6 +93,14 @@ object WaveformStore {
     }
 
     private fun compute(context: Context, uri: String): FloatArray? {
+        // Priorité minimale : ce décodage ne doit jamais voler de cycles au
+        // moteur DJ ni à la lecture (saccades écran verrouillé).
+        try {
+            android.os.Process.setThreadPriority(
+                android.os.Process.THREAD_PRIORITY_BACKGROUND
+            )
+        } catch (_: Exception) {
+        }
         // Pics d'amplitude par tranche de ~50 ms
         val peaks = ArrayList<Float>(8192)
         var acc = 0f

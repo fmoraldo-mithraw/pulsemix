@@ -68,9 +68,9 @@ object PlayerCore {
 
     /**
      * Boosts progressifs (boutons) : basses et vitesse, par crans -3..+3.
-     * Tap = bascule 0 ↔ +2 (comportement historique : +8 % / basses +5 dB) ;
-     * appui long + glisser = réglage fin, y compris en négatif (ralentir,
-     * couper les basses). Un cran vitesse = ±4 %, un cran basses = ±2,5 dB.
+     * Tap = +1 cran (retour à 0 après le max) ; appui long + glisser =
+     * réglage fin, y compris en négatif (ralentir, couper les basses).
+     * Un cran vitesse = ±8 %, un cran basses = ±5 dB.
      */
     val bassLevel = MutableStateFlow(0)
     val speedLevel = MutableStateFlow(0)
@@ -103,8 +103,14 @@ object PlayerCore {
     val echoLevel = MutableStateFlow(0)     // écho calé tempo (DJ), 0..3
     val panLevel = MutableStateFlow(0)      // auto-pan (DJ), ±3 = vitesse/sens
     val gateLevel = MutableStateFlow(0)     // gate rythmique (DJ), 0..3
-    val liveLoop = MutableStateFlow(false)  // boucle live 4 temps (DJ, maintenu)
+    val liveLoop = MutableStateFlow(false)  // boucle live (DJ, maintenu)
+    val liveLoopBeats = MutableStateFlow(4) // taille : 4 temps, ou 8 (un tap)
     private var trebleExtraDb = 0f
+
+    /** Tap sur le bouton boucle : bascule la taille 4 ↔ 8 temps. */
+    fun toggleLiveLoopSize() {
+        liveLoopBeats.value = if (liveLoopBeats.value == 4) 8 else 4
+    }
 
     fun setTrebleLevel(level: Int) {
         trebleLevel.value = level.coerceIn(-3, 3)
@@ -304,14 +310,14 @@ object PlayerCore {
                     applyVolume()
                     // Boosts progressifs côté ExoPlayer (le moteur DJ les
                     // gère en interne, calé sur sa grille de beats)
-                    val targetDb = 2.5f * bassLevel.value
+                    val targetDb = 5f * bassLevel.value
                     if (bassBoostExtraDb != targetDb) {
                         bassBoostExtraDb = if (targetDb > bassBoostExtraDb)
                             (bassBoostExtraDb + 0.5f).coerceAtMost(targetDb)
                         else (bassBoostExtraDb - 0.5f).coerceAtLeast(targetDb)
                         applyEqTo(eqExo, includeFilter = true)
                     }
-                    val targetSpeed = 1f + 0.04f * speedLevel.value
+                    val targetSpeed = 1f + 0.08f * speedLevel.value
                     if (exoSpeed != targetSpeed) {
                         exoSpeed = if (targetSpeed > exoSpeed)
                             (exoSpeed + 0.004f).coerceAtMost(targetSpeed)
@@ -320,7 +326,7 @@ object PlayerCore {
                     }
                 }
                 // Rampe des aigus : s'applique aux deux sessions EQ (exo + DJ)
-                val trebleTarget = 2.5f * trebleLevel.value
+                val trebleTarget = 5f * trebleLevel.value
                 if (trebleExtraDb != trebleTarget) {
                     trebleExtraDb = if (trebleTarget > trebleExtraDb)
                         (trebleExtraDb + 0.5f).coerceAtMost(trebleTarget)
@@ -624,11 +630,11 @@ object PlayerCore {
             var midAdj = 0f
             var trebAdj = 0f
             if (fl > 0) { // passe-haut : couper les graves, puis les médiums
-                bassAdj = -5f * fl
-                midAdj = -3f * (fl - 1).coerceAtLeast(0)
+                bassAdj = -10f * fl
+                midAdj = -6f * (fl - 1).coerceAtLeast(0)
             } else if (fl < 0) { // passe-bas : couper les aigus, puis les médiums
-                trebAdj = -5f * -fl
-                midAdj = -3f * (-fl - 1).coerceAtLeast(0)
+                trebAdj = -10f * -fl
+                midAdj = -6f * (-fl - 1).coerceAtLeast(0)
             }
             eq.enabled = bass != 0f || mid != 0f || treble != 0f ||
                 bassBoostExtraDb != 0f || trebleExtraDb != 0f || fl != 0
