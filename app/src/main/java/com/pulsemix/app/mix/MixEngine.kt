@@ -65,11 +65,12 @@ object MixEngine {
         tracks: List<Track>,
         ascending: Boolean = true,
         rnd: Random = Random.Default,
-        startWith: Track? = null
+        startWith: Track? = null,
+        maxLength: Int = Int.MAX_VALUE
     ): List<Track> {
         if (tracks.size <= 1) return tracks
-        val pool = tracks.toMutableList()
-        val result = ArrayList<Track>(tracks.size)
+        val pool = ArrayList(tracks)
+        val result = ArrayList<Track>(min(tracks.size, maxLength))
         val start = if (startWith != null && pool.remove(startWith)) startWith
         else {
             val startCands = pool.sortedBy { if (ascending) it.bpm else -it.bpm }.take(3)
@@ -77,22 +78,43 @@ object MixEngine {
         }
         result.add(start)
         pool.remove(start)
-        while (pool.isNotEmpty()) {
+        // Grande bibliothèque : un seul passage O(n) par étape qui retient les
+        // 3 meilleurs candidats — pas de tri complet ni d'allocation par étape
+        // (l'ancien tri par étape rendait la génération O(n² log n), plusieurs
+        // secondes à 780+ morceaux).
+        while (pool.isNotEmpty() && result.size < maxLength) {
             val prev = result.last()
-            // Coûts figés avant le tri : cost() dépend de l'horloge (pénalité
-            // d'historique), un sélecteur instable ferait planter TimSort
-            val costs = HashMap<String, Float>(pool.size)
-            for (c in pool) costs[c.uri] = cost(prev, c, ascending)
-            val cands = pool.sortedBy { costs[it.uri] }.take(3)
-            val r = rnd.nextFloat()
-            val pick = when {
-                cands.size == 1 || r < 0.6f -> 0
-                cands.size == 2 || r < 0.85f -> 1
-                else -> 2
+            var i1 = -1
+            var i2 = -1
+            var i3 = -1
+            var c1 = Float.MAX_VALUE
+            var c2 = Float.MAX_VALUE
+            var c3 = Float.MAX_VALUE
+            for (i in pool.indices) {
+                val c = cost(prev, pool[i], ascending)
+                when {
+                    c < c1 -> {
+                        c3 = c2; i3 = i2
+                        c2 = c1; i2 = i1
+                        c1 = c; i1 = i
+                    }
+                    c < c2 -> {
+                        c3 = c2; i3 = i2
+                        c2 = c; i2 = i
+                    }
+                    c < c3 -> {
+                        c3 = c; i3 = i
+                    }
+                }
             }
-            val next = cands[pick]
-            result.add(next)
-            pool.remove(next)
+            // hasard contrôlé : ~60 % le meilleur, ~25 % le 2e, ~15 % le 3e
+            val pick = when {
+                i2 < 0 || rnd.nextFloat() < 0.6f -> i1
+                i3 < 0 || rnd.nextFloat() < 0.625f -> i2
+                else -> i3
+            }
+            result.add(pool[pick])
+            pool.removeAt(pick)
         }
         return result
     }
@@ -271,7 +293,7 @@ object MixEngine {
             val sorted = tracks.sortedBy { it.bpm }
             val spread = sorted.last().bpm - sorted.first().bpm
             if (tracks.size >= 6 && spread >= 25f) {
-                val ordered = chainOrder(sorted, ascending = true)
+                val ordered = chainOrder(sorted, ascending = true, maxLength = 36)
                 val phases = splitIntoPhases(
                     ordered,
                     listOf("Décollage", "Croisière", "Accélération", "Apogée")
@@ -357,9 +379,9 @@ object MixEngine {
 
         // 6. Flow : sélection enchaînée proprement (toujours proposé)
         run {
-            val ordered = chainOrder(tracks, ascending = true)
+            val ordered = chainOrder(tracks, ascending = true, maxLength = 30)
             val phases = splitIntoPhases(
-                ordered.take(30),
+                ordered,
                 listOf("Partie 1", "Partie 2", "Partie 3", "Partie 4")
             )
             plans.add(
