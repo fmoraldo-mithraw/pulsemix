@@ -49,12 +49,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     companion object {
         const val OUT_SR = 44100
         const val BLOCK_FRAMES = 2048
-        const val FADE_NORMAL_S = 7.0
+        // Fondus assez longs pour « sentir arriver » le morceau entrant :
+        // il est audible tôt (basses coupées, donc propre), et ne prend le
+        // dessus qu'en seconde moitié.
+        const val FADE_NORMAL_S = 10.0
         const val FADE_JUMP_S = 4.0
         // Jonctions adaptatives : long blend quand tempos calés et tonalités
         // compatibles, coupe franche quand le calage est impossible.
-        const val FADE_LOCKED_HARMONIC_S = 11.0
-        const val FADE_CUT_S = 3.5
+        const val FADE_LOCKED_HARMONIC_S = 14.0
+        const val FADE_CUT_S = 4.5
         const val TAIL_MS = 16_000L
         const val HALF_PI = (Math.PI / 2).toFloat()
         // One-pole ~120 Hz à 44,1 kHz pour l'extraction des basses
@@ -272,36 +275,45 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Boucle d'entrée (« loop in ») : les 8 premiers battements du passage
         // fort sont capturés au vol puis rejoués en boucle sous le fondu
         // d'entrée, avant que le flux ne continue naturellement.
-        private val introCycleFrames: Int =
+        // La boucle démarre à ~50 ms après l'ancre : les 50 premières ms
+        // servent d'amorce pour fondre la couture de boucle (sans crossfade,
+        // le raccord claque — « bégaiement » — dès que la grille BPM est
+        // imparfaite). La longueur musicale de la boucle reste 8 temps.
+        private val introLoopFrames: Int =
             if (track.bpm > 0f) (8.0 * OUT_SR * 60.0 / (track.bpm * rate)).toInt()
             else 0
+        private val introXfade: Int =
+            if (introLoopFrames > 0) min(2_205, introLoopFrames / 8) else 0
+        private val introBufFrames: Int = introLoopFrames + introXfade
         private val introTotalFrames: Long = run {
             val lead = (FADE_NORMAL_S * OUT_SR).toLong()
-            if (introCycleFrames <= 0) 0L
+            if (introLoopFrames <= 0) 0L
             else {
-                var t = introCycleFrames.toLong()
-                while (t < lead) t += introCycleFrames
+                var t = introBufFrames.toLong()
+                while (t < lead) t += introLoopFrames
                 t
             }
         }
-        private val introBuf = FloatArray(max(1, introCycleFrames) * 2)
+        private val introBuf = FloatArray(max(1, introBufFrames) * 2)
         private var introCaptured = 0
         private var introServed = 0L
-        private var introPos = 0
+        private var introPos = introXfade
 
         // Boucle de sortie (« loop out ») : capture circulaire des derniers
         // battements produits ; à la fin du passage fort, les 8 derniers
         // battements sont rejoués en boucle sous le fondu de sortie.
         // Dimensionnée pour le rate le plus lent possible (crans de vitesse
-        // négatifs : jusqu'à -12 %)
+        // négatifs : jusqu'à -12 %) + l'amorce de couture (~50 ms)
         private val loopCapacity: Int =
-            if (track.bpm > 0f) (8.0 * 60.0 / track.bpm * OUT_SR / 0.85).toInt() + 2
+            if (track.bpm > 0f) (8.0 * 60.0 / track.bpm * OUT_SR / 0.80).toInt() + 2
             else OUT_SR * 4
         private val loopCapture = FloatArray(loopCapacity * 2)
         private var loopWritePos = 0
         private var loopFilled = 0
         private var loopData: FloatArray? = null
         private var loopPos = 0
+        private var loopLen = 0
+        private var loopXfade = 0
         private var loopedOut = 0L
 
         /** Active la boucle de sortie. @return false si trop peu de matière. */
@@ -312,15 +324,22 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             var len = (8.0 * period).toInt()
             if (len > loopFilled) len = loopFilled
             if (len < OUT_SR / 2) return false
-            val data = FloatArray(len * 2)
-            var src = (loopWritePos - len + loopCapacity) % loopCapacity
-            for (k in 0 until len) {
+            // Amorce de couture : ~50 ms de signal d'avant-boucle, fondues
+            // sur la fin de chaque passage pour un raccord sans claquement.
+            var xf = min(2_205, len / 8)
+            if (len + xf > loopFilled) xf = (loopFilled - len).coerceAtLeast(0)
+            val total = len + xf
+            val data = FloatArray(total * 2)
+            var src = (loopWritePos - total + loopCapacity) % loopCapacity
+            for (k in 0 until total) {
                 data[k * 2] = loopCapture[src * 2]
                 data[k * 2 + 1] = loopCapture[src * 2 + 1]
                 src = (src + 1) % loopCapacity
             }
             loopData = data
-            loopPos = 0
+            loopLen = len
+            loopXfade = xf
+            loopPos = xf // reprise 8 temps en arrière, juste après l'amorce
             loopedOut = 0
             return true
         }
@@ -390,7 +409,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
         val totalOutFrames: Long
             get() = ((logicalEndMs - startMs) / 1000.0 * OUT_SR / rate).toLong() +
-                max(0L, introTotalFrames - introCycleFrames)
+                max(0L, introTotalFrames - introBufFrames)
 
         val tailOutFrames: Long
             get() = ((decodeEndMs - logicalEndMs) / 1000.0 * OUT_SR / rate).toLong()
@@ -414,8 +433,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val polled = queue.poll(250, TimeUnit.MILLISECONDS)
                 if (polled == null) {
                     if (decoderDone && queue.isEmpty()) return false
-                    // Famine du décodeur : tenir la dernière valeur un instant
+                    // Famine du décodeur : décroître doucement vers le silence
+                    // (tenir une valeur fixe produisait un bourdonnement type
+                    // bégaiement sous forte charge CPU)
                     prevL = nextL; prevR = nextR
+                    nextL *= 0.98f; nextR *= 0.98f
                     return true
                 }
                 curChunk = polled
@@ -431,11 +453,26 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             var out = 0
             while (out < frames) {
                 // Boucle d'entrée : rejouer les 8 premiers battements capturés
-                if (introServed < introTotalFrames && introCaptured >= introCycleFrames) {
+                if (introServed < introTotalFrames && introCaptured >= introBufFrames) {
                     val i = (dstFrameOffset + out) * 2
-                    dst[i] = introBuf[introPos * 2]
-                    dst[i + 1] = introBuf[introPos * 2 + 1]
-                    introPos = (introPos + 1) % introCycleFrames
+                    var sL = introBuf[introPos * 2]
+                    var sR = introBuf[introPos * 2 + 1]
+                    if (introXfade > 0 && introPos >= introLoopFrames) {
+                        // Couture : fondre la fin de boucle vers l'amorce qui
+                        // mène naturellement au début — sauf au dernier
+                        // passage, qui enchaîne sur le flux sans reboucler.
+                        val untilEnd = introBufFrames - introPos
+                        if (introTotalFrames - introServed > untilEnd) {
+                            val q = introPos - introLoopFrames
+                            val t = (q + 1).toFloat() / introXfade
+                            sL = sL * (1f - t) + introBuf[q * 2] * t
+                            sR = sR * (1f - t) + introBuf[q * 2 + 1] * t
+                        }
+                    }
+                    dst[i] = sL
+                    dst[i + 1] = sR
+                    introPos++
+                    if (introPos >= introBufFrames) introPos = introXfade
                     introServed++
                     out++
                     framesOut++
@@ -449,9 +486,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         return out
                     }
                     val i = (dstFrameOffset + out) * 2
-                    dst[i] = ld[loopPos * 2]
-                    dst[i + 1] = ld[loopPos * 2 + 1]
-                    loopPos = (loopPos + 1) % (ld.size / 2)
+                    var sL = ld[loopPos * 2]
+                    var sR = ld[loopPos * 2 + 1]
+                    if (loopXfade > 0 && loopPos >= loopLen) {
+                        // Couture fondue vers l'amorce d'avant-boucle
+                        val q = loopPos - loopLen
+                        val t = (q + 1).toFloat() / loopXfade
+                        sL = sL * (1f - t) + ld[q * 2] * t
+                        sR = sR * (1f - t) + ld[q * 2 + 1] * t
+                    }
+                    dst[i] = sL
+                    dst[i + 1] = sR
+                    loopPos++
+                    if (loopPos >= loopLen + loopXfade) loopPos = loopXfade
                     loopedOut++
                     out++
                     framesOut++
@@ -476,8 +523,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val r = (prevR + (nextR - prevR) * fr) * gain
                 dst[i] = l
                 dst[i + 1] = r
-                // Capture du premier cycle pour la boucle d'entrée
-                if (introCaptured < introCycleFrames) {
+                // Capture du premier cycle (+ amorce) pour la boucle d'entrée
+                if (introCaptured < introBufFrames) {
                     introBuf[introCaptured * 2] = l
                     introBuf[introCaptured * 2 + 1] = r
                     introCaptured++
@@ -730,9 +777,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             // Sortie raide : le sortant descend vite dès le
                             // début du fondu (moins de bouillie à mi-parcours)
                             gA = cos(x.pow(0.7f) * HALF_PI)
-                            // Entrée en S : l'entrant reste discret sur le
-                            // premier tiers, puis monte franchement.
-                            gB = sin(x.pow(1.6f) * HALF_PI)
+                            // Entrée progressive : l'entrant s'annonce dès le
+                            // premier quart (sans ses basses : propre), puis
+                            // monte franchement.
+                            gB = sin(x.pow(1.3f) * HALF_PI)
                         }
                     }
                     var master = 1f
@@ -940,12 +988,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     /**
      * Durée ET technique de la jonction, choisies par transition comme un
      * DJ choisit son geste :
-     *  - tempos calés ET tonalités compatibles : long blend (11 s) avec
+     *  - tempos calés ET tonalités compatibles : long blend (14 s) avec
      *    bass swap puis mid swap (KIND_HARMONIC) ;
-     *  - tempos calés seulement : blend standard (7 s) avec filter sweep
+     *  - tempos calés seulement : blend standard (10 s) avec filter sweep
      *    sur le sortant (KIND_NORMAL) ;
      *  - calage impossible (écart > ±8 %, hors double/moitié) : coupe
-     *    courte (3,5 s) avec echo-out (KIND_CUT) — étirer deux tempos non
+     *    courte (4,5 s) avec echo-out (KIND_CUT) — étirer deux tempos non
      *    synchrones ferait battre les beats ;
      *  - saut de phase manuel : fondu court (4 s), technique neutre.
      */
