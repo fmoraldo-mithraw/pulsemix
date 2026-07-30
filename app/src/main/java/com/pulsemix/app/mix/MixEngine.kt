@@ -163,7 +163,18 @@ object MixEngine {
         ) 6f else 0f
         // Paires marquées « transition ratée » par l'utilisateur
         val badPair = if (TransitionFeedback.isBad(prev.uri, cand.uri)) 10f else 0f
-        return delta + dirPenalty - harmonic + recency - favBonus + sameArtist + badPair
+        // Continuité de style : même genre = neutre ; sinon pénaliser l'écart
+        // de signature sonore (brillance, énergie, densité d'attaques) pour
+        // ne pas choquer l'oreille d'un morceau à l'autre
+        val sameGenre = prev.genre.isNotBlank() && prev.genre != "-" &&
+            prev.genre == cand.genre
+        val styleDist = if (sameGenre) 0f else (
+            abs(prev.centroid - cand.centroid) / 2_000f +
+                abs(prev.energyMean - cand.energyMean) / 0.15f +
+                abs(prev.onsetRate - cand.onsetRate) / 3f
+            ).coerceAtMost(3f) * 1.2f
+        return delta + dirPenalty - harmonic + recency - favBonus +
+            sameArtist + badPair + styleDist
     }
 
     // -------------------------------------------------------- propositions
