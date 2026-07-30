@@ -91,6 +91,33 @@ object LibraryScanner {
                     }
                 }
 
+                // Passe d'indexation : tous les fichiers apparaissent tout de
+                // suite dans la bibliothèque (jouables en mode Normal sans
+                // attendre l'analyse), l'analyse suit derrière.
+                run {
+                    val existingUris = store.tracks.value.associateBy { it.uri }
+                    var added = 0
+                    for (doc in audioFiles) {
+                        if (stopRequested) break
+                        val uriStr = doc.uri.toString()
+                        if (existingUris[uriStr] != null) continue
+                        val name = doc.name ?: "?"
+                        val meta = readMetadata(context, doc.uri, name)
+                        store.put(
+                            Track(
+                                uri = uriStr,
+                                title = meta.first,
+                                artist = meta.second,
+                                durationMs = meta.third,
+                                analyzed = false
+                            )
+                        )
+                        added++
+                        if (added % 25 == 0) store.save()
+                    }
+                    if (added > 0) store.save()
+                }
+
                 val known = store.tracks.value.associateBy { it.uri }
                 val total = audioFiles.size
                 val done = AtomicInteger(0)
@@ -159,7 +186,9 @@ object LibraryScanner {
                                         musicStartMs = features.musicStartMs,
                                         analyzed = features.bpm > 0f,
                                         genre = genre,
-                                        genreLocked = existing?.genreLocked == true
+                                        genreLocked = existing?.genreLocked == true,
+                                        favorite = existing?.favorite == true,
+                                        excluded = existing?.excluded == true
                                     )
                                 } else {
                                     Track(
@@ -169,7 +198,9 @@ object LibraryScanner {
                                         durationMs = meta.third,
                                         analyzed = false,
                                         genre = genre,
-                                        genreLocked = existing?.genreLocked == true
+                                        genreLocked = existing?.genreLocked == true,
+                                        favorite = existing?.favorite == true,
+                                        excluded = existing?.excluded == true
                                     )
                                 }
                                 // Pas de tag genre : déduire du titre ou de la
