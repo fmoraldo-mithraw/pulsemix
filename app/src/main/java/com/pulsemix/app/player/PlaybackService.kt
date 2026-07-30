@@ -21,6 +21,37 @@ class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
 
+    /** Journal du service média : filesDir/service_log.txt (borné). */
+    private fun svcLog(message: String) {
+        try {
+            val f = java.io.File(filesDir, "service_log.txt")
+            if (f.length() > 64_000) f.delete()
+            f.appendText("${java.util.Date()}: $message\n")
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        svcLog("onStartCommand (intent=${intent?.action})")
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    override fun onUpdateNotification(
+        session: MediaSession,
+        startInForegroundRequired: Boolean
+    ) {
+        svcLog(
+            "onUpdateNotification fg=$startInForegroundRequired " +
+                "playing=${session.player.isPlaying} " +
+                "items=${session.player.mediaItemCount}"
+        )
+        try {
+            super.onUpdateNotification(session, startInForegroundRequired)
+        } catch (e: Exception) {
+            svcLog("onUpdateNotification ÉCHEC: ${e::class.java.simpleName} ${e.message}")
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         PlayerCore.init(applicationContext)
@@ -69,7 +100,20 @@ class PlaybackService : MediaSessionService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        mediaSession = MediaSession.Builder(this, forwarding)
+        mediaSession = try {
+            buildSession(forwarding, sessionIntent)
+                .also { svcLog("onCreate : session média créée") }
+        } catch (e: Exception) {
+            svcLog("onCreate : ÉCHEC création session — ${e::class.java.simpleName} ${e.message}")
+            null
+        }
+    }
+
+    private fun buildSession(
+        forwarding: Player,
+        sessionIntent: PendingIntent
+    ): MediaSession =
+        MediaSession.Builder(this, forwarding)
             .setSessionActivity(sessionIntent)
             .setCallback(object : MediaSession.Callback {
                 // « Play » depuis la voiture / le casque alors que rien n'est
@@ -90,7 +134,6 @@ class PlaybackService : MediaSessionService() {
                 }
             })
             .build()
-    }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
         mediaSession

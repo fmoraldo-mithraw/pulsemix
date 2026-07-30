@@ -751,11 +751,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val a = deckA ?: break
 
                 // Hors crossfade : le deck actif glisse vers son tempo cible
-                // (naturel, ou crans de vitesse) à ~3 %/s — un cran de 8 %
-                // s'applique en ~2,5 s — sans jamais casser la grille.
+                // (naturel, ou crans de vitesse) à ~11 %/s — un cran de 8 %
+                // s'applique en ~0,7 s — sans jamais casser la grille.
                 if (deckB == null) {
                     val target = 1f + 0.08f * PlayerCore.speedLevel.value
-                    a.nudgeTowardNatural(0.0015f, framesGlobal, target)
+                    a.nudgeTowardNatural(0.005f, framesGlobal, target)
                 }
 
                 // Boucle live (bouton maintenu dans le panneau Effets ;
@@ -890,14 +890,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
                 var blockSq = 0.0
                 var bassSq = 0.0
-                // Bass boost manuel : rampe rapide (~1 s par cran), par crans
-                // (négatif = coupe des basses, bornée pour ne pas inverser
-                // la phase des graves)
+                // Bass boost manuel : rampe très rapide (~0,3 s par cran),
+                // par crans (négatif = coupe des basses, bornée pour ne pas
+                // inverser la phase des graves)
                 val manualTarget = (0.55f * PlayerCore.bassLevel.value)
                     .coerceAtLeast(-0.9f)
                 manualBass = if (manualTarget > manualBass)
-                    min(manualTarget, manualBass + 0.03f)
-                else max(manualTarget, manualBass - 0.03f)
+                    min(manualTarget, manualBass + 0.08f)
+                else max(manualTarget, manualBass - 0.08f)
                 val appliedBass =
                     if (manualBass < 0f) manualBass else max(bassGain, manualBass)
                 val bd = b
