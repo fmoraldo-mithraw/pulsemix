@@ -344,6 +344,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         private var livePos = 0
         private var liveFinishing = false
         private var liveRemain = 0
+        // Quantisation : la boucle ne part pas à l'instant de l'appui (elle
+        // coupait la phrase en plein milieu) mais à la prochaine fin de
+        // mesure — elle contient alors des mesures entières calées sur la
+        // grille de beats, donc un passage musicalement cohérent.
+        private var liveArmFrame = -1L
+        private var liveArmBeats = 4
 
         fun startLiveLoop(beats: Int) {
             if (liveData != null) {
@@ -351,6 +357,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 liveFinishing = false
                 return
             }
+            if (liveArmFrame >= 0) return // déjà armé, en attente de la mesure
+            val period = beatPeriodFrames
+            if (period <= 0.0 || period.isNaN()) return
+            val phase = framesOut / period
+            val nextBar = ceil(phase / 4.0) * 4.0
+            liveArmFrame = framesOut + ((nextBar - phase) * period).toLong()
+            liveArmBeats = beats
+        }
+
+        /** Capture et active la boucle (appelé pile sur la fin de mesure). */
+        private fun activateLiveLoop(beats: Int) {
             val period = beatPeriodFrames
             if (period <= 0.0 || period.isNaN()) return
             val len = (beats.toDouble() * period).toInt()
@@ -373,7 +390,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         }
 
         fun stopLiveLoop() {
-            if (liveData == null || liveFinishing) return
+            // Relâché avant la fin de mesure : annuler l'armement
+            if (liveData == null) {
+                liveArmFrame = -1L
+                return
+            }
+            if (liveFinishing) return
             // Dernier passage : repartir du début de la boucle une fois
             liveFinishing = true
             livePos = liveXf
@@ -550,6 +572,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 loopCapture[loopWritePos * 2 + 1] = r
                 loopWritePos = (loopWritePos + 1) % loopCapacity
                 if (loopFilled < loopCapacity) loopFilled++
+                // Boucle armée : démarrage pile sur la fin de mesure
+                if (liveArmFrame in 0..framesOut) {
+                    liveArmFrame = -1L
+                    activateLiveLoop(liveArmBeats)
+                }
                 // Boucle live active : la sortie vient de la boucle, le flux
                 // vient d'avancer d'une frame en dessous (slip)
                 val lv = liveData
