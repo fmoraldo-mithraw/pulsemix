@@ -21,12 +21,15 @@ class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
 
-    /** Journal du service média : filesDir/service_log.txt (borné). */
+    /** Journal du service média : service_log.txt (interne + externe,
+     *  comme crash_log.txt — visible dans Android/data/.../files). */
     private fun svcLog(message: String) {
         try {
-            val f = java.io.File(filesDir, "service_log.txt")
-            if (f.length() > 64_000) f.delete()
-            f.appendText("${java.util.Date()}: $message\n")
+            for (dir in listOfNotNull(filesDir, getExternalFilesDir(null))) {
+                val f = java.io.File(dir, "service_log.txt")
+                if (f.length() > 64_000) f.delete()
+                f.appendText("${java.util.Date()}: $message\n")
+            }
         } catch (_: Exception) {
         }
     }
