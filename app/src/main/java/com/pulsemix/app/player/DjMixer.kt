@@ -721,12 +721,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     val inFade = fadeActive && gf >= fadeStartF
                     if (inFade) {
                         x = ((gf - fadeStartF).toFloat() / fadeLenF).coerceIn(0f, 1f)
-                        // Sortie raide : le sortant descend vite dès le début
-                        // du fondu (moins de superposition à mi-parcours)
-                        gA = cos(x.pow(0.7f) * HALF_PI)
-                        // Entrée en S : le deck entrant reste discret sur le
-                        // premier tiers du fade, puis monte franchement.
-                        gB = sin(x.pow(1.6f) * HALF_PI)
+                        if (fadeKindF == KIND_HARMONIC) {
+                            // Long blend : les deux morceaux sont faits pour
+                            // se superposer, courbes equal-power symétriques
+                            gA = cos(x * HALF_PI)
+                            gB = sin(x * HALF_PI)
+                        } else {
+                            // Sortie raide : le sortant descend vite dès le
+                            // début du fondu (moins de bouillie à mi-parcours)
+                            gA = cos(x.pow(0.7f) * HALF_PI)
+                            // Entrée en S : l'entrant reste discret sur le
+                            // premier tiers, puis monte franchement.
+                            gB = sin(x.pow(1.6f) * HALF_PI)
+                        }
                     }
                     var master = 1f
                     if (endFadeFrames >= 0) {
@@ -782,7 +789,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 a.sweepLpR += sweepAlpha * (aR - a.sweepLpR)
                                 vaL = aL - a.sweepLpL
                                 vaR = aR - a.sweepLpR
-                                val rel = ((x - 0.45f) / 0.10f).coerceIn(0f, 1f)
+                                // Le balayage retire les basses du sortant dès
+                                // ~20 % du fondu : l'entrant récupère les
+                                // siennes à 25 % (45 % laissait un trou de
+                                // graves entre les deux).
+                                val rel = ((x - 0.25f) / 0.10f).coerceIn(0f, 1f)
                                 val cutB = BASS_SWAP_CUT * (1f - rel)
                                 vbL -= cutB * bd.lpL
                                 vbR -= cutB * bd.lpR
@@ -856,7 +867,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         }
                     }
                 }
-                // Mise à jour du boost pour le bloc suivant
+                // Mise à jour du boost pour le bloc suivant. Gelé pendant les
+                // fondus : le bass swap et le filter sweep creusent les basses
+                // exprès, le renfort dynamique ne doit pas les recombler.
                 run {
                     val blockRms = kotlin.math.sqrt(blockSq / (2 * BLOCK_FRAMES)).toFloat()
                     recentPeak = max(blockRms, recentPeak * 0.9995f)
@@ -864,7 +877,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     val ratio = if (blockRms > 1e-4f)
                         kotlin.math.sqrt(bassSq / (2 * BLOCK_FRAMES)).toFloat() / blockRms
                     else 1f
-                    val target = if (loud && ratio < 0.30f)
+                    val inFadeBlock = fadeActive && framesGlobal >= fadeStartF
+                    val target = if (!inFadeBlock && loud && ratio < 0.30f)
                         min(0.5f, (0.30f - ratio) * 2.5f)
                     else 0f
                     bassGain += 0.02f * (target - bassGain)
