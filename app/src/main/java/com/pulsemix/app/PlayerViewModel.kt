@@ -165,6 +165,17 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun unlockBpm(track: Track) = updateTrack(track.uri) { it.copy(bpmLocked = false) }
 
+    /** Change le type de musique à la main (le fichier audio n'est pas modifié). */
+    fun setManualGenre(track: Track, genre: String) {
+        val g = MixEngine.normalizeGenre(genre)
+        if (g.isBlank()) return
+        updateTrack(track.uri) { it.copy(genre = g, genreLocked = true) }
+    }
+
+    fun unlockGenre(track: Track) = updateTrack(track.uri) {
+        it.copy(genreLocked = false, genre = "")
+    }
+
     private fun updateTrack(uri: String, transform: (Track) -> Track) {
         store.update(uri, transform)
         viewModelScope.launch(Dispatchers.IO) { store.save() }
