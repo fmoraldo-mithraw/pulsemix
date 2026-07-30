@@ -26,6 +26,8 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Refresh
@@ -434,7 +436,30 @@ fun PlayerScreen(
                                     )
                                 }
                                 if (mode != PlayerMode.DJ) {
-                                    IconButton(onClick = { vm.removeFromQueue(i) }) {
+                                    IconButton(
+                                        onClick = { vm.moveQueueItem(i, i - 1) },
+                                        enabled = i > 0,
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.KeyboardArrowUp, "Monter",
+                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { vm.moveQueueItem(i, i + 1) },
+                                        enabled = i < queue.size - 1,
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.KeyboardArrowDown, "Descendre",
+                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { vm.removeFromQueue(i) },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
                                         Icon(
                                             Icons.Rounded.Close, "Retirer",
                                             tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)

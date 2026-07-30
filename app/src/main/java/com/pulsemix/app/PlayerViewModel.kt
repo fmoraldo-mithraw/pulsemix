@@ -171,6 +171,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun setSleepTimer(minutes: Int?) = PlayerCore.setSleepTimer(minutes)
     fun removeFromQueue(index: Int) = PlayerCore.removeFromQueue(index)
     fun playQueueItem(index: Int) = PlayerCore.playQueueItem(index)
+    fun moveQueueItem(from: Int, to: Int) = PlayerCore.moveQueueItem(from, to)
 
     fun startMix(plan: MixEngine.MixPlan, djMode: Boolean) {
         if (djMode) PlayerCore.startDj(plan) else PlayerCore.startMix(plan)
