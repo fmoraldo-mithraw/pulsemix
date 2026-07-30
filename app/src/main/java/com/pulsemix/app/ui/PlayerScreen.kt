@@ -842,7 +842,9 @@ private fun BoostButton(
     onToggle: () -> Unit,
     onLevel: (Int) -> Unit
 ) {
-    val stepPx = with(LocalDensity.current) { 40.dp.toPx() }
+    // Course courte : les boutons sont bas sur l'écran, il faut peu de place
+    // vers le bas pour descendre d'un cran.
+    val stepPx = with(LocalDensity.current) { 32.dp.toPx() }
     val curLevel by rememberUpdatedState(level)
     val setLevel by rememberUpdatedState(onLevel)
     val toggle by rememberUpdatedState(onToggle)
@@ -863,12 +865,14 @@ private fun BoostButton(
                 )
             }
             .pointerInput(Unit) {
-                var dragLevel = 0
-                var acc = 0f
+                var startLevel = 0
+                var lastSent = 0
+                var totalDy = 0f
                 detectDragGesturesAfterLongPress(
                     onDragStart = {
-                        dragLevel = curLevel
-                        acc = 0f
+                        startLevel = curLevel
+                        lastSent = curLevel
+                        totalDy = 0f
                         dragging = true
                         dragProgress = 0f
                     },
@@ -882,26 +886,21 @@ private fun BoostButton(
                     },
                     onDrag = { change, amount ->
                         change.consume()
-                        acc -= amount.y
-                        while (acc >= stepPx && dragLevel < 3) {
-                            dragLevel++
-                            acc -= stepPx
-                            setLevel(dragLevel)
+                        // Mapping sur le déplacement TOTAL depuis l'appui :
+                        // symétrique haut/bas, et on peut monter puis
+                        // redescendre dans le même geste sans à-coup.
+                        totalDy -= amount.y
+                        val steps = (totalDy / stepPx).toInt()
+                        val newLevel = (startLevel + steps).coerceIn(-3, 3)
+                        if (newLevel != lastSent) {
+                            lastSent = newLevel
+                            setLevel(newLevel)
                             haptics.performHapticFeedback(
                                 HapticFeedbackType.LongPress
                             )
                         }
-                        while (acc <= -stepPx && dragLevel > -3) {
-                            dragLevel--
-                            acc += stepPx
-                            setLevel(dragLevel)
-                            haptics.performHapticFeedback(
-                                HapticFeedbackType.LongPress
-                            )
-                        }
-                        // En butée : ne pas accumuler au-delà d'un cran
-                        acc = acc.coerceIn(-stepPx, stepPx)
-                        dragProgress = (acc / stepPx).coerceIn(-1f, 1f)
+                        dragProgress =
+                            (totalDy / stepPx - steps).coerceIn(-1f, 1f)
                     }
                 )
             },
