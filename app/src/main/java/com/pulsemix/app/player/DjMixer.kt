@@ -292,8 +292,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Boucle de sortie (« loop out ») : capture circulaire des derniers
         // battements produits ; à la fin du passage fort, les 8 derniers
         // battements sont rejoués en boucle sous le fondu de sortie.
+        // Dimensionnée pour le rate le plus lent possible (crans de vitesse
+        // négatifs : jusqu'à -12 %)
         private val loopCapacity: Int =
-            if (track.bpm > 0f) (8.0 * 60.0 / track.bpm * OUT_SR / 0.9).toInt() + 2
+            if (track.bpm > 0f) (8.0 * 60.0 / track.bpm * OUT_SR / 0.85).toInt() + 2
             else OUT_SR * 4
         private val loopCapture = FloatArray(loopCapacity * 2)
         private var loopWritePos = 0
@@ -599,7 +601,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 // tempo naturel (~0,4 %/s) — ou vers +8 % si le speed boost
                 // est actif — sans jamais casser la grille de beats.
                 if (deckB == null) {
-                    val target = if (PlayerCore.speedBoost.value) 1.08f else 1f
+                    val target = 1f + 0.04f * PlayerCore.speedLevel.value
                     a.nudgeTowardNatural(0.0002f, framesGlobal, target)
                 }
 
@@ -687,12 +689,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
                 var blockSq = 0.0
                 var bassSq = 0.0
-                // Bass boost manuel : monte/descend progressivement (~2 s)
-                val manualTarget = if (PlayerCore.bassBoost.value) 0.55f else 0f
+                // Bass boost manuel : monte/descend progressivement (~2 s),
+                // par crans (négatif = coupe des basses)
+                val manualTarget = 0.275f * PlayerCore.bassLevel.value
                 manualBass = if (manualTarget > manualBass)
                     min(manualTarget, manualBass + 0.01f)
                 else max(manualTarget, manualBass - 0.01f)
-                val appliedBass = max(bassGain, manualBass)
+                val appliedBass =
+                    if (manualBass < 0f) manualBass else max(bassGain, manualBass)
                 val bd = b
                 val fadeActive = bd != null && fadeLenF > 0
                 // Filter sweep (KIND_NORMAL) : passe-haut balayé sur le

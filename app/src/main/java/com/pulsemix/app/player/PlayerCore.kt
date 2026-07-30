@@ -66,18 +66,31 @@ object PlayerCore {
     /** Enregistrement du set DJ en cours. */
     val djRecording = MutableStateFlow(false)
 
-    /** Boosts progressifs (boutons) : basses et vitesse. */
-    val bassBoost = MutableStateFlow(false)
-    val speedBoost = MutableStateFlow(false)
+    /**
+     * Boosts progressifs (boutons) : basses et vitesse, par crans -3..+3.
+     * Tap = bascule 0 ↔ +2 (comportement historique : +8 % / basses +5 dB) ;
+     * appui long + glisser = réglage fin, y compris en négatif (ralentir,
+     * couper les basses). Un cran vitesse = ±4 %, un cran basses = ±2,5 dB.
+     */
+    val bassLevel = MutableStateFlow(0)
+    val speedLevel = MutableStateFlow(0)
     private var bassBoostExtraDb = 0f
     private var exoSpeed = 1f
 
     fun toggleBassBoost() {
-        bassBoost.value = !bassBoost.value
+        bassLevel.value = if (bassLevel.value == 0) 2 else 0
     }
 
     fun toggleSpeedBoost() {
-        speedBoost.value = !speedBoost.value
+        speedLevel.value = if (speedLevel.value == 0) 2 else 0
+    }
+
+    fun setBassLevel(level: Int) {
+        bassLevel.value = level.coerceIn(-3, 3)
+    }
+
+    fun setSpeedLevel(level: Int) {
+        speedLevel.value = level.coerceIn(-3, 3)
     }
 
     val mode = MutableStateFlow(PlayerMode.NORMAL)
@@ -237,14 +250,14 @@ object PlayerCore {
                     applyVolume()
                     // Boosts progressifs côté ExoPlayer (le moteur DJ les
                     // gère en interne, calé sur sa grille de beats)
-                    val targetDb = if (bassBoost.value) 5f else 0f
+                    val targetDb = 2.5f * bassLevel.value
                     if (bassBoostExtraDb != targetDb) {
                         bassBoostExtraDb = if (targetDb > bassBoostExtraDb)
-                            (bassBoostExtraDb + 0.5f).coerceAtMost(5f)
-                        else (bassBoostExtraDb - 0.5f).coerceAtLeast(0f)
+                            (bassBoostExtraDb + 0.5f).coerceAtMost(targetDb)
+                        else (bassBoostExtraDb - 0.5f).coerceAtLeast(targetDb)
                         applyEqTo(eqExo)
                     }
-                    val targetSpeed = if (speedBoost.value) 1.08f else 1f
+                    val targetSpeed = 1f + 0.04f * speedLevel.value
                     if (exoSpeed != targetSpeed) {
                         exoSpeed = if (targetSpeed > exoSpeed)
                             (exoSpeed + 0.004f).coerceAtMost(targetSpeed)
