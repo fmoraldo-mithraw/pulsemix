@@ -79,7 +79,11 @@ object MixEngine {
         pool.remove(start)
         while (pool.isNotEmpty()) {
             val prev = result.last()
-            val cands = pool.sortedBy { cost(prev, it, ascending) }.take(3)
+            // Coûts figés avant le tri : cost() dépend de l'horloge (pénalité
+            // d'historique), un sélecteur instable ferait planter TimSort
+            val costs = HashMap<String, Float>(pool.size)
+            for (c in pool) costs[c.uri] = cost(prev, c, ascending)
+            val cands = pool.sortedBy { costs[it.uri] }.take(3)
             val r = rnd.nextFloat()
             val pick = when {
                 cands.size == 1 || r < 0.6f -> 0
@@ -318,9 +322,13 @@ object MixEngine {
 
         // 5. Vagues : alternance montée / pause
         if (energetic.size >= 8 && calme.size + groove.size >= 3) {
-            // léger bruit sur le tri : les accalmies varient d'un lancement à l'autre
+            // léger bruit sur le tri (clé précalculée : tri stable)
+            val softKeys = HashMap<String, Float>()
+            for (t in calme + groove) {
+                softKeys[t.uri] = t.energyMean * (0.85f + 0.3f * Random.nextFloat())
+            }
             val soft = (calme + groove)
-                .sortedBy { it.energyMean * (0.85f + 0.3f * Random.nextFloat()) }
+                .sortedBy { softKeys[it.uri] }
                 .toMutableList()
             val hard = chainOrder(energetic, ascending = true).toMutableList()
             val phases = ArrayList<Phase>()
@@ -448,7 +456,11 @@ object MixEngine {
                 0.6f * bright + 0.4f * onset + 0.5f * PlayHistory.penalty(t.uri)
         }
 
-        val pool = sampleTop(candidates.sortedBy { distance(it) }, 18, rnd)
+        // Distances figées avant le tri (la pénalité d'historique varie avec
+        // l'horloge : sélecteur instable = crash TimSort)
+        val dists = HashMap<String, Float>(candidates.size)
+        for (c in candidates) dists[c.uri] = distance(c)
+        val pool = sampleTop(candidates.sortedBy { dists[it.uri] }, 18, rnd)
         val ordered = chainOrder(listOf(seed) + pool, ascending = true, rnd, startWith = seed)
         return MixPlan(
             "similar",
@@ -523,7 +535,14 @@ object MixEngine {
                 0.20f * pct(bpms, t.bpm)
 
         val eligible = analyzed.filter { softScore(it) <= softness.coerceIn(0.05f, 1f) }
-        // Ordre doux -> moins doux, avec un léger bruit pour varier
-        return eligible.sortedBy { softScore(it) + (rnd.nextFloat() - 0.5f) * 0.06f }
+        // Ordre doux -> moins doux, avec un léger bruit pour varier.
+        // Clé précalculée UNE FOIS par morceau : un sélecteur aléatoire évalué
+        // à chaque comparaison rend le tri incohérent (crash TimSort,
+        // « Comparison method violates its general contract »).
+        val keys = HashMap<String, Float>(eligible.size)
+        for (t in eligible) {
+            keys[t.uri] = softScore(t) + (rnd.nextFloat() - 0.5f) * 0.06f
+        }
+        return eligible.sortedBy { keys[it.uri] }
     }
 }
