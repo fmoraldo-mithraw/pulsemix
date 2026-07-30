@@ -1,5 +1,6 @@
 package com.pulsemix.app.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -72,6 +74,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -842,6 +847,10 @@ private fun BoostButton(
     val setLevel by rememberUpdatedState(onLevel)
     val toggle by rememberUpdatedState(onToggle)
     val haptics = LocalHapticFeedback.current
+    // Jauge de glissade : visible pendant l'appui long, se remplit vers le
+    // haut ou le bas ; pleine = le prochain cran est franchi.
+    var dragging by remember { mutableStateOf(false) }
+    var dragProgress by remember { mutableFloatStateOf(0f) }
     Box(
         modifier = Modifier
             .size(48.dp)
@@ -860,6 +869,16 @@ private fun BoostButton(
                     onDragStart = {
                         dragLevel = curLevel
                         acc = 0f
+                        dragging = true
+                        dragProgress = 0f
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        dragProgress = 0f
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragProgress = 0f
                     },
                     onDrag = { change, amount ->
                         change.consume()
@@ -882,11 +901,21 @@ private fun BoostButton(
                         }
                         // En butée : ne pas accumuler au-delà d'un cran
                         acc = acc.coerceIn(-stepPx, stepPx)
+                        dragProgress = (acc / stepPx).coerceIn(-1f, 1f)
                     }
                 )
             },
         contentAlignment = Alignment.Center
     ) {
+        if (dragging) {
+            BoostDragGauge(
+                level = level,
+                progress = dragProgress,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(y = (-92).dp)
+            )
+        }
         Icon(
             icon, label,
             tint = when {
@@ -906,6 +935,67 @@ private fun BoostButton(
                     .align(Alignment.TopEnd)
                     .padding(top = 2.dp, end = 2.dp)
             )
+        }
+    }
+}
+
+/**
+ * Jauge affichée pendant l'appui long sur un bouton de boost : le niveau
+ * courant au centre, et un remplissage vers le haut ou le bas qui montre si
+ * la glissade a suffi pour franchir le prochain cran (jauge pleine = cran).
+ */
+@Composable
+private fun BoostDragGauge(level: Int, progress: Float, modifier: Modifier = Modifier) {
+    val up = MaterialTheme.colorScheme.primary
+    val down = MaterialTheme.colorScheme.tertiary
+    val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+    val bg = MaterialTheme.colorScheme.surfaceVariant
+    Column(
+        modifier = modifier
+            .background(bg, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            if (level > 0) "+$level" else "$level",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = when {
+                level > 0 -> up
+                level < 0 -> down
+                else -> MaterialTheme.colorScheme.onSurface
+            }
+        )
+        Canvas(Modifier.size(12.dp, 56.dp)) {
+            val w = size.width
+            val h = size.height
+            val mid = h / 2f
+            drawRoundRect(trackColor, cornerRadius = CornerRadius(w / 2f, w / 2f))
+            // Repère central
+            drawLine(
+                trackColor,
+                Offset(-2f, mid),
+                Offset(w + 2f, mid),
+                strokeWidth = 2f
+            )
+            val p = progress.coerceIn(-1f, 1f)
+            if (p > 0f) {
+                val fh = mid * p
+                drawRoundRect(
+                    up,
+                    topLeft = Offset(0f, mid - fh),
+                    size = Size(w, fh),
+                    cornerRadius = CornerRadius(w / 2f, w / 2f)
+                )
+            } else if (p < 0f) {
+                val fh = mid * (-p)
+                drawRoundRect(
+                    down,
+                    topLeft = Offset(0f, mid),
+                    size = Size(w, fh),
+                    cornerRadius = CornerRadius(w / 2f, w / 2f)
+                )
+            }
         }
     }
 }
