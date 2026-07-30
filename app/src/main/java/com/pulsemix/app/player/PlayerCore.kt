@@ -146,6 +146,9 @@ object PlayerCore {
     val mode = MutableStateFlow(PlayerMode.NORMAL)
     val currentTrack = MutableStateFlow<Track?>(null)
 
+    /** Message d'échec de lancement (plan vide...) affiché par le lecteur. */
+    val launchMessage = MutableStateFlow<String?>(null)
+
     /** Morceau qui suivra (file ou plan DJ) — pour la vue waveform. */
     val nextTrack = MutableStateFlow<Track?>(null)
     val isPlaying = MutableStateFlow(false)
@@ -341,6 +344,7 @@ object PlayerCore {
 
     fun playNormal(tracks: List<Track>, startIndex: Int = 0) {
         if (tracks.isEmpty()) return
+        launchMessage.value = null
         stopDjIfNeeded()
         mode.value = PlayerMode.NORMAL
         clearPlanState()
@@ -358,7 +362,11 @@ object PlayerCore {
 
     fun playDouce(all: List<Track>, softness: Float) {
         val soft = MixEngine.softSelection(all, softness)
-        if (soft.isEmpty()) return
+        if (soft.isEmpty()) {
+            launchMessage.value = "Aucun morceau assez doux pour ce réglage."
+            return
+        }
+        launchMessage.value = null
         stopDjIfNeeded()
         mode.value = PlayerMode.DOUCE
         clearPlanState()
@@ -375,6 +383,11 @@ object PlayerCore {
     }
 
     fun startMix(mixPlan: MixEngine.MixPlan) {
+        if (mixPlan.phases.sumOf { it.tracks.size } == 0) {
+            launchMessage.value = "Ce plan ne contient aucun morceau : rien à lancer."
+            return
+        }
+        launchMessage.value = null
         stopDjIfNeeded()
         mode.value = PlayerMode.MIX
         plan = mixPlan
@@ -403,6 +416,19 @@ object PlayerCore {
 
     fun startDj(mixPlan: MixEngine.MixPlan, fromPhase: Int = 0, rehearsal: Boolean = false) {
         if (mixPlan.phases.isEmpty()) return
+        // Le moteur DJ ne joue que les morceaux analysés (BPM connu) : un
+        // plan sans aucun morceau jouable s'arrêtait en silence, boutons
+        // muets. On prévient au lieu de basculer dans un mode mort.
+        val playable = mixPlan.phases.sumOf { ph ->
+            ph.tracks.count { it.analyzed && it.bpm > 0f }
+        }
+        if (playable == 0) {
+            launchMessage.value =
+                "Ce plan DJ ne contient aucun morceau analysé (BPM requis) : " +
+                    "lance l'analyse dans Bibliothèque."
+            return
+        }
+        launchMessage.value = null
         mode.value = PlayerMode.DJ
         plan = mixPlan
         planName.value = mixPlan.name + " (DJ)"
@@ -492,7 +518,15 @@ object PlayerCore {
             return
         }
         if (exo.isPlaying) exo.pause() else {
-            if (exo.mediaItemCount == 0) return
+            if (exo.mediaItemCount == 0) {
+                // File perdue mais connue : la reconstruire au lieu d'un
+                // bouton play muet.
+                if (queueTracks.isEmpty()) return
+                exo.setMediaItems(queueTracks.map { mediaItem(it) }, 0, 0)
+            }
+            // Après une erreur de lecture, ExoPlayer reste inerte tant qu'on
+            // ne re-prépare pas : play/next semblaient morts.
+            if (exo.playbackState == Player.STATE_IDLE) exo.prepare()
             exo.play()
             startService()
         }
