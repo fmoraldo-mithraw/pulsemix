@@ -38,7 +38,11 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object ArtworkCache {
 
-    private val cache = LruCache<String, Bitmap>(80)
+    // Borné en OCTETS (20 Mo), pas en nombre d'images : 80 bitmaps 512x512
+    // pouvaient occuper ~80 Mo et faire tuer l'appli par manque de mémoire.
+    private val cache = object : LruCache<String, Bitmap>(20 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
     private val misses: MutableSet<String> =
         Collections.newSetFromMap(ConcurrentHashMap())
 
