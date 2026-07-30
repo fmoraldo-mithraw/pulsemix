@@ -305,12 +305,17 @@ class AudioAnalyzer {
                 raised = true
             }
         }
-        // Correction octave : préférer la plage 75-165. Seuil desserré à 0,75 :
-        // deux fichiers réels (vrais tempos 117,5 et 129) tombaient à moins de
-        // 1 % du seuil de 0,85 côté appli et restaient au demi-tempo. Les
-        // morceaux vraiment lents ne risquent rien : leur candidat double n'a
-        // aucun support dans l'autocorrélation.
-        if (bestBpm < 75 && bestBpm * 2 <= 190 && scoreOf(bestBpm * 2) > 0.75f * bestScore) {
+        // Correction octave : préférer la plage 75-165 (seuil de score 0,75),
+        // MAIS uniquement si la densité d'attaques du morceau soutient
+        // nettement le tempo doublé (>= 1,6 x sa pulsation) : un morceau lent
+        // aux subdivisions marquées (ex. ballade à 60 avec doubles-croches)
+        // ne doit pas être remonté à 120, alors qu'un morceau énergique
+        // détecté au demi-tempo doit l'être.
+        val onsetsPerSec = countOnsets(fluxList) / max(1f, n * hopSec)
+        if (bestBpm < 75 && bestBpm * 2 <= 190 &&
+            scoreOf(bestBpm * 2) > 0.75f * bestScore &&
+            onsetsPerSec >= 1.6f * (bestBpm.toFloat() * 2f / 60f)
+        ) {
             bestBpm *= 2
             raised = true
         }

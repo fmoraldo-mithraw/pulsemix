@@ -194,6 +194,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleDjRecording() = PlayerCore.toggleDjRecording()
     fun markBadTransition() = PlayerCore.markBadTransition()
+    val bassBoost = PlayerCore.bassBoost
+    val speedBoost = PlayerCore.speedBoost
+    fun toggleBassBoost() = PlayerCore.toggleBassBoost()
+    fun toggleSpeedBoost() = PlayerCore.toggleSpeedBoost()
     fun rehearseTransitions(plan: MixEngine.MixPlan) =
         PlayerCore.rehearseTransitions(plan)
 

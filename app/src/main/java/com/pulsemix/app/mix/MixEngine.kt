@@ -408,12 +408,36 @@ object MixEngine {
             )
         }
 
+        // Jamais deux fois le même morceau dans un plan (y compris le même
+        // titre présent dans deux dossiers différents)
+        val deduped = plans.map { dedupePlan(it) }
+
         // Durée cible : réduire chaque plan à la durée demandée
         if (targetMinutes != null) {
             val targetMs = targetMinutes * 60_000L
-            return plans.map { trimToDuration(it, targetMs, dj) }
+            return deduped.map { trimToDuration(it, targetMs, dj) }
         }
-        return plans
+        return deduped
+    }
+
+    /** Supprime les doublons d'un plan : par fichier ET par titre+artiste. */
+    private fun dedupePlan(plan: MixPlan): MixPlan {
+        val seen = HashSet<String>()
+        val phases = plan.phases.mapNotNull { ph ->
+            val kept = ph.tracks.filter { t ->
+                val byName = t.title.trim().lowercase()
+                    .takeIf { it.isNotBlank() && it != "?" }
+                    ?.let { "$it|${t.artist.trim().lowercase()}" }
+                if (t.uri in seen || (byName != null && byName in seen)) false
+                else {
+                    seen.add(t.uri)
+                    if (byName != null) seen.add(byName)
+                    true
+                }
+            }
+            if (kept.isEmpty()) null else Phase(ph.name, kept)
+        }
+        return MixPlan(plan.id, plan.name, plan.description, phases)
     }
 
     private fun trackLenMs(t: Track, dj: Boolean): Long =
@@ -484,11 +508,13 @@ object MixEngine {
         for (c in candidates) dists[c.uri] = distance(c)
         val pool = sampleTop(candidates.sortedBy { dists[it.uri] }, 18, rnd)
         val ordered = chainOrder(listOf(seed) + pool, ascending = true, rnd, startWith = seed)
-        return MixPlan(
-            "similar",
-            "Comme « ${seed.title} »",
-            "Morceaux du même style et de la même énergie, enchaînés depuis celui-ci.",
-            splitIntoPhases(ordered, listOf("Même veine 1", "Même veine 2", "Même veine 3", "Même veine 4"))
+        return dedupePlan(
+            MixPlan(
+                "similar",
+                "Comme « ${seed.title} »",
+                "Morceaux du même style et de la même énergie, enchaînés depuis celui-ci.",
+                splitIntoPhases(ordered, listOf("Même veine 1", "Même veine 2", "Même veine 3", "Même veine 4"))
+            )
         )
     }
 
