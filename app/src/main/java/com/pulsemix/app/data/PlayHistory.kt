@@ -41,7 +41,7 @@ object PlayHistory {
     fun import(entries: Map<String, Long>) {
         val editor = prefs?.edit()
         for ((k, v) in entries) {
-            if (k !in map) {
+            if (!map.containsKey(k)) {
                 map[k] = v
                 editor?.putLong(k, v)
             }
