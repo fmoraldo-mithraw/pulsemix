@@ -55,6 +55,11 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   (Clé publique par construction : ne pas publier sur un store avec.)
   Si une version installée avait été signée autrement, il faut désinstaller
   une dernière fois.
+- **Types de musique déduits** : quand un fichier n'a pas de tag genre, le
+  type est déduit des mots-clés du titre/artiste (techno, rap, rock, lo-fi…)
+  ou, à défaut, de la **signature acoustique** de l'analyse (BPM, énergie,
+  brillance, attaques → familles « ≈ électro/danse », « ≈ calme/ambient »,
+  etc.) — utilisable dans les mix par genre comme un vrai tag.
 - **v1.3** : mix/DJ **par genre** (chips de genres + genres au profil proche),
   **enregistrement du set DJ** en M4A (bouton ⏺, fichiers dans
   Android/data/…/files/Mixes), **répétition des transitions** (seules les

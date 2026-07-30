@@ -8,6 +8,7 @@ import com.pulsemix.app.analysis.AudioAnalyzer
 import com.pulsemix.app.data.PlayHistory
 import com.pulsemix.app.data.Track
 import com.pulsemix.app.data.TrackStore
+import com.pulsemix.app.mix.GenreClassifier
 import com.pulsemix.app.mix.MixEngine
 import com.pulsemix.app.player.PlayerCore
 import kotlinx.coroutines.Dispatchers
@@ -105,11 +106,14 @@ object LibraryScanner {
                         val uriStr = doc.uri.toString()
                         val existing = known[uriStr]
                         if (existing != null && existing.analyzed) {
-                            // Rattrapage du genre sans réanalyse (lecture de
-                            // métadonnées seulement, « - » = vérifié, absent)
-                            if (existing.genre.isEmpty()) {
-                                val g = readGenre(context, doc.uri)
-                                store.put(existing.copy(genre = g))
+                            // Rattrapage du genre sans réanalyse : tag du
+                            // fichier, sinon déduction par titre/signature
+                            // acoustique (« - » = vérifié, rien trouvé)
+                            if (existing.genre.isEmpty() || existing.genre == "-") {
+                                var g = if (existing.genre.isEmpty())
+                                    readGenre(context, doc.uri) else "-"
+                                if (g == "-") g = GenreClassifier.infer(existing)
+                                if (g != existing.genre) store.put(existing.copy(genre = g))
                             }
                             _progress.value =
                                 Progress(done.incrementAndGet(), total, existing.title)
@@ -161,7 +165,13 @@ object LibraryScanner {
                                         genre = genre
                                     )
                                 }
-                                store.put(track)
+                                // Pas de tag genre : déduire du titre ou de la
+                                // signature acoustique
+                                val finalTrack =
+                                    if (track.genre == "-")
+                                        track.copy(genre = GenreClassifier.infer(track))
+                                    else track
+                                store.put(finalTrack)
                                 val d = done.incrementAndGet()
                                 _progress.value = Progress(d, total, meta.first)
                                 if (d % 5 == 0) store.save()
