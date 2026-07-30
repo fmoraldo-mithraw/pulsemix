@@ -24,6 +24,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     val mode = PlayerCore.mode
     val currentTrack = PlayerCore.currentTrack
+    val nextTrack = PlayerCore.nextTrack
     val isPlaying = PlayerCore.isPlaying
     val progress = PlayerCore.progress
     val shuffle = PlayerCore.shuffle
