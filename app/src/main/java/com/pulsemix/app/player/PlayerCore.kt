@@ -66,6 +66,20 @@ object PlayerCore {
     /** Enregistrement du set DJ en cours. */
     val djRecording = MutableStateFlow(false)
 
+    /** Boosts progressifs (boutons) : basses et vitesse. */
+    val bassBoost = MutableStateFlow(false)
+    val speedBoost = MutableStateFlow(false)
+    private var bassBoostExtraDb = 0f
+    private var exoSpeed = 1f
+
+    fun toggleBassBoost() {
+        bassBoost.value = !bassBoost.value
+    }
+
+    fun toggleSpeedBoost() {
+        speedBoost.value = !speedBoost.value
+    }
+
     val mode = MutableStateFlow(PlayerMode.NORMAL)
     val currentTrack = MutableStateFlow<Track?>(null)
     val isPlaying = MutableStateFlow(false)
@@ -215,7 +229,25 @@ object PlayerCore {
                         sleepRemainingMs.value = null
                     }
                 }
-                if (mode.value != PlayerMode.DJ) applyVolume()
+                if (mode.value != PlayerMode.DJ) {
+                    applyVolume()
+                    // Boosts progressifs côté ExoPlayer (le moteur DJ les
+                    // gère en interne, calé sur sa grille de beats)
+                    val targetDb = if (bassBoost.value) 5f else 0f
+                    if (bassBoostExtraDb != targetDb) {
+                        bassBoostExtraDb = if (targetDb > bassBoostExtraDb)
+                            (bassBoostExtraDb + 0.5f).coerceAtMost(5f)
+                        else (bassBoostExtraDb - 0.5f).coerceAtLeast(0f)
+                        applyEqTo(eqExo)
+                    }
+                    val targetSpeed = if (speedBoost.value) 1.08f else 1f
+                    if (exoSpeed != targetSpeed) {
+                        exoSpeed = if (targetSpeed > exoSpeed)
+                            (exoSpeed + 0.004f).coerceAtMost(targetSpeed)
+                        else (exoSpeed - 0.004f).coerceAtLeast(targetSpeed)
+                        exo.setPlaybackSpeed(exoSpeed)
+                    }
+                }
                 // Sauvegarde régulière de la position pendant la lecture, pour
                 // pouvoir reprendre au même endroit même après un plantage.
                 if (isPlaying.value &&
@@ -468,12 +500,13 @@ object PlayerCore {
         eq ?: return
         try {
             val (bass, mid, treble) = eqBands.value
-            eq.enabled = bass != 0f || mid != 0f || treble != 0f
+            eq.enabled = bass != 0f || mid != 0f || treble != 0f ||
+                bassBoostExtraDb != 0f
             val range = eq.bandLevelRange
             for (i in 0 until eq.numberOfBands) {
                 val centerHz = eq.getCenterFreq(i.toShort()) / 1000
                 val db = when {
-                    centerHz < 250 -> bass
+                    centerHz < 250 -> bass + bassBoostExtraDb
                     centerHz < 4000 -> mid
                     else -> treble
                 }

@@ -25,6 +25,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.FiberManualRecord
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.ThumbDown
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -299,6 +301,22 @@ fun PlayerScreen(
                     "pause dans ${(it / 60_000) + 1} min",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
+                )
+            }
+            val bassBoostOn by vm.bassBoost.collectAsStateWithLifecycle()
+            val speedBoostOn by vm.speedBoost.collectAsStateWithLifecycle()
+            IconButton(onClick = { vm.toggleBassBoost() }) {
+                Icon(
+                    Icons.Rounded.GraphicEq, "Bass boost",
+                    tint = if (bassBoostOn) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
+            IconButton(onClick = { vm.toggleSpeedBoost() }) {
+                Icon(
+                    Icons.Rounded.Speed, "Speed boost",
+                    tint = if (speedBoostOn) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
             }
             if (mode == PlayerMode.DJ) {

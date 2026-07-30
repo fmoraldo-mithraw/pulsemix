@@ -48,11 +48,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     companion object {
         const val OUT_SR = 44100
         const val BLOCK_FRAMES = 2048
-        const val FADE_NORMAL_S = 8.0
+        const val FADE_NORMAL_S = 7.0
         const val FADE_JUMP_S = 4.0
         // Jonctions adaptatives : long blend quand tempos calés et tonalités
         // compatibles, coupe franche quand le calage est impossible.
-        const val FADE_LOCKED_HARMONIC_S = 14.0
+        const val FADE_LOCKED_HARMONIC_S = 11.0
         const val FADE_CUT_S = 3.5
         const val TAIL_MS = 16_000L
         const val HALF_PI = (Math.PI / 2).toFloat()
@@ -60,7 +60,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val BASS_ALPHA = 0.017f
         // Bass swap : atténuation des basses du deck « en retrait » pendant
         // le crossfade (une seule ligne de basse à la fois)
-        const val BASS_SWAP_CUT = 0.85f
+        const val BASS_SWAP_CUT = 0.95f
         // Boucle de sortie : durée maximale rejouée en boucle (garde-fou)
         const val LOOP_MAX_OUT: Long = 30L * 44_100L
     }
@@ -209,9 +209,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var lpR = 0f
         val onsets = OnsetTracker()
 
-        /** Micro-correction de synchro pendant le fade (bornée à ±0,4 %). */
+        /** Micro-correction de synchro pendant le fade (cumul borné à ±0,4 %,
+         *  relatif au rate courant : compatible avec le speed boost). */
+        private var syncAccum = 0f
         fun syncNudge(delta: Float) {
-            curRate = (curRate + delta).coerceIn(rate * 0.996f, rate * 1.004f)
+            val d = delta.coerceIn(-0.004f - syncAccum, 0.004f - syncAccum)
+            syncAccum += d
+            curRate += d
         }
 
         // Retour progressif au tempo naturel après un calage (pitch ridé par
@@ -231,15 +235,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             if (rampStarted) beatPhase += frames / beatPeriodFrames
         }
 
-        /** Rapproche le tempo du naturel d'un petit pas (hors crossfade). */
-        fun nudgeTowardNatural(step: Float, frameNow: Long) {
-            if (curRate == 1f) return
+        /** Rapproche le tempo de la cible d'un petit pas (hors crossfade).
+         *  Cible 1.0 = tempo naturel ; > 1 = speed boost. */
+        fun nudgeTowardNatural(step: Float, frameNow: Long, target: Float = 1f) {
+            if (curRate == target) return
             if (!rampStarted) {
                 beatPhase = (frameNow - startedAtFrame) / beatPeriodFrames
                 rampStarted = true
             }
-            curRate = if (curRate > 1f) max(1f, curRate - step)
-            else min(1f, curRate + step)
+            curRate = if (curRate > target) max(target, curRate - step)
+            else min(target, curRate + step)
         }
 
         private var ratio = 1.0
@@ -249,6 +254,26 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         private var curChunk: FloatArray? = null
         private var curFrames = 0
         private var curPos = 0
+
+        // Boucle d'entrée (« loop in ») : les 8 premiers battements du passage
+        // fort sont capturés au vol puis rejoués en boucle sous le fondu
+        // d'entrée, avant que le flux ne continue naturellement.
+        private val introCycleFrames: Int =
+            if (track.bpm > 0f) (8.0 * OUT_SR * 60.0 / (track.bpm * rate)).toInt()
+            else 0
+        private val introTotalFrames: Long = run {
+            val lead = (FADE_NORMAL_S * OUT_SR).toLong()
+            if (introCycleFrames <= 0) 0L
+            else {
+                var t = introCycleFrames.toLong()
+                while (t < lead) t += introCycleFrames
+                t
+            }
+        }
+        private val introBuf = FloatArray(max(1, introCycleFrames) * 2)
+        private var introCaptured = 0
+        private var introServed = 0L
+        private var introPos = 0
 
         // Boucle de sortie (« loop out ») : capture circulaire des derniers
         // battements produits ; à la fin du passage fort, les 8 derniers
@@ -297,24 +322,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val phrases = floor(segMs / phraseMs).toLong()
                 if (phrases >= 2) segMs = (phrases * phraseMs).toLong()
             }
-            // Transitions AUTOUR du passage fort, pas dedans :
-            // - entrée en avance de ~FADE_NORMAL_S (arrondie en battements
-            //   entiers pour garder la grille de beats exacte) : le fondu se
-            //   joue sur la montée qui précède, le passage fort démarre à
-            //   pleine puissance ;
-            // - sortie prolongée de ~FADE_LOCKED_HARMONIC_S après la fin du
-            //   passage fort : le fondu de sortie se joue sur la suite du
-            //   morceau, le passage fort est entendu en entier.
-            var leadMs = (FADE_NORMAL_S * 1000).toLong()
-            if (track.bpm > 0f) {
-                val beatMs = 60_000.0 / track.bpm
-                val beats = Math.round(FADE_NORMAL_S * 1000.0 / beatMs)
-                leadMs = (beats * beatMs).toLong()
-            }
-            leadMs = min(leadMs, anchor) // pas avant le début du fichier
-            startMs = anchor - leadMs
-            // La fin logique = fin du passage fort : au-delà, la boucle de
-            // sortie (8 derniers battements) prend le relais sous le fondu.
+            // Transitions AUTOUR du passage fort, pas dedans : le deck démarre
+            // pile sur le passage fort ; ses 8 premiers battements tournent en
+            // boucle (« loop in ») sous le fondu d'entrée, puis le morceau
+            // continue naturellement. À l'autre bout, la boucle de sortie
+            // (8 derniers battements) prend le relais sous le fondu de sortie.
+            startMs = anchor
             logicalEndMs = min(anchor + segMs, track.durationMs)
             decodeEndMs = min(logicalEndMs + 2_000, track.durationMs)
 
@@ -360,7 +373,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         }
 
         val totalOutFrames: Long
-            get() = ((logicalEndMs - startMs) / 1000.0 * OUT_SR / rate).toLong()
+            get() = ((logicalEndMs - startMs) / 1000.0 * OUT_SR / rate).toLong() +
+                max(0L, introTotalFrames - introCycleFrames)
 
         val tailOutFrames: Long
             get() = ((decodeEndMs - logicalEndMs) / 1000.0 * OUT_SR / rate).toLong()
@@ -400,6 +414,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             ratio = srcSr.toDouble() * curRate / OUT_SR
             var out = 0
             while (out < frames) {
+                // Boucle d'entrée : rejouer les 8 premiers battements capturés
+                if (introServed < introTotalFrames && introCaptured >= introCycleFrames) {
+                    val i = (dstFrameOffset + out) * 2
+                    dst[i] = introBuf[introPos * 2]
+                    dst[i + 1] = introBuf[introPos * 2 + 1]
+                    introPos = (introPos + 1) % introCycleFrames
+                    introServed++
+                    out++
+                    framesOut++
+                    continue
+                }
                 // Boucle de sortie active : rejouer les derniers battements
                 val ld = loopData
                 if (ld != null) {
@@ -435,6 +460,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val r = (prevR + (nextR - prevR) * fr) * gain
                 dst[i] = l
                 dst[i + 1] = r
+                // Capture du premier cycle pour la boucle d'entrée
+                if (introCaptured < introCycleFrames) {
+                    introBuf[introCaptured * 2] = l
+                    introBuf[introCaptured * 2 + 1] = r
+                    introCaptured++
+                    introServed++
+                }
                 // Capture circulaire pour la boucle de sortie
                 loopCapture[loopWritePos * 2] = l
                 loopCapture[loopWritePos * 2 + 1] = r
@@ -493,6 +525,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var mixLpR = 0f
         var bassGain = 0f
         var recentPeak = 0f
+        // Bass boost manuel (bouton) : rampe progressive
+        var manualBass = 0f
         // Limiteur doux de sortie (attaque rapide, relâche lente)
         var limGain = 1f
 
@@ -545,9 +579,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val a = deckA ?: break
 
                 // Hors crossfade : le deck actif revient doucement vers son
-                // tempo naturel (~0,4 %/s) pour que les ralentissements de
-                // calage ne s'accumulent pas de morceau en morceau.
-                if (deckB == null) a.nudgeTowardNatural(0.0002f, framesGlobal)
+                // tempo naturel (~0,4 %/s) — ou vers +8 % si le speed boost
+                // est actif — sans jamais casser la grille de beats.
+                if (deckB == null) {
+                    val target = if (PlayerCore.speedBoost.value) 1.08f else 1f
+                    a.nudgeTowardNatural(0.0002f, framesGlobal, target)
+                }
 
                 // Saut de phase demandé alors qu'une transition est déjà chargée
                 val pj = pendingJump
@@ -623,6 +660,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
                 var blockSq = 0.0
                 var bassSq = 0.0
+                // Bass boost manuel : monte/descend progressivement (~2 s)
+                val manualTarget = if (PlayerCore.bassBoost.value) 0.55f else 0f
+                manualBass = if (manualTarget > manualBass)
+                    min(manualTarget, manualBass + 0.01f)
+                else max(manualTarget, manualBass - 0.01f)
+                val appliedBass = max(bassGain, manualBass)
                 val bd = b
                 val fadeActive = bd != null && fadeLenF > 0
                 var subA = 0f
@@ -635,7 +678,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     val inFade = fadeActive && gf >= fadeStartF
                     if (inFade) {
                         x = ((gf - fadeStartF).toFloat() / fadeLenF).coerceIn(0f, 1f)
-                        gA = cos(x * HALF_PI)
+                        // Sortie raide : le sortant descend vite dès le début
+                        // du fondu (moins de superposition à mi-parcours)
+                        gA = cos(x.pow(0.7f) * HALF_PI)
                         // Entrée en S : le deck entrant reste discret sur le
                         // premier tiers du fade, puis monte franchement.
                         gB = sin(x.pow(1.6f) * HALF_PI)
@@ -661,8 +706,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         bd.lpL += BASS_ALPHA * (bL - bd.lpL)
                         bd.lpR += BASS_ALPHA * (bR - bd.lpR)
                         // Bass swap : les basses de l'entrant sont coupées,
-                        // puis échangées avec celles du sortant à ~65 % du fade
-                        val swap = ((x - 0.62f) / 0.12f).coerceIn(0f, 1f)
+                        // puis échangées avec celles du sortant à ~45 % du fade
+                        val swap = ((x - 0.45f) / 0.10f).coerceIn(0f, 1f)
                         val cutA = BASS_SWAP_CUT * swap
                         val cutB = BASS_SWAP_CUT * (1f - swap)
                         vaL -= cutA * a.lpL
@@ -693,8 +738,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     mixLpR += BASS_ALPHA * (r - mixLpR)
                     blockSq += (l * l + r * r).toDouble()
                     bassSq += (mixLpL * mixLpL + mixLpR * mixLpR).toDouble()
-                    val lb = l + bassGain * mixLpL
-                    val rb = r + bassGain * mixLpR
+                    val lb = l + appliedBass * mixLpL
+                    val rb = r + appliedBass * mixLpR
                     // Limiteur doux : évite l'écrêtage brut quand normalisation,
                     // renfort de basses et EQ s'empilent
                     val peak = max(abs(lb), abs(rb))
