@@ -8,10 +8,15 @@ import com.pulsemix.app.analysis.AudioAnalyzer
 import com.pulsemix.app.data.Track
 import com.pulsemix.app.data.TrackStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Parcourt le dossier choisi (Storage Access Framework), lit les métadonnées
@@ -41,13 +46,13 @@ object LibraryScanner {
     )
 
     /**
-     * @param restoreBackup false pour un « tout réanalyser » : la sauvegarde
-     * présente dans le dossier est supprimée au lieu d'être restaurée, sinon
-     * elle réinjecterait les anciennes analyses et annulerait la réanalyse.
+     * @param restoreBackup false pour un « tout réanalyser » : les sauvegardes
+     * présentes dans les dossiers sont supprimées au lieu d'être restaurées,
+     * sinon elles réinjecteraient les anciennes analyses.
      */
     suspend fun scan(
         context: Context,
-        treeUri: Uri,
+        treeUris: List<Uri>,
         store: TrackStore,
         restoreBackup: Boolean = true
     ) =
@@ -56,93 +61,106 @@ object LibraryScanner {
             scanning = true
             stopRequested = false
             try {
-                // Affichage immédiat : le parcours du dossier (SAF) peut
+                // Affichage immédiat : le parcours des dossiers (SAF) peut
                 // prendre plusieurs secondes avant le premier fichier analysé.
                 _progress.value = Progress(0, 0, "")
-                val root = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext
+                val roots = treeUris.mapNotNull { DocumentFile.fromTreeUri(context, it) }
+                if (roots.isEmpty()) return@withContext
                 val files = ArrayList<DocumentFile>()
-                walk(root, files, 0)
+                for (root in roots) walk(root, files, 0)
                 val audioFiles = files.filter { isAudio(it) }
 
                 val uris = audioFiles.map { it.uri.toString() }.toSet()
                 store.retainOnly(uris)
 
-                // Restaurer la sauvegarde stockée dans le dossier de musique :
+                // Restaurer les sauvegardes stockées dans les dossiers :
                 // après une désinstallation (ou sur un autre appareil), les
                 // analyses reviennent sans refaire le travail.
-                if (restoreBackup) {
-                    restoreFromFolderBackup(context, root, audioFiles, store)
-                } else {
-                    try {
-                        findBackup(root)?.delete()
-                    } catch (_: Exception) {
+                for (root in roots) {
+                    if (restoreBackup) {
+                        restoreFromFolderBackup(context, root, audioFiles, store)
+                    } else {
+                        try {
+                            findBackup(root)?.delete()
+                        } catch (_: Exception) {
+                        }
                     }
                 }
 
                 val known = store.tracks.value.associateBy { it.uri }
                 val total = audioFiles.size
-                var done = 0
+                val done = AtomicInteger(0)
                 _progress.value = Progress(0, total, "")
 
+                // Analyse en parallèle (2 fichiers à la fois) : premier scan
+                // nettement plus court sur les gros dossiers.
                 val analyzer = AudioAnalyzer()
-                for (doc in audioFiles) {
-                    if (stopRequested) break
-                    val uriStr = doc.uri.toString()
-                    val existing = known[uriStr]
-                    if (existing != null && existing.analyzed) {
-                        done++
-                        _progress.value = Progress(done, total, existing.title)
-                        continue
-                    }
-                    val name = doc.name ?: "?"
-                    _progress.value = Progress(done, total, name)
+                val permits = Semaphore(2)
+                coroutineScope {
+                    for (doc in audioFiles) {
+                        if (stopRequested) break
+                        val uriStr = doc.uri.toString()
+                        val existing = known[uriStr]
+                        if (existing != null && existing.analyzed) {
+                            _progress.value =
+                                Progress(done.incrementAndGet(), total, existing.title)
+                            continue
+                        }
+                        launch {
+                            permits.withPermit {
+                                if (stopRequested) return@withPermit
+                                val name = doc.name ?: "?"
+                                _progress.value = Progress(done.get(), total, name)
 
-                    val meta = readMetadata(context, doc.uri, name)
-                    val features = try {
-                        analyzer.analyze(context, doc.uri, meta.third) { !stopRequested }
-                    } catch (_: Exception) {
-                        null
+                                val meta = readMetadata(context, doc.uri, name)
+                                val features = try {
+                                    analyzer.analyze(context, doc.uri, meta.third) { !stopRequested }
+                                } catch (_: Exception) {
+                                    null
+                                }
+                                // Stop pendant le décodage : ne pas marquer le
+                                // morceau en échec, la reprise le refera.
+                                if (stopRequested && features == null) return@withPermit
+                                val track = if (features != null) {
+                                    Track(
+                                        uri = uriStr,
+                                        title = meta.first,
+                                        artist = meta.second,
+                                        durationMs = if (features.durationMs > 0) features.durationMs else meta.third,
+                                        bpm = features.bpm,
+                                        keyName = features.keyName,
+                                        camelot = features.camelot,
+                                        energyMean = features.energyMean,
+                                        energyPeak = features.energyPeak,
+                                        centroid = features.centroid,
+                                        onsetRate = features.onsetRate,
+                                        bestStartMs = features.bestStartMs,
+                                        segmentMs = features.segmentMs,
+                                        firstBeatMs = features.firstBeatMs,
+                                        musicStartMs = features.musicStartMs,
+                                        analyzed = features.bpm > 0f
+                                    )
+                                } else {
+                                    Track(
+                                        uri = uriStr,
+                                        title = meta.first,
+                                        artist = meta.second,
+                                        durationMs = meta.third,
+                                        analyzed = false
+                                    )
+                                }
+                                store.put(track)
+                                val d = done.incrementAndGet()
+                                _progress.value = Progress(d, total, meta.first)
+                                if (d % 5 == 0) store.save()
+                            }
+                        }
                     }
-                    // Stop demandé pendant le décodage : ne pas enregistrer ce
-                    // morceau comme « analysé en échec », la reprise le refera.
-                    if (stopRequested && features == null) break
-                    val track = if (features != null) {
-                        Track(
-                            uri = uriStr,
-                            title = meta.first,
-                            artist = meta.second,
-                            durationMs = if (features.durationMs > 0) features.durationMs else meta.third,
-                            bpm = features.bpm,
-                            keyName = features.keyName,
-                            camelot = features.camelot,
-                            energyMean = features.energyMean,
-                            energyPeak = features.energyPeak,
-                            centroid = features.centroid,
-                            onsetRate = features.onsetRate,
-                            bestStartMs = features.bestStartMs,
-                            segmentMs = features.segmentMs,
-                            firstBeatMs = features.firstBeatMs,
-                            musicStartMs = features.musicStartMs,
-                            analyzed = features.bpm > 0f
-                        )
-                    } else {
-                        Track(
-                            uri = uriStr,
-                            title = meta.first,
-                            artist = meta.second,
-                            durationMs = meta.third,
-                            analyzed = false
-                        )
-                    }
-                    store.put(track)
-                    done++
-                    _progress.value = Progress(done, total, meta.first)
-                    if (done % 5 == 0) store.save()
                 }
                 store.save()
-                // Sauvegarde dans le dossier de musique : survit à la
-                // désinstallation de l'app et suit le dossier.
-                writeFolderBackup(context, root, store)
+                // Sauvegarde dans chaque dossier de musique : survit à la
+                // désinstallation de l'app et suit les dossiers.
+                for (root in roots) writeFolderBackup(context, root, store)
             } finally {
                 _progress.value = null
                 scanning = false

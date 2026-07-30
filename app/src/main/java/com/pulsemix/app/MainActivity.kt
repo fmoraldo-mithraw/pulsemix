@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayCircle
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -29,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pulsemix.app.ui.LibraryScreen
 import com.pulsemix.app.ui.PlayerScreen
+import com.pulsemix.app.ui.SettingsScreen
 
 private val PulseColors = darkColorScheme(
     primary = Color(0xFFB497FF),
@@ -112,15 +114,22 @@ class MainActivity : ComponentActivity() {
                                 icon = { Icon(Icons.Rounded.LibraryMusic, null) },
                                 label = { Text("Bibliothèque") }
                             )
+                            NavigationBarItem(
+                                selected = screen == 2,
+                                onClick = { screen = 2 },
+                                icon = { Icon(Icons.Rounded.Settings, null) },
+                                label = { Text("Réglages") }
+                            )
                         }
                     }
                 ) { padding ->
                     val mod = Modifier.padding(padding)
                     when (screen) {
                         0 -> PlayerScreen(vm, mod, onGoLibrary = { screen = 1 })
-                        else -> LibraryScreen(vm, mod, onPickFolder = {
+                        1 -> LibraryScreen(vm, mod, onPickFolder = {
                             folderPicker.launch(null)
                         })
+                        else -> SettingsScreen(vm, mod)
                     }
                 }
             }

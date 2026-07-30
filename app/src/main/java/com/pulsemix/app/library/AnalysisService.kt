@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -30,15 +31,13 @@ import kotlinx.coroutines.launch
 class AnalysisService : Service() {
 
     companion object {
-        private const val EXTRA_FOLDER = "folder"
         private const val EXTRA_FROM_SCRATCH = "fromScratch"
         private const val ACTION_STOP = "com.pulsemix.app.analysis.STOP"
         private const val CHANNEL_ID = "analysis"
         private const val NOTIF_ID = 2
 
-        fun start(context: Context, folderUri: String, fromScratch: Boolean = false) {
+        fun start(context: Context, fromScratch: Boolean = false) {
             val i = Intent(context, AnalysisService::class.java)
-                .putExtra(EXTRA_FOLDER, folderUri)
                 .putExtra(EXTRA_FROM_SCRATCH, fromScratch)
             ContextCompat.startForegroundService(context, i)
         }
@@ -73,11 +72,6 @@ class AnalysisService : Service() {
             return START_NOT_STICKY
         }
 
-        val folder = intent?.getStringExtra(EXTRA_FOLDER)
-        if (folder == null) {
-            if (!running) stopSelf()
-            return START_NOT_STICKY
-        }
         if (running) return START_NOT_STICKY // une analyse tourne déjà
         running = true
 
@@ -88,28 +82,32 @@ class AnalysisService : Service() {
                 acquire(6 * 60 * 60 * 1000L) // garde-fou : 6 h max
             }
 
-        val fromScratch = intent.getBooleanExtra(EXTRA_FROM_SCRATCH, false)
+        val fromScratch = intent?.getBooleanExtra(EXTRA_FROM_SCRATCH, false) ?: false
         scope.launch {
             val notifJob = launch {
                 LibraryScanner.progress.collect { p ->
                     if (p != null) {
                         val text =
                             if (p.total > 0) "Analyse ${p.done}/${p.total} — ${p.currentName}"
-                            else "Préparation — parcours du dossier…"
+                            else "Préparation — parcours des dossiers…"
                         notify(buildNotification(text, p.done, p.total))
                     }
                 }
             }
             try {
                 val store = Graph.store
-                if (fromScratch) {
-                    store.resetAnalysis()
-                    store.save()
+                store.loaded.first { it }
+                val folders = store.folders.value.map { Uri.parse(it) }
+                if (folders.isNotEmpty()) {
+                    if (fromScratch) {
+                        store.resetAnalysis()
+                        store.save()
+                    }
+                    LibraryScanner.scan(
+                        applicationContext, folders, store,
+                        restoreBackup = !fromScratch
+                    )
                 }
-                LibraryScanner.scan(
-                    applicationContext, Uri.parse(folder), store,
-                    restoreBackup = !fromScratch
-                )
             } finally {
                 notifJob.cancel()
                 stopSelf()

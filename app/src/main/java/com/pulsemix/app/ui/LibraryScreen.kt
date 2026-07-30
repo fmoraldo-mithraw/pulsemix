@@ -1,5 +1,6 @@
 package com.pulsemix.app.ui
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,16 +16,31 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -33,6 +49,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.PlayerViewModel
 import com.pulsemix.app.data.Track
+import com.pulsemix.app.mix.MixEngine
+import kotlin.math.abs
+
+private enum class SortMode(val label: String) {
+    TITRE("Titre"), BPM("BPM"), ENERGIE("Énergie"), CLE("Clé")
+}
 
 @Composable
 fun LibraryScreen(
@@ -42,15 +64,49 @@ fun LibraryScreen(
 ) {
     val tracks by vm.tracks.collectAsStateWithLifecycle()
     val progress by vm.scanProgress.collectAsStateWithLifecycle()
-    val folder by vm.folderUri.collectAsStateWithLifecycle()
+    val folders by vm.folders.collectAsStateWithLifecycle()
+    val current by vm.currentTrack.collectAsStateWithLifecycle()
+
+    var search by remember { mutableStateOf("") }
+    var sortMode by remember { mutableStateOf(SortMode.TITRE) }
+    var compatOnly by remember { mutableStateOf(false) }
+    var showStats by remember { mutableStateOf(false) }
+    var optionsFor by remember { mutableStateOf<Track?>(null) }
+    var bpmEditFor by remember { mutableStateOf<Track?>(null) }
+    var deleteFor by remember { mutableStateOf<Track?>(null) }
 
     Column(modifier.fillMaxSize().padding(16.dp)) {
-        Text(
-            "Bibliothèque",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Bibliothèque",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = { showStats = true }) {
+                Icon(Icons.Rounded.BarChart, "Statistiques")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // ------------------------------------------------------------ dossiers
+        for (f in folders) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    Uri.parse(f).lastPathSegment?.substringAfterLast(':')?.ifBlank { f } ?: f,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                IconButton(onClick = { vm.removeFolder(f) }) {
+                    Icon(
+                        Icons.Rounded.Close, "Retirer le dossier",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                }
+            }
+        }
 
         val p = progress
         val scanning = p != null
@@ -58,15 +114,15 @@ fun LibraryScreen(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onPickFolder, enabled = !scanning) {
-                Text("Choisir un dossier")
+                Text(if (folders.isEmpty()) "Choisir un dossier" else "Ajouter un dossier")
             }
-            if (folder != null && scanning) {
+            if (folders.isNotEmpty() && scanning) {
                 OutlinedButton(onClick = { vm.stopScan() }) {
                     Text("Stopper l'analyse")
                 }
             }
         }
-        if (folder != null && !scanning) {
+        if (folders.isNotEmpty() && !scanning) {
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { vm.rescan() }) {
@@ -78,25 +134,6 @@ fun LibraryScreen(
                 OutlinedButton(onClick = { vm.rescanFromScratch() }) {
                     Text("Tout réanalyser")
                 }
-            }
-        }
-
-        val skipIntros by vm.skipIntros.collectAsStateWithLifecycle()
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(
-                checked = skipIntros,
-                onCheckedChange = { vm.setSkipIntros(it) }
-            )
-            Spacer(Modifier.width(10.dp))
-            Column {
-                Text("Sauter les intros parlées", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "Démarre au début de la musique quand un sketch précède " +
-                        "le morceau (s'applique aux prochaines lectures).",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
             }
         }
 
@@ -115,24 +152,22 @@ fun LibraryScreen(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
             } else {
-                // Parcours du dossier en cours : barre indéterminée
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Text(
-                    "Préparation de l'analyse — parcours du dossier…",
+                    "Préparation de l'analyse — parcours des dossiers…",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
 
         if (tracks.isEmpty()) {
             Text(
                 "Aucun morceau pour l'instant. Choisis un dossier contenant tes " +
                     "fichiers audio (mp3, m4a, flac, ogg, wav…) : chaque morceau " +
-                    "sera analysé une seule fois (BPM, tonalité, énergie, " +
-                    "meilleure minute).\n\n" +
+                    "sera analysé une seule fois.\n\n" +
                     "Après une réinstallation, re-choisis simplement le même " +
                     "dossier : les analyses sont restaurées automatiquement " +
                     "depuis la sauvegarde qu'il contient (PulseMix.library.json).",
@@ -140,27 +175,269 @@ fun LibraryScreen(
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )
         } else {
+            // ------------------------------------------------ recherche & tri
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Rechercher un titre ou un artiste…") },
+                singleLine = true
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for (m in SortMode.entries) {
+                    FilterChip(
+                        selected = sortMode == m,
+                        onClick = { sortMode = m },
+                        label = { Text(m.label) }
+                    )
+                }
+                FilterChip(
+                    selected = compatOnly,
+                    onClick = { compatOnly = !compatOnly },
+                    enabled = current != null,
+                    label = { Text("Compatibles") }
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+
+            val cur = current
+            val displayed = tracks
+                .filter {
+                    search.isBlank() ||
+                        it.title.contains(search, ignoreCase = true) ||
+                        it.artist.contains(search, ignoreCase = true)
+                }
+                .filter {
+                    if (!compatOnly || cur == null || !cur.analyzed) true
+                    else {
+                        val bpmOk = cur.bpm > 0f && it.bpm > 0f && minOf(
+                            abs(it.bpm - cur.bpm),
+                            abs(it.bpm * 2 - cur.bpm),
+                            abs(it.bpm / 2 - cur.bpm)
+                        ) / cur.bpm <= 0.08f
+                        bpmOk && MixEngine.camelotScore(cur.camelot, it.camelot) >= 0.8f
+                    }
+                }
+                .let { list ->
+                    when (sortMode) {
+                        SortMode.TITRE -> list.sortedBy { it.title.lowercase() }
+                        SortMode.BPM -> list.sortedBy { it.bpm }
+                        SortMode.ENERGIE -> list.sortedByDescending { it.energyPeak }
+                        SortMode.CLE -> list.sortedBy { camelotSortKey(it.camelot) }
+                    }
+                }
+
             Text(
-                "${tracks.size} morceaux · ${tracks.count { it.analyzed }} analysés",
+                "${displayed.size}/${tracks.size} morceaux · " +
+                    "${tracks.count { it.analyzed }} analysés",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.secondary
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
             val maxEnergy = tracks.maxOfOrNull { it.energyPeak }?.takeIf { it > 0f } ?: 1f
             LazyColumn {
-                items(tracks, key = { it.uri }) { track ->
-                    TrackRow(track, maxEnergy) { vm.playTrack(track) }
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.surfaceVariant
+                items(displayed, key = { it.uri }) { track ->
+                    TrackRow(
+                        track, maxEnergy,
+                        onClick = { vm.playTrack(track) },
+                        onMore = { optionsFor = track }
                     )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
             }
         }
     }
+
+    // -------------------------------------------------------- menu du morceau
+    val opt = optionsFor
+    if (opt != null) {
+        AlertDialog(
+            onDismissRequest = { optionsFor = null },
+            title = {
+                Text(opt.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            },
+            text = {
+                Column {
+                    TextButton(onClick = { vm.preview(opt); optionsFor = null }) {
+                        Text("▶ Écouter le meilleur passage")
+                    }
+                    TextButton(onClick = { vm.startSimilar(opt, false); optionsFor = null }) {
+                        Text("Mix « comme ce morceau »")
+                    }
+                    TextButton(onClick = { vm.startSimilar(opt, true); optionsFor = null }) {
+                        Text("DJ « comme ce morceau »")
+                    }
+                    TextButton(onClick = { vm.toggleFavorite(opt); optionsFor = null }) {
+                        Text(if (opt.favorite) "★ Retirer des favoris" else "☆ Ajouter aux favoris")
+                    }
+                    TextButton(onClick = { vm.toggleExcluded(opt); optionsFor = null }) {
+                        Text(if (opt.excluded) "Réinclure dans les mix" else "Exclure des mix")
+                    }
+                    TextButton(onClick = { bpmEditFor = opt; optionsFor = null }) {
+                        Text("Corriger le BPM (${opt.bpm})")
+                    }
+                    TextButton(onClick = { deleteFor = opt; optionsFor = null }) {
+                        Text("Supprimer le fichier…", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { optionsFor = null }) { Text("Fermer") }
+            }
+        )
+    }
+
+    // ---------------------------------------------------- correction du BPM
+    val bpmTrack = bpmEditFor
+    if (bpmTrack != null) {
+        var bpmText by remember(bpmTrack) { mutableStateOf(bpmTrack.bpm.toString()) }
+        val taps = remember(bpmTrack) { mutableListOf<Long>() }
+        AlertDialog(
+            onDismissRequest = { bpmEditFor = null },
+            title = { Text("Corriger le BPM") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = bpmText,
+                        onValueChange = { bpmText = it },
+                        label = { Text("BPM") },
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            bpmText.toFloatOrNull()?.let { bpmText = "%.1f".format(it / 2) }
+                        }) { Text("÷2") }
+                        OutlinedButton(onClick = {
+                            bpmText.toFloatOrNull()?.let { bpmText = "%.1f".format(it * 2) }
+                        }) { Text("×2") }
+                        Button(onClick = {
+                            val now = System.currentTimeMillis()
+                            if (taps.isNotEmpty() && now - taps.last() > 3000) taps.clear()
+                            taps.add(now)
+                            if (taps.size >= 3) {
+                                val recent = taps.takeLast(9)
+                                val avg = (recent.last() - recent.first()).toFloat() /
+                                    (recent.size - 1)
+                                if (avg > 0) bpmText = "%.1f".format(60_000f / avg)
+                            }
+                        }) { Text("Tap tempo") }
+                    }
+                    if (bpmTrack.bpmLocked) {
+                        Spacer(Modifier.height(6.dp))
+                        TextButton(onClick = {
+                            vm.unlockBpm(bpmTrack)
+                            bpmEditFor = null
+                        }) { Text("Déverrouiller (réanalysable)") }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    bpmText.replace(',', '.').toFloatOrNull()?.let {
+                        if (it in 40f..250f) vm.setManualBpm(bpmTrack, it)
+                    }
+                    bpmEditFor = null
+                }) { Text("Enregistrer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { bpmEditFor = null }) { Text("Annuler") }
+            }
+        )
+    }
+
+    // --------------------------------------------------- confirmation suppression
+    val del = deleteFor
+    if (del != null) {
+        AlertDialog(
+            onDismissRequest = { deleteFor = null },
+            title = { Text("Supprimer ce morceau ?") },
+            text = {
+                Text(
+                    "« ${del.title} » sera supprimé du téléphone et de la " +
+                        "bibliothèque. Cette action est définitive."
+                )
+            },
+            confirmButton = {
+                Button(onClick = { vm.deleteTrack(del); deleteFor = null }) {
+                    Text("Supprimer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteFor = null }) { Text("Annuler") }
+            }
+        )
+    }
+
+    // ------------------------------------------------------------ statistiques
+    if (showStats) {
+        val analyzed = tracks.filter { it.analyzed && it.bpm > 0f }
+        AlertDialog(
+            onDismissRequest = { showStats = false },
+            title = { Text("Statistiques") },
+            text = {
+                Column {
+                    Text("${tracks.size} morceaux, ${analyzed.size} analysés")
+                    analyzed.takeIf { it.isNotEmpty() }?.let { list ->
+                        Text("BPM moyen : ${"%.0f".format(list.map { it.bpm }.average())}")
+                        Spacer(Modifier.height(8.dp))
+                        Text("Répartition des tempos", fontWeight = FontWeight.SemiBold)
+                        val bands = listOf(
+                            "Calme (<95)" to list.count { it.bpm < 95f },
+                            "Groove (95-115)" to list.count { it.bpm >= 95f && it.bpm < 115f },
+                            "Dance (115-135)" to list.count { it.bpm >= 115f && it.bpm < 135f },
+                            "Intense (>135)" to list.count { it.bpm >= 135f }
+                        )
+                        val maxBand = bands.maxOf { it.second }.coerceAtLeast(1)
+                        for ((label, count) in bands) {
+                            Text("$label — $count", style = MaterialTheme.typography.labelSmall)
+                            LinearProgressIndicator(
+                                progress = { count.toFloat() / maxBand },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(4.dp))
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text("Tonalités les plus présentes", fontWeight = FontWeight.SemiBold)
+                        val keys = list.groupBy { it.camelot }
+                            .filterKeys { it != "--" }
+                            .entries.sortedByDescending { it.value.size }
+                            .take(5)
+                        for (e in keys) {
+                            Text(
+                                "${e.key} (${e.value.firstOrNull()?.keyName ?: ""}) — " +
+                                    "${e.value.size} morceaux",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showStats = false }) { Text("Fermer") }
+            }
+        )
+    }
+}
+
+private fun camelotSortKey(camelot: String): Int {
+    if (camelot.length < 2 || camelot == "--") return 99
+    val n = camelot.dropLast(1).toIntOrNull() ?: return 99
+    return n * 2 + if (camelot.last() == 'B') 1 else 0
 }
 
 @Composable
-private fun TrackRow(track: Track, maxEnergy: Float, onClick: () -> Unit) {
+private fun TrackRow(
+    track: Track,
+    maxEnergy: Float,
+    onClick: () -> Unit,
+    onMore: () -> Unit
+) {
+    val alpha = if (track.excluded) 0.4f else 1f
     Row(
         Modifier
             .fillMaxWidth()
@@ -178,19 +455,33 @@ private fun TrackRow(track: Track, maxEnergy: Float, onClick: () -> Unit) {
         )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                track.title,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (track.favorite) {
+                    Icon(
+                        Icons.Rounded.Star, null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(
+                    track.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha)
+                )
+            }
             val info = buildString {
                 if (track.artist.isNotBlank()) append(track.artist).append(" · ")
                 if (track.analyzed) {
-                    append("${track.bpm} BPM · ${track.keyName} (${track.camelot})")
+                    append("${track.bpm} BPM")
+                    if (track.bpmLocked) append(" 🔒")
+                    append(" · ${track.keyName} (${track.camelot})")
                 } else {
                     append("non analysé")
                 }
+                if (track.excluded) append(" · exclu des mix")
                 if (track.durationMs > 0) {
                     val m = track.durationMs / 60000
                     val s = (track.durationMs / 1000) % 60
@@ -200,7 +491,7 @@ private fun TrackRow(track: Track, maxEnergy: Float, onClick: () -> Unit) {
             Text(
                 info,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f * alpha),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -208,7 +499,7 @@ private fun TrackRow(track: Track, maxEnergy: Float, onClick: () -> Unit) {
         // Barre d'énergie
         Box(
             Modifier
-                .width(46.dp)
+                .width(36.dp)
                 .height(6.dp)
                 .background(
                     MaterialTheme.colorScheme.surfaceVariant,
@@ -218,12 +509,18 @@ private fun TrackRow(track: Track, maxEnergy: Float, onClick: () -> Unit) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .padding(end = (46 * (1f - (track.energyPeak / maxEnergy)
+                    .padding(end = (36 * (1f - (track.energyPeak / maxEnergy)
                         .coerceIn(0f, 1f))).dp)
                     .background(
                         MaterialTheme.colorScheme.primary,
                         RoundedCornerShape(3.dp)
                     )
+            )
+        }
+        IconButton(onClick = onMore) {
+            Icon(
+                Icons.Rounded.MoreVert, "Options",
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
         }
     }

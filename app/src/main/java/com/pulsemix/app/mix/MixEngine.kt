@@ -1,5 +1,6 @@
 package com.pulsemix.app.mix
 
+import com.pulsemix.app.data.PlayHistory
 import com.pulsemix.app.data.Track
 import kotlin.math.abs
 import kotlin.math.min
@@ -62,13 +63,17 @@ object MixEngine {
     fun chainOrder(
         tracks: List<Track>,
         ascending: Boolean = true,
-        rnd: Random = Random.Default
+        rnd: Random = Random.Default,
+        startWith: Track? = null
     ): List<Track> {
         if (tracks.size <= 1) return tracks
         val pool = tracks.toMutableList()
         val result = ArrayList<Track>(tracks.size)
-        val startCands = pool.sortedBy { if (ascending) it.bpm else -it.bpm }.take(3)
-        val start = startCands[rnd.nextInt(startCands.size)]
+        val start = if (startWith != null && pool.remove(startWith)) startWith
+        else {
+            val startCands = pool.sortedBy { if (ascending) it.bpm else -it.bpm }.take(3)
+            startCands[rnd.nextInt(startCands.size)]
+        }
         result.add(start)
         pool.remove(start)
         while (pool.isNotEmpty()) {
@@ -96,7 +101,17 @@ object MixEngine {
         val window = sorted.take(min(sorted.size, n + n / 2 + 1)).toMutableList()
         val out = ArrayList<Track>(min(n, window.size))
         repeat(min(n, window.size)) {
-            out.add(window.removeAt(rnd.nextInt(window.size)))
+            var idx = rnd.nextInt(window.size)
+            // anti-répétition : un morceau joué récemment obtient un re-tirage
+            if (!window[idx].favorite && PlayHistory.penalty(window[idx].uri) > 0.5f) {
+                idx = rnd.nextInt(window.size)
+            }
+            // favoris légèrement avantagés
+            if (rnd.nextFloat() < 0.25f) {
+                val fav = window.indexOfFirst { it.favorite }
+                if (fav >= 0) idx = fav
+            }
+            out.add(window.removeAt(idx))
         }
         return out
     }
@@ -112,13 +127,20 @@ object MixEngine {
         val dir = if (ascending) prev.bpm - cand.bpm else cand.bpm - prev.bpm
         val dirPenalty = if (dir > 0) dir * 0.15f else 0f
         val harmonic = camelotScore(prev.camelot, cand.camelot) * 4f
-        return delta + dirPenalty - harmonic
+        // Anti-répétition (48 h) et petit bonus favori
+        val recency = PlayHistory.penalty(cand.uri) * 3f
+        val favBonus = if (cand.favorite) 0.5f else 0f
+        return delta + dirPenalty - harmonic + recency - favBonus
     }
 
     // -------------------------------------------------------- propositions
 
-    fun proposeMixes(all: List<Track>): List<MixPlan> {
-        val tracks = all.filter { it.analyzed && it.bpm > 0f }
+    fun proposeMixes(
+        all: List<Track>,
+        dj: Boolean = false,
+        targetMinutes: Int? = null
+    ): List<MixPlan> {
+        val tracks = all.filter { it.analyzed && it.bpm > 0f && !it.excluded }
         if (tracks.size < 4) return emptyList()
 
         val plans = ArrayList<MixPlan>()
@@ -265,7 +287,7 @@ object MixEngine {
             }
         }
 
-        // 6. Flow : toute la bibliothèque, enchaînée proprement (toujours proposé)
+        // 6. Flow : sélection enchaînée proprement (toujours proposé)
         run {
             val ordered = chainOrder(tracks, ascending = true)
             val phases = splitIntoPhases(
@@ -275,13 +297,105 @@ object MixEngine {
             plans.add(
                 MixPlan(
                     "flow", "Flow continu",
-                    "Toute la bibliothèque enchaînée au plus fluide (BPM et tonalités).",
+                    "Une sélection enchaînée au plus fluide (BPM et tonalités).",
                     phases
                 )
             )
         }
 
+        // 7. Auto-DJ : toute la bibliothèque, jusqu'au bout de la nuit
+        if (tracks.size >= 8) {
+            val ordered = chainOrder(tracks, ascending = true)
+            plans.add(
+                MixPlan(
+                    "auto", "Auto-DJ (toute la bibliothèque)",
+                    "Enchaîne tous les morceaux par compatibilité, sans s'arrêter.",
+                    splitIntoPhases(
+                        ordered,
+                        listOf("Set 1", "Set 2", "Set 3", "Set 4", "Set 5", "Set 6")
+                    )
+                )
+            )
+        }
+
+        // Durée cible : réduire chaque plan à la durée demandée
+        if (targetMinutes != null) {
+            val targetMs = targetMinutes * 60_000L
+            return plans.map { trimToDuration(it, targetMs, dj) }
+        }
         return plans
+    }
+
+    private fun trackLenMs(t: Track, dj: Boolean): Long =
+        if (dj) t.segmentMs.coerceAtLeast(20_000L)
+        else t.durationMs.coerceAtLeast(60_000L)
+
+    /** Retire des morceaux (par la fin des phases les plus longues) jusqu'à
+     *  tenir dans la durée cible. */
+    private fun trimToDuration(plan: MixPlan, targetMs: Long, dj: Boolean): MixPlan {
+        val phases = plan.phases.map { it.tracks.toMutableList() }.toMutableList()
+        var total = phases.sumOf { ph -> ph.sumOf { trackLenMs(it, dj) } }
+        while (total > targetMs) {
+            val idx = phases.indices
+                .filter { phases[it].size > 1 }
+                .maxByOrNull { phases[it].size } ?: break
+            val removed = phases[idx].removeAt(phases[idx].size - 1)
+            total -= trackLenMs(removed, dj)
+        }
+        return MixPlan(
+            plan.id, plan.name, plan.description,
+            plan.phases.mapIndexedNotNull { i, ph ->
+                if (phases[i].isEmpty()) null else Phase(ph.name, phases[i].toList())
+            }
+        )
+    }
+
+    // ------------------------------------------------------- mix par similarité
+
+    /**
+     * Construit un mix « comme ce morceau » : les morceaux les plus proches en
+     * tempo (double/moitié compris), tonalité, énergie et brillance, enchaînés
+     * à partir du morceau de départ.
+     */
+    fun similarPlan(all: List<Track>, seed: Track, rnd: Random = Random.Default): MixPlan? {
+        val candidates = all.filter {
+            it.analyzed && it.bpm > 0f && !it.excluded && it.uri != seed.uri
+        }
+        if (candidates.size < 4 || seed.bpm <= 0f) return null
+
+        fun norm(sel: (Track) -> Float): Pair<Float, Float> {
+            val values = candidates.map(sel)
+            val lo = values.minOrNull() ?: 0f
+            val hi = values.maxOrNull() ?: 1f
+            return lo to (hi - lo).coerceAtLeast(1e-4f)
+        }
+
+        val (eLo, eSpan) = norm { it.energyMean }
+        val (cLo, cSpan) = norm { it.centroid }
+        val (oLo, oSpan) = norm { it.onsetRate }
+
+        fun distance(t: Track): Float {
+            val bpmDist = minOf(
+                abs(t.bpm - seed.bpm),
+                abs(t.bpm * 2 - seed.bpm),
+                abs(t.bpm / 2 - seed.bpm)
+            ) / seed.bpm
+            val harmonic = 1f - camelotScore(seed.camelot, t.camelot)
+            val energy = abs((t.energyMean - eLo) / eSpan - (seed.energyMean - eLo) / eSpan)
+            val bright = abs((t.centroid - cLo) / cSpan - (seed.centroid - cLo) / cSpan)
+            val onset = abs((t.onsetRate - oLo) / oSpan - (seed.onsetRate - oLo) / oSpan)
+            return 2.5f * bpmDist + 0.8f * harmonic + 1.2f * energy +
+                0.6f * bright + 0.4f * onset + 0.5f * PlayHistory.penalty(t.uri)
+        }
+
+        val pool = sampleTop(candidates.sortedBy { distance(it) }, 18, rnd)
+        val ordered = chainOrder(listOf(seed) + pool, ascending = true, rnd, startWith = seed)
+        return MixPlan(
+            "similar",
+            "Comme « ${seed.title} »",
+            "Morceaux du même style et de la même énergie, enchaînés depuis celui-ci.",
+            splitIntoPhases(ordered, listOf("Même veine 1", "Même veine 2", "Même veine 3", "Même veine 4"))
+        )
     }
 
     private fun phaseOrNull(name: String, tracks: List<Track>): Phase? =
@@ -319,7 +433,7 @@ object MixEngine {
         softness: Float,
         rnd: Random = Random.Default
     ): List<Track> {
-        val analyzed = all.filter { it.analyzed && it.bpm > 0f }
+        val analyzed = all.filter { it.analyzed && it.bpm > 0f && !it.excluded }
         if (analyzed.isEmpty()) return emptyList()
 
         // Rang percentile via tableau trié + recherche binaire (appelé à

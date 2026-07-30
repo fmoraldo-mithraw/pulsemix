@@ -12,14 +12,24 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
@@ -56,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.PlayerViewModel
+import com.pulsemix.app.data.Track
 import com.pulsemix.app.mix.MixEngine
 import com.pulsemix.app.player.PlayerMode
 
@@ -80,6 +91,9 @@ fun PlayerScreen(
     var showMixSheet by remember { mutableStateOf(false) }
     var mixSheetDj by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showQueueSheet by remember { mutableStateOf(false) }
+    var showSleepDialog by remember { mutableStateOf(false) }
+    val sleepRemaining by vm.sleepRemainingMs.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier
@@ -256,6 +270,33 @@ fun PlayerScreen(
             }
         }
 
+        // ------------------------------------------------ file & minuterie
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            IconButton(onClick = { showQueueSheet = true }) {
+                Icon(
+                    Icons.Rounded.QueueMusic, "File d'attente",
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
+            IconButton(onClick = { showSleepDialog = true }) {
+                Icon(
+                    Icons.Rounded.Timer, "Minuterie de sommeil",
+                    tint = if (sleepRemaining != null) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
+            sleepRemaining?.let {
+                Text(
+                    "pause dans ${(it / 60_000) + 1} min",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
         if (tracks.isEmpty()) {
             Spacer(Modifier.height(24.dp))
             OutlinedButton(onClick = onGoLibrary) {
@@ -338,12 +379,117 @@ fun PlayerScreen(
         )
     }
 
+    // ------------------------------------------------------- file d'attente
+    if (showQueueSheet) {
+        val queue by vm.queue.collectAsStateWithLifecycle()
+        ModalBottomSheet(onDismissRequest = { showQueueSheet = false }) {
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                Text(
+                    "File d'attente",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                if (mode == PlayerMode.DJ) {
+                    Text(
+                        "En mode DJ, la file n'est pas éditable.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                if (queue.isEmpty()) {
+                    Text("Rien en cours de lecture.")
+                    Spacer(Modifier.height(24.dp))
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 480.dp)) {
+                        itemsIndexed(queue) { i, t ->
+                            val isCurrent = t.uri == track?.uri
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = mode != PlayerMode.DJ) {
+                                        vm.playQueueItem(i)
+                                    }
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "${i + 1}.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.width(28.dp),
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        t.title,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = if (isCurrent) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        "${t.bpm} BPM · ${t.camelot}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                }
+                                if (mode != PlayerMode.DJ) {
+                                    IconButton(onClick = { vm.removeFromQueue(i) }) {
+                                        Icon(
+                                            Icons.Rounded.Close, "Retirer",
+                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(24.dp))
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------- minuterie de sommeil
+    if (showSleepDialog) {
+        AlertDialog(
+            onDismissRequest = { showSleepDialog = false },
+            title = { Text("Minuterie de sommeil") },
+            text = {
+                Column {
+                    Text("La lecture s'arrête en fondu après le délai choisi.")
+                    Spacer(Modifier.height(8.dp))
+                    for (minutes in listOf(15, 30, 60, 90)) {
+                        TextButton(onClick = {
+                            vm.setSleepTimer(minutes)
+                            showSleepDialog = false
+                        }) { Text("$minutes minutes") }
+                    }
+                    if (sleepRemaining != null) {
+                        TextButton(onClick = {
+                            vm.setSleepTimer(null)
+                            showSleepDialog = false
+                        }) { Text("Désactiver", color = MaterialTheme.colorScheme.error) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSleepDialog = false }) { Text("Fermer") }
+            }
+        )
+    }
+
     // ----------------------------------------------------- feuille des mix
     if (showMixSheet) {
         // Plans figés à l'ouverture et calculés en arrière-plan : pas de
         // recalcul sur le thread UI à chaque morceau analysé pendant le scroll.
+        var targetMin by remember { mutableStateOf<Int?>(null) }
+        var refreshKey by remember { mutableStateOf(0) }
         var plans by remember { mutableStateOf<List<MixEngine.MixPlan>?>(null) }
-        LaunchedEffect(Unit) { plans = vm.proposeMixes() }
+        LaunchedEffect(targetMin, refreshKey) {
+            plans = null
+            plans = vm.proposeMixes(mixSheetDj, targetMin)
+        }
         ModalBottomSheet(onDismissRequest = { showMixSheet = false }) {
             Column(
                 Modifier
@@ -351,19 +497,40 @@ fun PlayerScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp, vertical = 8.dp)
             ) {
-                Text(
-                    if (mixSheetDj) "Mode DJ — choisis ton mix"
-                    else "Choisis ton mix",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (mixSheetDj) "Mode DJ — choisis ton mix"
+                        else "Choisis ton mix",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = { refreshKey++ }) {
+                        Icon(Icons.Rounded.Refresh, "Regénérer les propositions")
+                    }
+                }
                 if (mixSheetDj) {
                     Text(
-                        "Seule la meilleure minute de chaque morceau est jouée, " +
+                        "Seul le meilleur passage de chaque morceau est joué, " +
                             "avec des transitions calées sur le beat.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(
+                        selected = targetMin == null,
+                        onClick = { targetMin = null },
+                        label = { Text("Auto") }
+                    )
+                    for ((label, minutes) in listOf("30 min" to 30, "1 h" to 60, "2 h" to 120)) {
+                        FilterChip(
+                            selected = targetMin == minutes,
+                            onClick = { targetMin = minutes },
+                            label = { Text(label) }
+                        )
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
                 val currentPlans = plans
@@ -388,10 +555,18 @@ fun PlayerScreen(
                     }
                     else -> {
                         currentPlans.forEach { plan ->
-                            MixPlanCard(plan, mixSheetDj) {
-                                vm.startMix(plan, mixSheetDj)
-                                showMixSheet = false
-                            }
+                            MixPlanCard(
+                                plan, mixSheetDj,
+                                onRemoveTrack = { tr ->
+                                    plans = currentPlans.map { p ->
+                                        if (p === plan) removeTrackFromPlan(p, tr) else p
+                                    }
+                                },
+                                onStart = {
+                                    vm.startMix(plan, mixSheetDj)
+                                    showMixSheet = false
+                                }
+                            )
                             Spacer(Modifier.height(10.dp))
                         }
                         Spacer(Modifier.height(24.dp))
@@ -402,30 +577,78 @@ fun PlayerScreen(
     }
 }
 
+private fun removeTrackFromPlan(plan: MixEngine.MixPlan, track: Track): MixEngine.MixPlan =
+    MixEngine.MixPlan(
+        plan.id, plan.name, plan.description,
+        plan.phases.mapNotNull { ph ->
+            val remaining = ph.tracks.filter { it.uri != track.uri }
+            if (remaining.isEmpty()) null else MixEngine.Phase(ph.name, remaining)
+        }
+    )
+
 @Composable
 private fun MixPlanCard(
     plan: MixEngine.MixPlan,
     dj: Boolean,
+    onRemoveTrack: (Track) -> Unit,
     onStart: () -> Unit
 ) {
+    var expanded by remember { mutableStateOf(false) }
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
-            Text(
-                plan.name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                plan.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        plan.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        plan.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+                IconButton(onClick = { expanded = !expanded }) {
+                    Icon(
+                        if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        "Voir les morceaux"
+                    )
+                }
+            }
             Spacer(Modifier.height(6.dp))
             Text(
                 plan.phases.joinToString(" · ") { "${it.name} ${it.tracks.size}" },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.secondary
             )
+            if (expanded) {
+                Spacer(Modifier.height(6.dp))
+                for (phase in plan.phases) {
+                    Text(
+                        phase.name,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    for (t in phase.tracks) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${t.title} · ${t.bpm} BPM",
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { onRemoveTrack(t) }) {
+                                Icon(
+                                    Icons.Rounded.Close, "Retirer",
+                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(10.dp))
             Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
                 Text(if (dj) "Lancer en DJ" else "Lancer le mix")
