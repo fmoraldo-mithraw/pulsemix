@@ -229,7 +229,7 @@ fun WaveformPanel(
     }
 
     // Durée approximative des fondus pour marquer les zones de transition
-    val fadeMs = 7_000f
+    val fadeMs = 10_000f
 
     Column(modifier) {
         val dur = (track?.durationMs ?: 0L).toFloat()
