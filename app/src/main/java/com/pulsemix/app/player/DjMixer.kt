@@ -193,7 +193,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         val segIndex: Int,
         val segment: Segment,
         val rate: Float,
-        lengthFactor: Float = 1f
+        lengthFactor: Float = 1f,
+        // Dernier morceau du set : pas de morceau après, on le TERMINE
+        // (lecture jusqu'à la vraie fin, pas de boucle de sortie).
+        val playToEnd: Boolean = false,
+        // Premier morceau du set : il commence au DÉBUT du fichier (avec
+        // l'option « sauter les intros parlées » si active), et déroule
+        // jusqu'à la fin de son passage fort où la transition a lieu.
+        val playFromStart: Boolean = false
     ) {
         val track: Track = segment.track
 
@@ -281,9 +288,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // battements produits ; à la fin du passage fort, les 8 derniers
         // battements sont rejoués en boucle sous le fondu de sortie.
         // Dimensionnée pour le rate le plus lent possible (crans de vitesse
-        // négatifs : jusqu'à -12 %) + l'amorce de couture (~50 ms)
+        // négatifs : jusqu'à -24 %) + l'amorce de couture (~50 ms)
         private val loopCapacity: Int =
-            if (track.bpm > 0f) (8.0 * 60.0 / track.bpm * OUT_SR / 0.80).toInt() + 2
+            if (track.bpm > 0f) (8.0 * 60.0 / track.bpm * OUT_SR / 0.74).toInt() + 2
             else OUT_SR * 4
         private val loopCapture = FloatArray(loopCapacity * 2)
         private var loopWritePos = 0
@@ -296,6 +303,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
         /** Active la boucle de sortie. @return false si trop peu de matière. */
         private fun startLoop(): Boolean {
+            if (playToEnd) return false // dernier morceau : vraie fin, pas de boucle
             if (loopData != null) return true
             val period = beatPeriodFrames
             if (period <= 0.0 || period.isNaN()) return false
@@ -322,19 +330,27 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             return true
         }
 
-        // Boucle live (bouton maintenu) : les 4 derniers temps tournent en
-        // boucle pendant que la lecture continue « en dessous » (slip) — au
-        // relâchement, le morceau reprend là où il serait arrivé.
+        // Boucle live (bouton maintenu) : les derniers temps (4, ou 8 après
+        // un tap) tournent en boucle pendant que la lecture continue « en
+        // dessous » (slip). Au relâchement, la boucle repart de son début
+        // pour UN dernier passage complet, puis le morceau reprend là où il
+        // serait arrivé.
         private var liveData: FloatArray? = null
         private var liveLen = 0
         private var liveXf = 0
         private var livePos = 0
+        private var liveFinishing = false
+        private var liveRemain = 0
 
-        fun startLiveLoop() {
-            if (liveData != null) return
+        fun startLiveLoop(beats: Int) {
+            if (liveData != null) {
+                // Ré-appui pendant le dernier passage : on reboucle
+                liveFinishing = false
+                return
+            }
             val period = beatPeriodFrames
             if (period <= 0.0 || period.isNaN()) return
-            val len = (4.0 * period).toInt()
+            val len = (beats.toDouble() * period).toInt()
             if (len < OUT_SR / 4 || len + 512 > loopFilled) return
             var xf = min(2_205, len / 8)
             if (len + xf > loopFilled) xf = loopFilled - len
@@ -349,11 +365,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             liveLen = len
             liveXf = xf
             livePos = xf
+            liveFinishing = false
             liveData = data
         }
 
         fun stopLiveLoop() {
-            liveData = null
+            if (liveData == null || liveFinishing) return
+            // Dernier passage : repartir du début de la boucle une fois
+            liveFinishing = true
+            livePos = liveXf
+            liveRemain = liveLen
         }
 
         init {
@@ -373,11 +394,25 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // naturellement sous le fondu d'entrée (pas de boucle de début :
             // essayée, jugée décevante). À l'autre bout, la boucle de sortie
             // (8 derniers battements) prend le relais sous le fondu de sortie.
-            startMs = anchor
-            logicalEndMs = min(anchor + segMs, track.durationMs)
+            startMs = if (playFromStart) {
+                if (PlayerCore.skipIntros.value && track.musicStartMs > 1_500L)
+                    track.musicStartMs
+                else 0L
+            } else anchor
+            logicalEndMs = if (playToEnd && track.durationMs > anchor)
+                track.durationMs
+            else min(anchor + segMs, track.durationMs)
             decodeEndMs = min(logicalEndMs + 2_000, track.durationMs)
 
             thread(name = "DjDeck-${track.title.take(12)}") {
+                // Les décodeurs nourrissent les decks : sous-priorisés, la
+                // famine fait saccader le son quand l'écran se verrouille.
+                try {
+                    android.os.Process.setThreadPriority(
+                        android.os.Process.THREAD_PRIORITY_AUDIO
+                    )
+                } catch (_: Exception) {
+                }
                 AudioDecoder().decode(
                     context, Uri.parse(track.uri),
                     startUs = startMs * 1000,
@@ -518,7 +553,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 if (lv != null && liveLen > 0) {
                     var sL = lv[livePos * 2]
                     var sR = lv[livePos * 2 + 1]
-                    if (liveXf > 0 && livePos >= liveLen) {
+                    if (liveXf > 0 && livePos >= liveLen && !liveFinishing) {
                         val q = livePos - liveLen
                         val t = (q + 1).toFloat() / liveXf
                         sL = sL * (1f - t) + lv[q * 2] * t
@@ -528,6 +563,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     dst[i + 1] = sR
                     livePos++
                     if (livePos >= liveLen + liveXf) livePos = liveXf
+                    if (liveFinishing && --liveRemain <= 0) liveData = null
                 }
                 srcPos += ratio
                 out++
@@ -545,6 +581,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     // ------------------------------------------------------------- mix loop
 
     private fun runMix() {
+        // Priorité temps-réel audio : Thread.MAX_PRIORITY (Java) n'influence
+        // pas l'ordonnanceur Linux — écran verrouillé, le CPU ralentit et le
+        // thread se faisait voler des cycles (saccades).
+        try {
+            android.os.Process.setThreadPriority(
+                android.os.Process.THREAD_PRIORITY_URGENT_AUDIO
+            )
+        } catch (_: Exception) {
+        }
         val minBuf = AudioTrack.getMinBufferSize(
             OUT_SR, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_FLOAT
         )
@@ -617,11 +662,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             d.startedAtFrame = framesGlobal - d.framesOut
         }
 
-        fun openNextValid(fromIndex: Int, rate: Float): Deck? {
+        fun openNextValid(
+            fromIndex: Int,
+            rate: Float,
+            fromStart: Boolean = false
+        ): Deck? {
             var idx = fromIndex
             while (running && idx < segments.size) {
                 val factor = phaseLengthFactor.getOrElse(segments[idx].phaseIndex) { 1f }
-                val d = Deck(idx, segments[idx], rate, factor)
+                val d = Deck(
+                    idx, segments[idx], rate, factor,
+                    playToEnd = idx == segments.size - 1,
+                    playFromStart = fromStart
+                )
                 if (d.open()) return d
                 d.close()
                 idx++
@@ -632,7 +685,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         try {
             audioTrack.play()
             ui.post { listener.onSessionReady(audioTrack.audioSessionId) }
-            deckA = openNextValid(startSegIndex, 1f)
+            deckA = openNextValid(startSegIndex, 1f, fromStart = true)
             if (deckA == null) {
                 djLog("aucun deck n'a pu s'ouvrir au lancement (décodage impossible ?)")
                 return
@@ -657,12 +710,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 // tempo naturel (~0,4 %/s) — ou vers +8 % si le speed boost
                 // est actif — sans jamais casser la grille de beats.
                 if (deckB == null) {
-                    val target = 1f + 0.04f * PlayerCore.speedLevel.value
+                    val target = 1f + 0.08f * PlayerCore.speedLevel.value
                     a.nudgeTowardNatural(0.0002f, framesGlobal, target)
                 }
 
-                // Boucle live (bouton maintenu dans le panneau Effets)
-                if (PlayerCore.liveLoop.value) a.startLiveLoop()
+                // Boucle live (bouton maintenu dans le panneau Effets ;
+                // un tap préalable double la taille de la boucle)
+                if (PlayerCore.liveLoop.value)
+                    a.startLiveLoop(PlayerCore.liveLoopBeats.value)
                 else a.stopLiveLoop()
 
                 // Saut de phase demandé alors qu'une transition est déjà chargée
@@ -751,8 +806,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 var blockSq = 0.0
                 var bassSq = 0.0
                 // Bass boost manuel : monte/descend progressivement (~2 s),
-                // par crans (négatif = coupe des basses)
-                val manualTarget = 0.275f * PlayerCore.bassLevel.value
+                // par crans (négatif = coupe des basses, bornée pour ne pas
+                // inverser la phase des graves)
+                val manualTarget = (0.55f * PlayerCore.bassLevel.value)
+                    .coerceAtLeast(-0.9f)
                 manualBass = if (manualTarget > manualBass)
                     min(manualTarget, manualBass + 0.01f)
                 else max(manualTarget, manualBass - 0.01f)
@@ -771,9 +828,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 ) {
                     val xb = ((framesGlobal - fadeStartF).toFloat() / fadeLenF)
                         .coerceIn(0f, 1f)
+                    // KIND_DARK : le filtre se referme sur les premiers 60 %
+                    // puis RESTE fermé — le sortant ronronne étouffé pendant
+                    // que l'entrant arrive, sans être vraiment là.
                     val fc = if (fadeKindF == KIND_NORMAL)
                         40f * 10f.pow(2.2f * xb)
-                    else 6_000f * 10f.pow(-1.6f * xb)
+                    else 6_000f * 10f.pow(-1.6f * (xb / 0.6f).coerceAtMost(1f))
                     sweepAlpha = 1f - exp(-2f * Math.PI.toFloat() * fc / OUT_SR)
                 }
                 var subA = 0f
@@ -785,9 +845,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     .coerceIn(-0.05f, 0.05f)
                 val filtOn = abs(filtSm) > 0.05f
                 val fAlpha = if (filtOn) {
-                    val t = abs(filtSm) / 3f
-                    // >0 : passe-haut 60 Hz -> 2,5 kHz ; <0 : passe-bas
-                    // 12 kHz -> 400 Hz (par crans, glissé en douceur)
+                    // Crans doublés : la pleine fermeture est atteinte dès
+                    // le cran 1,5 ; >0 : passe-haut 60 Hz -> 2,5 kHz ;
+                    // <0 : passe-bas 12 kHz -> 400 Hz (glissé en douceur)
+                    val t = (abs(filtSm) / 1.5f).coerceAtMost(1f)
                     val fc = if (filtSm > 0f) 60f * 42f.pow(t)
                     else 12_000f * 0.033f.pow(t)
                     1f - exp(-2f * Math.PI.toFloat() * fc / OUT_SR)
@@ -795,15 +856,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val echoOn = echoSm > 0.05f
                 val echoDelay = (a.beatPeriodFrames / 2.0).toInt()
                     .coerceIn(2_205, OUT_SR - 1) // ½ temps
-                val echoWet = 0.13f * echoSm
-                val echoFb = 0.17f * echoSm
+                val echoWet = (0.26f * echoSm).coerceAtMost(0.6f)
+                val echoFb = (0.34f * echoSm).coerceAtMost(0.85f)
                 val panLvl = PlayerCore.panLevel.value
                 val panStep = if (panLvl != 0)
                     (if (panLvl > 0) 1 else -1) * 2.0 * Math.PI /
-                        (OUT_SR * 12.0 / (1 shl (abs(panLvl) - 1)))
+                        (OUT_SR * 6.0 / (1 shl (abs(panLvl) - 1)))
                 else 0.0
                 val gateDepth = when (PlayerCore.gateLevel.value) {
-                    1 -> 0.5f; 2 -> 0.75f; 3 -> 0.95f; else -> 0f
+                    1 -> 0.8f; 2 -> 0.95f; 3 -> 1f; else -> 0f
                 }
                 val gateStep = 1.0 / a.beatPeriodFrames
                 for (i in 0 until BLOCK_FRAMES) {
@@ -819,6 +880,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             // se superposer, courbes equal-power symétriques
                             gA = cos(x * HALF_PI)
                             gB = sin(x * HALF_PI)
+                        } else if (fadeKindF == KIND_DARK) {
+                            // Sweep sombre : le sortant reste présent (mais
+                            // étouffé) pendant plus de la moitié du fondu, et
+                            // l'entrant se fait sentir longtemps sans être
+                            // vraiment là — il ne prend le dessus que tard.
+                            val xa = ((x - 0.45f) / 0.55f).coerceIn(0f, 1f)
+                            gA = cos(xa.pow(0.9f) * HALF_PI)
+                            gB = sin(x.pow(2.0f) * HALF_PI)
                         } else {
                             // Sortie raide : le sortant descend vite dès le
                             // début du fondu (moins de bouillie à mi-parcours)
@@ -1159,7 +1228,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         val pool: List<Pair<Double, Int>> = when {
             // Entrant calme : arrivée en douceur, sortant qui s'étouffe
             eIn > 0f && eIn < 0.10f -> listOf(
-                12.0 to KIND_DARK,
+                16.0 to KIND_DARK,
                 FADE_NORMAL_S to KIND_NORMAL,
                 11.0 to KIND_EQ
             )
@@ -1171,13 +1240,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             )
             // Sortant brillant : l'étouffer (passe-bas) sonne naturel
             bright > 2_600f -> listOf(
-                FADE_NORMAL_S to KIND_DARK,
+                13.0 to KIND_DARK,
                 FADE_NORMAL_S to KIND_NORMAL,
                 9.0 to KIND_EQ
             )
             else -> listOf(
                 FADE_NORMAL_S to KIND_NORMAL,
-                FADE_NORMAL_S to KIND_DARK,
+                13.0 to KIND_DARK,
                 9.0 to KIND_EQ
             )
         }

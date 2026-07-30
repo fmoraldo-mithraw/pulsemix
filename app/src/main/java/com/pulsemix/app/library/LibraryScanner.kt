@@ -151,6 +151,26 @@ object LibraryScanner {
                         launch {
                             permits.withPermit {
                                 if (stopRequested) return@withPermit
+                                // Le moteur DJ décode déjà 2 morceaux en temps
+                                // réel : analyser en même temps fait saccader
+                                // le son (surtout écran verrouillé, CPU
+                                // ralenti). On attend la fin du set.
+                                while (!stopRequested &&
+                                    PlayerCore.mode.value ==
+                                    com.pulsemix.app.player.PlayerMode.DJ &&
+                                    PlayerCore.isPlaying.value
+                                ) {
+                                    kotlinx.coroutines.delay(3_000)
+                                }
+                                if (stopRequested) return@withPermit
+                                // Priorité minimale : ne jamais voler de
+                                // cycles à la lecture en cours.
+                                try {
+                                    android.os.Process.setThreadPriority(
+                                        android.os.Process.THREAD_PRIORITY_BACKGROUND
+                                    )
+                                } catch (_: Exception) {
+                                }
                                 val name = doc.name ?: "?"
                                 _progress.value = Progress(done.get(), total, name)
 

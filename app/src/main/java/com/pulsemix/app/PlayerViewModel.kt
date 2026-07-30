@@ -210,6 +210,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val panLevel = PlayerCore.panLevel
     val gateLevel = PlayerCore.gateLevel
     val liveLoop = PlayerCore.liveLoop
+    val liveLoopBeats = PlayerCore.liveLoopBeats
+    fun toggleLiveLoopSize() = PlayerCore.toggleLiveLoopSize()
     fun setTrebleLevel(level: Int) = PlayerCore.setTrebleLevel(level)
     fun setFilterLevel(level: Int) = PlayerCore.setFilterLevel(level)
     fun setEchoLevel(level: Int) = PlayerCore.setEchoLevel(level)
