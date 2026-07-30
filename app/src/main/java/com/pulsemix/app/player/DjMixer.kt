@@ -49,15 +49,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     companion object {
         const val OUT_SR = 44100
         const val BLOCK_FRAMES = 2048
-        // Fondus assez longs pour « sentir arriver » le morceau entrant :
-        // il est audible tôt (basses coupées, donc propre), et ne prend le
-        // dessus qu'en seconde moitié.
-        const val FADE_NORMAL_S = 10.0
-        const val FADE_JUMP_S = 4.0
+        // Fondus longs (plusieurs mesures) pour « sentir arriver » le
+        // morceau entrant : il est audible tôt (plafonné et sans basses,
+        // donc propre), et ne prend le dessus qu'en seconde moitié.
+        const val FADE_NORMAL_S = 14.0
+        const val FADE_JUMP_S = 5.0
         // Jonctions adaptatives : long blend quand tempos calés et tonalités
         // compatibles, coupe franche quand le calage est impossible.
-        const val FADE_LOCKED_HARMONIC_S = 14.0
-        const val FADE_CUT_S = 4.5
+        const val FADE_LOCKED_HARMONIC_S = 18.0
+        const val FADE_CUT_S = 6.0
         const val TAIL_MS = 16_000L
         const val HALF_PI = (Math.PI / 2).toFloat()
         // One-pole ~120 Hz à 44,1 kHz pour l'extraction des basses
@@ -819,6 +819,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 (start - framesGlobal) - OUT_SR / 10
                         fadeStartF = start
                         fadeLenF = min(fadeF, max(OUT_SR / 4L, maxLen))
+                        // Durée arrondie à la mesure la plus proche (4 temps
+                        // du sortant) : la jonction dure un nombre entier de
+                        // mesures et retombe sur une frontière musicale.
+                        val barF = (4.0 * period).toLong()
+                        if (barF in 1..fadeLenF * 2) {
+                            fadeLenF = ((fadeLenF + barF / 2) / barF)
+                                .coerceAtLeast(1L) * barF
+                            fadeLenF = min(fadeLenF, max(OUT_SR / 4L, maxLen))
+                        }
                         fadeKindF = ready.fadeKind
                         lastFadeKind = ready.fadeKind
                         // Echo-out : ligne à retard d'un battement
@@ -1242,10 +1251,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     /**
      * Durée ET technique de la jonction, choisies par transition comme un
      * DJ choisit son geste :
-     *  - tempos calés ET tonalités compatibles : long blend (14 s) avec
+     *  - tempos calés ET tonalités compatibles : long blend (18 s) avec
      *    bass swap puis mid swap (KIND_HARMONIC) ;
      *  - calage impossible (écart > ±8 %, hors double/moitié) : coupe
-     *    courte (4,5 s) avec echo-out (KIND_CUT) — étirer deux tempos non
+     *    courte (6 s) avec echo-out (KIND_CUT) — étirer deux tempos non
      *    synchrones ferait battre les beats ;
      *  - tempos calés, tonalités moyennes (le cas le plus fréquent) : la
      *    technique est choisie selon le caractère des deux morceaux —
@@ -1254,7 +1263,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
      *    plutôt sweep sombre ; sinon sweep clair/sombre/bass swap. Un tirage
      *    déterministe par paire varie le choix, sans jamais répéter la
      *    technique précédente quand plusieurs conviennent ;
-     *  - saut de phase manuel : fondu court (4 s), bass swap neutre.
+     *  - saut de phase manuel : fondu court (5 s), bass swap neutre.
      */
     private fun fadeSpec(
         current: Deck,
@@ -1282,26 +1291,26 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         val pool: List<Pair<Double, Int>> = when {
             // Entrant calme : arrivée en douceur, sortant qui s'étouffe
             eIn > 0f && eIn < 0.10f -> listOf(
-                16.0 to KIND_DARK,
+                20.0 to KIND_DARK,
                 FADE_NORMAL_S to KIND_NORMAL,
-                11.0 to KIND_EQ
+                14.0 to KIND_EQ
             )
             // Deux morceaux énergiques : gestes francs, coupe écho permise
             eOut > 0.17f && eIn > 0.17f -> listOf(
                 FADE_NORMAL_S to KIND_NORMAL,
-                5.0 to KIND_CUT,
-                8.0 to KIND_EQ
+                7.0 to KIND_CUT,
+                11.0 to KIND_EQ
             )
             // Sortant brillant : l'étouffer (passe-bas) sonne naturel
             bright > 2_600f -> listOf(
-                13.0 to KIND_DARK,
+                17.0 to KIND_DARK,
                 FADE_NORMAL_S to KIND_NORMAL,
-                9.0 to KIND_EQ
+                12.0 to KIND_EQ
             )
             else -> listOf(
                 FADE_NORMAL_S to KIND_NORMAL,
-                13.0 to KIND_DARK,
-                9.0 to KIND_EQ
+                17.0 to KIND_DARK,
+                12.0 to KIND_EQ
             )
         }
         // Tirage stable par paire de morceaux, sans répéter la technique
