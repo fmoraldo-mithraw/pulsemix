@@ -60,6 +60,42 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         )
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
+        val context = androidx.compose.ui.platform.LocalContext.current
+        Text("Arrière-plan", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Pour que la lecture et l'analyse ne soient pas coupées par " +
+                "l'économiseur de batterie, exclus PulseMix de l'optimisation.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+        androidx.compose.material3.OutlinedButton(onClick = {
+            try {
+                val pm = context.getSystemService(android.os.PowerManager::class.java)
+                if (pm != null && pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                    return@OutlinedButton
+                }
+                context.startActivity(
+                    android.content.Intent(
+                        android.provider.Settings
+                            .ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        android.net.Uri.parse("package:${context.packageName}")
+                    )
+                )
+            } catch (_: Exception) {
+                try {
+                    context.startActivity(
+                        android.content.Intent(
+                            android.provider.Settings
+                                .ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                        )
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }) { Text("Autoriser PulseMix en arrière-plan") }
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
         Text("Égaliseur", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         EqSlider("Graves", eq.first) { vm.setEq(it, eq.second, eq.third) }
