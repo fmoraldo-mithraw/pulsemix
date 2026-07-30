@@ -310,19 +310,19 @@ object PlayerCore {
                     applyVolume()
                     // Boosts progressifs côté ExoPlayer (le moteur DJ les
                     // gère en interne, calé sur sa grille de beats)
-                    // Rampes rapides : un cran (5 dB / 8 %) s'applique en ~2 s
+                    // Rampes rapides : un cran (5 dB / 8 %) s'applique en ~1 s
                     val targetDb = 5f * bassLevel.value
                     if (bassBoostExtraDb != targetDb) {
                         bassBoostExtraDb = if (targetDb > bassBoostExtraDb)
-                            (bassBoostExtraDb + 1.25f).coerceAtMost(targetDb)
-                        else (bassBoostExtraDb - 1.25f).coerceAtLeast(targetDb)
+                            (bassBoostExtraDb + 2.5f).coerceAtMost(targetDb)
+                        else (bassBoostExtraDb - 2.5f).coerceAtLeast(targetDb)
                         applyEqTo(eqExo, includeFilter = true)
                     }
                     val targetSpeed = 1f + 0.08f * speedLevel.value
                     if (exoSpeed != targetSpeed) {
                         exoSpeed = if (targetSpeed > exoSpeed)
-                            (exoSpeed + 0.02f).coerceAtMost(targetSpeed)
-                        else (exoSpeed - 0.02f).coerceAtLeast(targetSpeed)
+                            (exoSpeed + 0.04f).coerceAtMost(targetSpeed)
+                        else (exoSpeed - 0.04f).coerceAtLeast(targetSpeed)
                         exo.setPlaybackSpeed(exoSpeed)
                     }
                 }
@@ -330,8 +330,8 @@ object PlayerCore {
                 val trebleTarget = 5f * trebleLevel.value
                 if (trebleExtraDb != trebleTarget) {
                     trebleExtraDb = if (trebleTarget > trebleExtraDb)
-                        (trebleExtraDb + 1.25f).coerceAtMost(trebleTarget)
-                    else (trebleExtraDb - 1.25f).coerceAtLeast(trebleTarget)
+                        (trebleExtraDb + 2.5f).coerceAtMost(trebleTarget)
+                    else (trebleExtraDb - 2.5f).coerceAtLeast(trebleTarget)
                     applyEqTo(eqExo, includeFilter = true)
                     applyEqTo(eqDj)
                 }
