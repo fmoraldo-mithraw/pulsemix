@@ -70,9 +70,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // One-pole ~2,5 kHz : extraction des médiums (mid swap)
         const val MID_ALPHA = 0.30f
         // Types de transition : une technique de DJ par situation
-        const val KIND_NORMAL = 0   // filter sweep sur le sortant
+        const val KIND_NORMAL = 0   // filter sweep passe-haut (le sortant s'amincit)
         const val KIND_CUT = 1      // coupe courte + echo-out
         const val KIND_HARMONIC = 2 // long blend + mid swap
+        const val KIND_DARK = 3     // filter sweep passe-bas (le sortant s'étouffe)
+        const val KIND_EQ = 4       // échange de basses classique, sans filtre
         const val ECHO_FEEDBACK = 0.55f
     }
 
@@ -114,6 +116,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     private var plan: MixEngine.MixPlan? = null
     private var mixThread: Thread? = null
     private var phaseLengthFactor = FloatArray(0)
+    // Dernière technique utilisée : évite deux fois de suite la même quand
+    // plusieurs conviennent (variété façon DJ)
+    private var lastFadeKind = -1
 
     // ------------------------------------------------------------------ API
 
@@ -637,6 +642,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 fadeStartF = start
                                 fadeLenF = min(fadeF, max(OUT_SR / 4L, maxLen))
                                 fadeKindF = fadeKind
+                                lastFadeKind = fadeKind
                                 // Echo-out : ligne à retard d'un battement
                                 echoBuf = if (fadeKind == KIND_CUT) {
                                     echoPos = 0
@@ -684,16 +690,20 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     if (manualBass < 0f) manualBass else max(bassGain, manualBass)
                 val bd = b
                 val fadeActive = bd != null && fadeLenF > 0
-                // Filter sweep (KIND_NORMAL) : passe-haut balayé sur le
-                // sortant, coupure de ~40 Hz à ~6 kHz sur la durée du fondu.
-                // Coefficient recalculé par bloc (suffisant à 2048 frames).
+                // Filter sweep : coupure balayée sur la durée du fondu.
+                // KIND_NORMAL : passe-haut ~40 Hz -> ~6 kHz (le sortant
+                // s'amincit). KIND_DARK : passe-bas ~6 kHz -> ~150 Hz (le
+                // sortant s'assombrit et s'étouffe). Coefficient recalculé
+                // par bloc (suffisant à 2048 frames).
                 var sweepAlpha = 0f
-                if (fadeActive && fadeKindF == KIND_NORMAL &&
-                    framesGlobal >= fadeStartF
+                if (fadeActive && framesGlobal >= fadeStartF &&
+                    (fadeKindF == KIND_NORMAL || fadeKindF == KIND_DARK)
                 ) {
                     val xb = ((framesGlobal - fadeStartF).toFloat() / fadeLenF)
                         .coerceIn(0f, 1f)
-                    val fc = 40f * 10f.pow(2.2f * xb)
+                    val fc = if (fadeKindF == KIND_NORMAL)
+                        40f * 10f.pow(2.2f * xb)
+                    else 6_000f * 10f.pow(-1.6f * xb)
                     sweepAlpha = 1f - exp(-2f * Math.PI.toFloat() * fc / OUT_SR)
                 }
                 var subA = 0f
@@ -767,10 +777,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 vbR -= mCutB * (bd.midLpR - bd.lpR)
                             }
                             KIND_NORMAL -> {
-                                // Filter sweep : le sortant passe dans un
-                                // passe-haut dont la coupure monte — il
+                                // Filter sweep passe-haut : le sortant
                                 // s'amincit (basses puis médiums) pendant
-                                // que l'entrant récupère ses basses à ~45 %.
+                                // que l'entrant récupère ses basses tôt.
                                 a.sweepLpL += sweepAlpha * (aL - a.sweepLpL)
                                 a.sweepLpR += sweepAlpha * (aR - a.sweepLpR)
                                 vaL = aL - a.sweepLpL
@@ -781,6 +790,34 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 // graves entre les deux).
                                 val rel = ((x - 0.25f) / 0.10f).coerceIn(0f, 1f)
                                 val cutB = BASS_SWAP_CUT * (1f - rel)
+                                vbL -= cutB * bd.lpL
+                                vbR -= cutB * bd.lpR
+                            }
+                            KIND_DARK -> {
+                                // Filter sweep passe-bas : le sortant
+                                // s'assombrit et s'étouffe — il garde ses
+                                // basses plus longtemps, l'entrant récupère
+                                // les siennes à ~50 % seulement.
+                                a.sweepLpL += sweepAlpha * (aL - a.sweepLpL)
+                                a.sweepLpR += sweepAlpha * (aR - a.sweepLpR)
+                                vaL = a.sweepLpL
+                                vaR = a.sweepLpR
+                                val rel = ((x - 0.50f) / 0.10f).coerceIn(0f, 1f)
+                                val cutB = BASS_SWAP_CUT * (1f - rel)
+                                vbL -= cutB * bd.lpL
+                                vbR -= cutB * bd.lpR
+                                // Et le sortant cède ses basses au même moment
+                                vaL -= BASS_SWAP_CUT * rel * a.lpL
+                                vaR -= BASS_SWAP_CUT * rel * a.lpR
+                            }
+                            KIND_EQ -> {
+                                // Échange de basses classique, sans filtre :
+                                // la transition « table de mixage » sobre.
+                                val swap = ((x - 0.45f) / 0.10f).coerceIn(0f, 1f)
+                                val cutA = BASS_SWAP_CUT * swap
+                                val cutB = BASS_SWAP_CUT * (1f - swap)
+                                vaL -= cutA * a.lpL
+                                vaR -= cutA * a.lpR
                                 vbL -= cutB * bd.lpL
                                 vbR -= cutB * bd.lpR
                             }
@@ -928,12 +965,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
      * DJ choisit son geste :
      *  - tempos calés ET tonalités compatibles : long blend (14 s) avec
      *    bass swap puis mid swap (KIND_HARMONIC) ;
-     *  - tempos calés seulement : blend standard (10 s) avec filter sweep
-     *    sur le sortant (KIND_NORMAL) ;
      *  - calage impossible (écart > ±8 %, hors double/moitié) : coupe
      *    courte (4,5 s) avec echo-out (KIND_CUT) — étirer deux tempos non
      *    synchrones ferait battre les beats ;
-     *  - saut de phase manuel : fondu court (4 s), technique neutre.
+     *  - tempos calés, tonalités moyennes (le cas le plus fréquent) : la
+     *    technique est choisie selon le caractère des deux morceaux —
+     *    entrant calme → sweep sombre et long ; deux morceaux énergiques →
+     *    palette punchy (sweep, coupe écho, bass swap) ; sortant brillant →
+     *    plutôt sweep sombre ; sinon sweep clair/sombre/bass swap. Un tirage
+     *    déterministe par paire varie le choix, sans jamais répéter la
+     *    technique précédente quand plusieurs conviennent ;
+     *  - saut de phase manuel : fondu court (4 s), bass swap neutre.
      */
     private fun fadeSpec(
         current: Deck,
@@ -941,10 +983,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         rate: Float,
         jumping: Boolean
     ): Pair<Double, Int> {
-        if (jumping) return FADE_JUMP_S to KIND_NORMAL
+        if (jumping) return FADE_JUMP_S to KIND_EQ
         val effA = current.track.bpm * current.curRate
         val effB = next.bpm * rate
-        if (effA <= 0f || effB <= 0f) return FADE_NORMAL_S to KIND_NORMAL
+        if (effA <= 0f || effB <= 0f) return FADE_NORMAL_S to KIND_EQ
         val ratio = effA / effB
         val lockErr = minOf(
             abs(ratio - 1f),
@@ -953,8 +995,42 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         )
         if (lockErr > 0.005f) return FADE_CUT_S to KIND_CUT
         val harmonic = MixEngine.camelotScore(current.track.camelot, next.camelot)
-        return if (harmonic >= 0.8f) FADE_LOCKED_HARMONIC_S to KIND_HARMONIC
-        else FADE_NORMAL_S to KIND_NORMAL
+        if (harmonic >= 0.8f) return FADE_LOCKED_HARMONIC_S to KIND_HARMONIC
+
+        val eOut = current.track.energyMean
+        val eIn = next.energyMean
+        val bright = current.track.centroid
+        val pool: List<Pair<Double, Int>> = when {
+            // Entrant calme : arrivée en douceur, sortant qui s'étouffe
+            eIn > 0f && eIn < 0.10f -> listOf(
+                12.0 to KIND_DARK,
+                FADE_NORMAL_S to KIND_NORMAL,
+                11.0 to KIND_EQ
+            )
+            // Deux morceaux énergiques : gestes francs, coupe écho permise
+            eOut > 0.17f && eIn > 0.17f -> listOf(
+                FADE_NORMAL_S to KIND_NORMAL,
+                5.0 to KIND_CUT,
+                8.0 to KIND_EQ
+            )
+            // Sortant brillant : l'étouffer (passe-bas) sonne naturel
+            bright > 2_600f -> listOf(
+                FADE_NORMAL_S to KIND_DARK,
+                FADE_NORMAL_S to KIND_NORMAL,
+                9.0 to KIND_EQ
+            )
+            else -> listOf(
+                FADE_NORMAL_S to KIND_NORMAL,
+                FADE_NORMAL_S to KIND_DARK,
+                9.0 to KIND_EQ
+            )
+        }
+        // Tirage stable par paire de morceaux, sans répéter la technique
+        // de la transition précédente
+        var idx = ((current.track.uri.hashCode() * 31 + next.uri.hashCode())
+            ushr 1) % pool.size
+        if (pool[idx].second == lastFadeKind) idx = (idx + 1) % pool.size
+        return pool[idx]
     }
 
     /** Cale le BPM du morceau entrant sur le BPM effectif du deck actif (±8 %). */
