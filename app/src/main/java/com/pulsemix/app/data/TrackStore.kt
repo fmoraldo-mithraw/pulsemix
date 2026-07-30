@@ -41,7 +41,10 @@ data class Track(
     /** Meilleur passage défini à la main : protégé contre la réanalyse. */
     val segmentLocked: Boolean = false,
     /** Genre lu dans les métadonnées du fichier (normalisé en minuscules). */
-    val genre: String = ""
+    val genre: String = "",
+    /** Type choisi à la main : protégé contre le scan et la réanalyse.
+     *  Le fichier audio n'est jamais modifié. */
+    val genreLocked: Boolean = false
 )
 
 /**
@@ -138,6 +141,7 @@ class TrackStore(context: Context) {
             o.put("bpmLocked", t.bpmLocked)
             o.put("segmentLocked", t.segmentLocked)
             o.put("genre", t.genre)
+            o.put("genreLocked", t.genreLocked)
             return o
         }
 
@@ -162,7 +166,8 @@ class TrackStore(context: Context) {
             excluded = o.optBoolean("excluded", false),
             bpmLocked = o.optBoolean("bpmLocked", false),
             segmentLocked = o.optBoolean("segmentLocked", false),
-            genre = o.optString("genre", "")
+            genre = o.optString("genre", ""),
+            genreLocked = o.optBoolean("genreLocked", false)
         )
     }
 
@@ -211,7 +216,8 @@ class TrackStore(context: Context) {
                 durationMs = it.durationMs,
                 favorite = it.favorite,
                 excluded = it.excluded,
-                genre = it.genre
+                genre = it.genre,
+                genreLocked = it.genreLocked
             )
         }
     }

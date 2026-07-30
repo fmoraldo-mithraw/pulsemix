@@ -109,7 +109,9 @@ object LibraryScanner {
                             // Rattrapage du genre sans réanalyse : tag du
                             // fichier, sinon déduction par titre/signature
                             // acoustique (« - » = vérifié, rien trouvé)
-                            if (existing.genre.isEmpty() || existing.genre == "-") {
+                            if (!existing.genreLocked &&
+                                (existing.genre.isEmpty() || existing.genre == "-")
+                            ) {
                                 var g = if (existing.genre.isEmpty())
                                     readGenre(context, doc.uri) else "-"
                                 if (g == "-") g = GenreClassifier.infer(existing)
@@ -126,7 +128,10 @@ object LibraryScanner {
                                 _progress.value = Progress(done.get(), total, name)
 
                                 val meta = readMetadata(context, doc.uri, name)
-                                val genre = readGenre(context, doc.uri)
+                                // Type choisi à la main : toujours conservé
+                                val genre =
+                                    if (existing?.genreLocked == true) existing.genre
+                                    else readGenre(context, doc.uri)
                                 val features = try {
                                     analyzer.analyze(context, doc.uri, meta.third) { !stopRequested }
                                 } catch (_: Exception) {
@@ -153,7 +158,8 @@ object LibraryScanner {
                                         firstBeatMs = features.firstBeatMs,
                                         musicStartMs = features.musicStartMs,
                                         analyzed = features.bpm > 0f,
-                                        genre = genre
+                                        genre = genre,
+                                        genreLocked = existing?.genreLocked == true
                                     )
                                 } else {
                                     Track(
@@ -162,7 +168,8 @@ object LibraryScanner {
                                         artist = meta.second,
                                         durationMs = meta.third,
                                         analyzed = false,
-                                        genre = genre
+                                        genre = genre,
+                                        genreLocked = existing?.genreLocked == true
                                     )
                                 }
                                 // Pas de tag genre : déduire du titre ou de la

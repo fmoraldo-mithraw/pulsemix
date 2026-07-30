@@ -79,6 +79,7 @@ fun LibraryScreen(
     var optionsFor by remember { mutableStateOf<Track?>(null) }
     var bpmEditFor by remember { mutableStateOf<Track?>(null) }
     var segmentEditFor by remember { mutableStateOf<Track?>(null) }
+    var genreEditFor by remember { mutableStateOf<Track?>(null) }
     var deleteFor by remember { mutableStateOf<Track?>(null) }
     val playlists by vm.playlists.collectAsStateWithLifecycle()
 
@@ -319,6 +320,13 @@ fun LibraryScreen(
                     TextButton(onClick = { segmentEditFor = opt; optionsFor = null }) {
                         Text("Définir le meilleur passage…")
                     }
+                    TextButton(onClick = { genreEditFor = opt; optionsFor = null }) {
+                        Text(
+                            "Changer le type" +
+                                (opt.genre.takeIf { it.isNotBlank() && it != "-" }
+                                    ?.let { " ($it)" } ?: "") + "…"
+                        )
+                    }
                     TextButton(onClick = { deleteFor = opt; optionsFor = null }) {
                         Text("Supprimer le fichier…", color = MaterialTheme.colorScheme.error)
                     }
@@ -385,6 +393,69 @@ fun LibraryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { bpmEditFor = null }) { Text("Annuler") }
+            }
+        )
+    }
+
+    // ------------------------------------------------------ type de musique
+    val genreTrack = genreEditFor
+    if (genreTrack != null) {
+        var genreText by remember(genreTrack) {
+            mutableStateOf(genreTrack.genre.takeIf { it != "-" } ?: "")
+        }
+        val knownGenres = remember(genreTrack) {
+            MixEngine.genresOf(tracks).map { it.first }.take(8)
+        }
+        AlertDialog(
+            onDismissRequest = { genreEditFor = null },
+            title = { Text("Type de musique") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = genreText,
+                        onValueChange = { genreText = it },
+                        label = { Text("Genre") },
+                        singleLine = true
+                    )
+                    if (knownGenres.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            for (g in knownGenres) {
+                                FilterChip(
+                                    selected = genreText == g,
+                                    onClick = { genreText = g },
+                                    label = { Text(g) }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Le fichier audio n'est pas modifié : le type est " +
+                            "gardé dans la bibliothèque et protégé contre la " +
+                            "réanalyse.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    if (genreTrack.genreLocked) {
+                        TextButton(onClick = {
+                            vm.unlockGenre(genreTrack)
+                            genreEditFor = null
+                        }) { Text("Revenir au type automatique") }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    vm.setManualGenre(genreTrack, genreText)
+                    genreEditFor = null
+                }) { Text("Enregistrer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { genreEditFor = null }) { Text("Annuler") }
             }
         )
     }
