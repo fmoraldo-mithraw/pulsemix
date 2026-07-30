@@ -101,11 +101,11 @@ fun PlayerScreen(
     var showSleepDialog by remember { mutableStateOf(false) }
     val sleepRemaining by vm.sleepRemainingMs.collectAsStateWithLifecycle()
 
+    // Pas de défilement vertical : tout l'écran lecteur tient à l'écran
     Column(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
@@ -114,7 +114,7 @@ fun PlayerScreen(
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
 
         // ------------------------------------------------------------ modes
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -140,18 +140,18 @@ fun PlayerScreen(
             )
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(12.dp))
 
         // ---------------------------------------------------- morceau courant
         TrackArtwork(
             uri = track?.uri,
-            modifier = Modifier.size(180.dp),
-            corner = 24.dp,
+            modifier = Modifier.size(120.dp),
+            corner = 18.dp,
             targetPx = 512,
             fallback = if (mode == PlayerMode.DJ) "🎧" else "🎵",
-            fallbackStyle = MaterialTheme.typography.displayLarge
+            fallbackStyle = MaterialTheme.typography.displayMedium
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(10.dp))
 
         Text(
             track?.title ?: "Aucun morceau",
@@ -179,7 +179,7 @@ fun PlayerScreen(
 
         // ------------------------------------------------------------ phases
         if ((mode == PlayerMode.MIX || mode == PlayerMode.DJ) && phases.isNotEmpty()) {
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(8.dp))
             planName?.let {
                 Text(
                     it,
@@ -205,7 +205,7 @@ fun PlayerScreen(
             )
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(10.dp))
 
         // -------------------------------------------------------- progression
         if (mode == PlayerMode.DJ) {
