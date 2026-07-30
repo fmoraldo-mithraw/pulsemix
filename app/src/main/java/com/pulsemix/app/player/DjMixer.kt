@@ -628,6 +628,20 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var endFadeFrames = -1L
         var blockCount = 0
 
+        // Ouverture asynchrone du deck suivant (jamais sur le thread audio)
+        class OpenResult(
+            val deck: Deck?,
+            val fadeS: Double,
+            val fadeKind: Int,
+            val jumping: Boolean,
+            val jumpTarget: Int
+        )
+
+        val openResult =
+            java.util.concurrent.atomic.AtomicReference<OpenResult?>(null)
+        var opening = false
+        var failedForSeg = -1
+
         // Renfort dynamique des basses (sur le signal mixé)
         var mixLpL = 0f
         var mixLpR = 0f
@@ -734,58 +748,90 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     echoBuf = null
                 }
 
-                // Programmer la prochaine transition
-                if (deckB == null) {
+                // Programmer la prochaine transition. L'OUVERTURE du deck
+                // (seek + MediaCodec, parfois > 1 s) se fait sur un thread
+                // dédié : la faire ici bloquait le thread audio et vidait le
+                // tampon de sortie — saccade à chaque transition.
+                if (deckB == null && !opening) {
                     val jumping = pendingJump != -1
+                    if (jumping) failedForSeg = -1
                     val nextIdx = when {
                         pendingJump >= 0 -> pendingJump
                         else -> a.segIndex + 1
                     }
-                    if (nextIdx < segments.size) {
+                    if (nextIdx < segments.size && failedForSeg != a.segIndex) {
                         val rate = computeRate(a, segments[nextIdx].track)
                         val (fadeS, fadeKind) =
                             fadeSpec(a, segments[nextIdx].track, rate, jumping)
                         val fadeF = (fadeS * OUT_SR).toLong()
-                        if (jumping || a.remainingOut <= fadeF + OUT_SR / 2) {
-                            val b = openNextValid(nextIdx, rate)
-                            if (b != null) {
-                                // Départ aligné sur la grille de beats du deck A,
-                                // de préférence sur une fin de mesure (4 temps).
-                                // La phase de battement reste exacte même si le
-                                // tempo du deck A est revenu vers son naturel.
-                                val period = a.beatPeriodFrames
-                                val phaseNow = a.beatPhaseAt(framesGlobal)
-                                val leadBeats = (OUT_SR * 0.15) / period
-                                val nextBeat = ceil(phaseNow + leadBeats)
-                                val nextBar = ceil((phaseNow + leadBeats) / 4.0) * 4.0
-                                val toBeat = ((nextBeat - phaseNow) * period).toLong()
-                                val toBar = ((nextBar - phaseNow) * period).toLong()
-                                var start = framesGlobal +
-                                    if (toBar <= a.remainingOut) toBar else toBeat
-                                if (start < framesGlobal) start = framesGlobal
-                                // La boucle de sortie prolonge le deck A sous
-                                // le fondu : la capacité inclut LOOP_MAX_OUT
-                                val maxLen = a.remainingOut + LOOP_MAX_OUT -
-                                        (start - framesGlobal) - OUT_SR / 10
-                                fadeStartF = start
-                                fadeLenF = min(fadeF, max(OUT_SR / 4L, maxLen))
-                                fadeKindF = fadeKind
-                                lastFadeKind = fadeKind
-                                // Echo-out : ligne à retard d'un battement
-                                echoBuf = if (fadeKind == KIND_CUT) {
-                                    echoPos = 0
-                                    FloatArray(
-                                        a.beatPeriodFrames.toInt()
-                                            .coerceIn(4_410, 88_200) * 2
-                                    )
-                                } else null
-                                b.startedAtFrame = start
-                                deckB = b
+                        // 3 s d'avance : le deck est prêt (et pré-décodé)
+                        // avant l'heure du fondu
+                        if (jumping || a.remainingOut <= fadeF + 3L * OUT_SR) {
+                            opening = true
+                            val jt = pendingJump
+                            thread(name = "DjOpen") {
+                                val b = openNextValid(nextIdx, rate)
+                                openResult.set(OpenResult(b, fadeS, fadeKind, jumping, jt))
                             }
-                            pendingJump = -1
                         }
-                    } else if (a.remainingOut <= 0L && endFadeFrames < 0) {
+                    } else if (nextIdx >= segments.size &&
+                        a.remainingOut <= 0L && endFadeFrames < 0
+                    ) {
                         endFadeFrames = OUT_SR / 2L // fondu de fin : 0,5 s
+                    }
+                }
+
+                // Deck suivant prêt : programmer le fondu, aligné sur la
+                // grille de beats du deck A (de préférence fin de mesure).
+                val ready = openResult.getAndSet(null)
+                if (ready != null) {
+                    opening = false
+                    val b = ready.deck
+                    val pj2 = pendingJump
+                    if (b == null) {
+                        failedForSeg = a.segIndex
+                        if (ready.jumping) pendingJump = -1
+                    } else if (pj2 != -1 && pj2 != ready.jumpTarget) {
+                        // Un autre saut est arrivé pendant l'ouverture
+                        b.close()
+                    } else {
+                        val fadeF = (ready.fadeS * OUT_SR).toLong()
+                        val period = a.beatPeriodFrames
+                        val phaseNow = a.beatPhaseAt(framesGlobal)
+                        // Heure idéale du fondu : fin du passage fort moins
+                        // la durée du fondu (le deck a été ouvert en avance,
+                        // il ne faut PAS démarrer plus tôt pour autant) ;
+                        // saut manuel = dès la prochaine mesure.
+                        val dueIn = if (ready.jumping) 0L
+                        else max(0L, a.remainingOut - fadeF)
+                        val phaseAtDue = phaseNow + dueIn / period +
+                            (OUT_SR * 0.15) / period
+                        val nextBeat = ceil(phaseAtDue)
+                        val nextBar = ceil(phaseAtDue / 4.0) * 4.0
+                        val toBeat = ((nextBeat - phaseNow) * period).toLong()
+                        val toBar = ((nextBar - phaseNow) * period).toLong()
+                        var start = framesGlobal +
+                            if (toBar <= a.remainingOut + OUT_SR) toBar else toBeat
+                        if (start < framesGlobal) start = framesGlobal
+                        // La boucle de sortie prolonge le deck A sous le
+                        // fondu : la capacité inclut LOOP_MAX_OUT
+                        val maxLen = a.remainingOut + LOOP_MAX_OUT -
+                                (start - framesGlobal) - OUT_SR / 10
+                        fadeStartF = start
+                        fadeLenF = min(fadeF, max(OUT_SR / 4L, maxLen))
+                        fadeKindF = ready.fadeKind
+                        lastFadeKind = ready.fadeKind
+                        // Echo-out : ligne à retard d'un battement
+                        echoBuf = if (ready.fadeKind == KIND_CUT) {
+                            echoPos = 0
+                            FloatArray(
+                                a.beatPeriodFrames.toInt()
+                                    .coerceIn(4_410, 88_200) * 2
+                            )
+                        } else null
+                        b.startedAtFrame = start
+                        deckB = b
+                        pendingJump = -1
                     }
                 }
 
@@ -896,9 +942,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             // début du fondu (moins de bouillie à mi-parcours)
                             gA = cos(x.pow(0.7f) * HALF_PI)
                             // Entrée progressive : l'entrant s'annonce dès le
-                            // premier quart (sans ses basses : propre), puis
-                            // monte franchement.
+                            // premier quart, mais PLAFONNÉ (~-5 dB) sur la
+                            // première moitié — on le sent venir sans qu'il
+                            // soit fort. (Coupe écho : entrée franche.)
                             gB = sin(x.pow(1.3f) * HALF_PI)
+                            if (fadeKindF != KIND_CUT) {
+                                gB *= 0.55f + 0.45f * (x / 0.5f).coerceAtMost(1f)
+                            }
                         }
                     }
                     var master = 1f
@@ -1162,6 +1212,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             recorder = null
             deckA?.close()
             deckB?.close()
+            openResult.getAndSet(null)?.deck?.close()
             try {
                 audioTrack.stop()
             } catch (_: Exception) {
