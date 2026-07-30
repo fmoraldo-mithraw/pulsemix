@@ -16,6 +16,8 @@ object Graph {
         if (firstInit) {
             store = TrackStore(context)
             PlayHistory.init(context)
+            com.pulsemix.app.data.TransitionFeedback.init(context)
+            com.pulsemix.app.data.PlaylistStore.init(context)
         }
         PlayerCore.init(context)
         // Reprendre la dernière session (morceau + position) après une

@@ -37,7 +37,11 @@ data class Track(
     /** Jamais sélectionné par les mix / la douce (reste jouable en Normal). */
     val excluded: Boolean = false,
     /** BPM corrigé à la main : protégé contre la réanalyse. */
-    val bpmLocked: Boolean = false
+    val bpmLocked: Boolean = false,
+    /** Meilleur passage défini à la main : protégé contre la réanalyse. */
+    val segmentLocked: Boolean = false,
+    /** Genre lu dans les métadonnées du fichier (normalisé en minuscules). */
+    val genre: String = ""
 )
 
 /**
@@ -132,6 +136,8 @@ class TrackStore(context: Context) {
             o.put("favorite", t.favorite)
             o.put("excluded", t.excluded)
             o.put("bpmLocked", t.bpmLocked)
+            o.put("segmentLocked", t.segmentLocked)
+            o.put("genre", t.genre)
             return o
         }
 
@@ -154,7 +160,9 @@ class TrackStore(context: Context) {
             analyzed = o.optBoolean("analyzed", false),
             favorite = o.optBoolean("favorite", false),
             excluded = o.optBoolean("excluded", false),
-            bpmLocked = o.optBoolean("bpmLocked", false)
+            bpmLocked = o.optBoolean("bpmLocked", false),
+            segmentLocked = o.optBoolean("segmentLocked", false),
+            genre = o.optString("genre", "")
         )
     }
 
@@ -195,14 +203,15 @@ class TrackStore(context: Context) {
      *  favori/exclu sont conservés). */
     fun resetAnalysis() = synchronized(this) {
         _tracks.value = _tracks.value.map {
-            if (it.bpmLocked) it
+            if (it.bpmLocked || it.segmentLocked) it
             else Track(
                 uri = it.uri,
                 title = it.title,
                 artist = it.artist,
                 durationMs = it.durationMs,
                 favorite = it.favorite,
-                excluded = it.excluded
+                excluded = it.excluded,
+                genre = it.genre
             )
         }
     }

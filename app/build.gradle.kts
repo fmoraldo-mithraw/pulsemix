@@ -12,8 +12,8 @@ android {
         applicationId = "com.pulsemix.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
     }
 
     // Clé de signature partagée, committée dans le dépôt : tous les builds

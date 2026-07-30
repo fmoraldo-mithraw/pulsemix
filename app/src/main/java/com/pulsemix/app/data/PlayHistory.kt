@@ -35,6 +35,20 @@ object PlayHistory {
         }
     }
 
+    /** Export/import pour la sauvegarde dans le dossier de musique. */
+    fun export(): Map<String, Long> = HashMap(map)
+
+    fun import(entries: Map<String, Long>) {
+        val editor = prefs?.edit()
+        for ((k, v) in entries) {
+            if (k !in map) {
+                map[k] = v
+                editor?.putLong(k, v)
+            }
+        }
+        editor?.apply()
+    }
+
     /** 1,0 = joué à l'instant, 0 = il y a 48 h ou plus (ou jamais). */
     fun penalty(uri: String): Float {
         val t = map[uri] ?: return 0f

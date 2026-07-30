@@ -5,8 +5,11 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.pulsemix.app.analysis.AudioAnalyzer
+import com.pulsemix.app.data.PlayHistory
 import com.pulsemix.app.data.Track
 import com.pulsemix.app.data.TrackStore
+import com.pulsemix.app.mix.MixEngine
+import com.pulsemix.app.player.PlayerCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -102,6 +105,12 @@ object LibraryScanner {
                         val uriStr = doc.uri.toString()
                         val existing = known[uriStr]
                         if (existing != null && existing.analyzed) {
+                            // Rattrapage du genre sans réanalyse (lecture de
+                            // métadonnées seulement, « - » = vérifié, absent)
+                            if (existing.genre.isEmpty()) {
+                                val g = readGenre(context, doc.uri)
+                                store.put(existing.copy(genre = g))
+                            }
                             _progress.value =
                                 Progress(done.incrementAndGet(), total, existing.title)
                             continue
@@ -113,6 +122,7 @@ object LibraryScanner {
                                 _progress.value = Progress(done.get(), total, name)
 
                                 val meta = readMetadata(context, doc.uri, name)
+                                val genre = readGenre(context, doc.uri)
                                 val features = try {
                                     analyzer.analyze(context, doc.uri, meta.third) { !stopRequested }
                                 } catch (_: Exception) {
@@ -138,7 +148,8 @@ object LibraryScanner {
                                         segmentMs = features.segmentMs,
                                         firstBeatMs = features.firstBeatMs,
                                         musicStartMs = features.musicStartMs,
-                                        analyzed = features.bpm > 0f
+                                        analyzed = features.bpm > 0f,
+                                        genre = genre
                                     )
                                 } else {
                                     Track(
@@ -146,7 +157,8 @@ object LibraryScanner {
                                         title = meta.first,
                                         artist = meta.second,
                                         durationMs = meta.third,
-                                        analyzed = false
+                                        analyzed = false,
+                                        genre = genre
                                     )
                                 }
                                 store.put(track)
@@ -189,7 +201,18 @@ object LibraryScanner {
             val doc = findBackup(root) ?: return
             val text = context.contentResolver.openInputStream(doc.uri)
                 ?.bufferedReader()?.use { it.readText() } ?: return
-            val arr = JSONObject(text).optJSONArray("tracks") ?: return
+            val rootObj = JSONObject(text)
+            // Installation fraîche : restaurer aussi réglages et historique
+            val fresh = store.tracks.value.none { it.analyzed }
+            if (fresh) {
+                rootObj.optJSONObject("settings")?.let { PlayerCore.applySettings(it) }
+                rootObj.optJSONObject("history")?.let { h ->
+                    val map = HashMap<String, Long>()
+                    for (k in h.keys()) map[k] = h.optLong(k)
+                    PlayHistory.import(map)
+                }
+            }
+            val arr = rootObj.optJSONArray("tracks") ?: return
 
             val byUri = audioFiles.associateBy { it.uri.toString() }
             val byName = HashMap<String, DocumentFile>()
@@ -230,8 +253,14 @@ object LibraryScanner {
             val doc = findBackup(root)
                 ?: root.createFile("application/json", BACKUP_BASENAME)
                 ?: return
+            // Bibliothèque + réglages + historique anti-répétition
+            val payload = JSONObject(store.exportJson())
+            payload.put("settings", PlayerCore.exportSettings())
+            val hist = JSONObject()
+            for ((k, v) in PlayHistory.export()) hist.put(k, v)
+            payload.put("history", hist)
             context.contentResolver.openOutputStream(doc.uri, "wt")?.use {
-                it.write(store.exportJson().toByteArray())
+                it.write(payload.toString().toByteArray())
             }
         } catch (_: Exception) {
         }
@@ -251,6 +280,24 @@ object LibraryScanner {
         val name = doc.name ?: return false
         val ext = name.substringAfterLast('.', "").lowercase()
         return ext in audioExtensions
+    }
+
+    /** Genre normalisé, ou « - » si le fichier n'en déclare pas. */
+    private fun readGenre(context: Context, uri: Uri): String {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            MixEngine.normalizeGenre(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)
+            ).ifBlank { "-" }
+        } catch (_: Exception) {
+            "-"
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
+        }
     }
 
     /** @return (titre, artiste, duréeMs) */

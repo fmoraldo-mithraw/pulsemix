@@ -63,6 +63,9 @@ object PlayerCore {
     /** File en cours (édition type playlist). */
     val queue = MutableStateFlow<List<Track>>(emptyList())
 
+    /** Enregistrement du set DJ en cours. */
+    val djRecording = MutableStateFlow(false)
+
     val mode = MutableStateFlow(PlayerMode.NORMAL)
     val currentTrack = MutableStateFlow<Track?>(null)
     val isPlaying = MutableStateFlow(false)
@@ -83,6 +86,7 @@ object PlayerCore {
     private var eqExo: android.media.audiofx.Equalizer? = null
     private var eqDj: android.media.audiofx.Equalizer? = null
     private var lastRecordedUri: String? = null
+    private var prevDjUri: String? = null
 
     // Persistance de l'état de lecture (reprise après fermeture/veille/plantage)
     private lateinit var stateStore: PlaybackStateStore
@@ -130,6 +134,7 @@ object PlayerCore {
 
         mixer = DjMixer(appContext, object : DjMixer.Listener {
             override fun onTrackChanged(track: Track, phaseIndex: Int) {
+                prevDjUri = currentTrack.value?.uri
                 currentTrack.value = track
                 currentPhase.value = phaseIndex
                 recordHistory(track.uri)
@@ -163,6 +168,7 @@ object PlayerCore {
                     exo.stop()
                     isPlaying.value = false
                 }
+                djRecording.value = false
                 try {
                     eqDj?.release()
                 } catch (_: Exception) {
@@ -286,7 +292,7 @@ object PlayerCore {
         persistState()
     }
 
-    fun startDj(mixPlan: MixEngine.MixPlan, fromPhase: Int = 0) {
+    fun startDj(mixPlan: MixEngine.MixPlan, fromPhase: Int = 0, rehearsal: Boolean = false) {
         if (mixPlan.phases.isEmpty()) return
         mode.value = PlayerMode.DJ
         plan = mixPlan
@@ -307,8 +313,63 @@ object PlayerCore {
         exo.play()
         startService()
 
-        mixer.start(mixPlan, currentPhase.value)
+        mixer.start(mixPlan, currentPhase.value, rehearsal)
         persistState()
+    }
+
+    /** Répétition des transitions d'un plan : seules les jonctions sont jouées. */
+    fun rehearseTransitions(mixPlan: MixEngine.MixPlan) =
+        startDj(mixPlan, 0, rehearsal = true)
+
+    /** Démarre/arrête l'enregistrement du set DJ (fichier M4A). */
+    fun toggleDjRecording() {
+        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        if (djRecording.value) {
+            mixer.setRecorder(null)
+            djRecording.value = false
+        } else {
+            try {
+                val dir = appContext.getExternalFilesDir("Mixes")
+                    ?: appContext.filesDir
+                val f = java.io.File(
+                    dir, "PulseMix-set-${System.currentTimeMillis() / 1000}.m4a"
+                )
+                mixer.setRecorder(MixRecorder(f))
+                djRecording.value = true
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Marque la transition qui vient de se produire comme ratée. */
+    fun markBadTransition() {
+        val from = prevDjUri ?: return
+        val to = currentTrack.value?.uri ?: return
+        if (from != to) com.pulsemix.app.data.TransitionFeedback.record(from, to)
+    }
+
+    /** Réglages exportés dans la sauvegarde du dossier de musique. */
+    fun exportSettings(): org.json.JSONObject {
+        val o = org.json.JSONObject()
+        o.put("skipIntros", skipIntros.value)
+        o.put("normalizeVolume", normalizeVolume.value)
+        o.put("eqBass", eqBands.value.first.toDouble())
+        o.put("eqMid", eqBands.value.second.toDouble())
+        o.put("eqTreble", eqBands.value.third.toDouble())
+        return o
+    }
+
+    /** Restaure les réglages depuis une sauvegarde (installation fraîche). */
+    fun applySettings(o: org.json.JSONObject) {
+        handler.post {
+            setSkipIntros(o.optBoolean("skipIntros", skipIntros.value))
+            setNormalizeVolume(o.optBoolean("normalizeVolume", normalizeVolume.value))
+            setEq(
+                o.optDouble("eqBass", 0.0).toFloat(),
+                o.optDouble("eqMid", 0.0).toFloat(),
+                o.optDouble("eqTreble", 0.0).toFloat()
+            )
+        }
     }
 
     // ------------------------------------------------------------ transport

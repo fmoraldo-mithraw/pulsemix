@@ -55,6 +55,15 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   (Clé publique par construction : ne pas publier sur un store avec.)
   Si une version installée avait été signée autrement, il faut désinstaller
   une dernière fois.
+- **v1.3** : mix/DJ **par genre** (chips de genres + genres au profil proche),
+  **enregistrement du set DJ** en M4A (bouton ⏺, fichiers dans
+  Android/data/…/files/Mixes), **répétition des transitions** (seules les
+  jonctions sont jouées), **limiteur doux** en sortie DJ, bouton
+  « transition ratée » (paires évitées ensuite), jamais deux morceaux du même
+  artiste d'affilée, **meilleur passage définissable à la main** (verrouillé),
+  **playlists nommées** (depuis la file, export M3U), filtre « non analysés »,
+  réglages et historique inclus dans la sauvegarde du dossier, cache disque
+  des jaquettes.
 - **Écran Réglages** : saut des intros parlées, normalisation du volume
   (activée par défaut, appliquée aussi aux decks DJ), égaliseur
   graves/médiums/aigus (lecture classique et moteur DJ).
