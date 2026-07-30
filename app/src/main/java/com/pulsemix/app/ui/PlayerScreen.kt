@@ -32,7 +32,7 @@ import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.FilterAlt
 import androidx.compose.material.icons.rounded.Loop
-import androidx.compose.material.icons.rounded.ThreeSixty
+import androidx.compose.material.icons.rounded.Autorenew
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Waves
 import androidx.compose.material.icons.rounded.FiberManualRecord
@@ -1087,7 +1087,7 @@ private fun FxSheet(vm: PlayerViewModel, dj: Boolean, onDismiss: () -> Unit) {
                     minLevel = 0, enabled = dj,
                     onToggle = { vm.setEchoLevel(if (echo == 0) 2 else 0) },
                     onLevel = { vm.setEchoLevel(it) })
-                FxControl("Auto-pan", Icons.Rounded.ThreeSixty, pan,
+                FxControl("Auto-pan", Icons.Rounded.Autorenew, pan,
                     enabled = dj,
                     onToggle = { vm.setPanLevel(if (pan == 0) 1 else 0) },
                     onLevel = { vm.setPanLevel(it) })
