@@ -251,7 +251,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         init {
             val best = track.bestStartMs.coerceIn(0L, max(0L, track.durationMs - 15_000L))
             val beat = track.firstBeatMs
-            startMs = if (beat in best..(best + track.segmentMs)) beat else best
+            // Ancre sur le premier beat du passage fort
+            val anchor = if (beat in best..(best + track.segmentMs)) beat else best
             // Modulation par phase, puis ré-arrondi aux phrases de 16 temps
             // pour que la fin reste sur une frontière musicale.
             var segMs = (track.segmentMs * lengthFactor).toLong()
@@ -260,7 +261,26 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val phrases = floor(segMs / phraseMs).toLong()
                 if (phrases >= 2) segMs = (phrases * phraseMs).toLong()
             }
-            logicalEndMs = min(best + segMs, track.durationMs)
+            // Transitions AUTOUR du passage fort, pas dedans :
+            // - entrée en avance de ~FADE_NORMAL_S (arrondie en battements
+            //   entiers pour garder la grille de beats exacte) : le fondu se
+            //   joue sur la montée qui précède, le passage fort démarre à
+            //   pleine puissance ;
+            // - sortie prolongée de ~FADE_LOCKED_HARMONIC_S après la fin du
+            //   passage fort : le fondu de sortie se joue sur la suite du
+            //   morceau, le passage fort est entendu en entier.
+            var leadMs = (FADE_NORMAL_S * 1000).toLong()
+            if (track.bpm > 0f) {
+                val beatMs = 60_000.0 / track.bpm
+                val beats = Math.round(FADE_NORMAL_S * 1000.0 / beatMs)
+                leadMs = (beats * beatMs).toLong()
+            }
+            leadMs = min(leadMs, anchor) // pas avant le début du fichier
+            startMs = anchor - leadMs
+            logicalEndMs = min(
+                anchor + segMs + (FADE_LOCKED_HARMONIC_S * 1000).toLong(),
+                track.durationMs
+            )
             decodeEndMs = min(logicalEndMs + TAIL_MS, track.durationMs)
 
             thread(name = "DjDeck-${track.title.take(12)}") {
