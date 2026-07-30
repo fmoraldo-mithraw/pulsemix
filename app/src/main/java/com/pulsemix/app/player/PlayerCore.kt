@@ -469,6 +469,21 @@ object PlayerCore {
         persistState()
     }
 
+    /** Déplace un élément de la file (édition type playlist). */
+    fun moveQueueItem(from: Int, to: Int) {
+        if (mode.value == PlayerMode.DJ) return
+        if (from == to || from !in queueTracks.indices || to !in queueTracks.indices) return
+        queueTracks = queueTracks.toMutableList().also {
+            val t = it.removeAt(from)
+            it.add(to, t)
+        }
+        if (from < exo.mediaItemCount && to < exo.mediaItemCount) {
+            exo.moveMediaItem(from, to)
+        }
+        updateFromExo()
+        persistState()
+    }
+
     /** Saute directement à un élément de la file. */
     fun playQueueItem(index: Int) {
         if (mode.value == PlayerMode.DJ) return
