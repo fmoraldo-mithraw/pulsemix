@@ -1259,12 +1259,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         }
     }
 
-    /** Journal des pannes du moteur DJ : filesDir/dj_log.txt (borné). */
+    /** Journal des pannes du moteur DJ : dj_log.txt (interne + externe,
+     *  comme crash_log.txt — visible dans Android/data/.../files). */
     private fun djLog(message: String) {
         try {
-            val f = java.io.File(context.filesDir, "dj_log.txt")
-            if (f.length() > 64_000) f.delete()
-            f.appendText("${java.util.Date()}: $message\n")
+            for (dir in listOfNotNull(
+                context.filesDir, context.getExternalFilesDir(null)
+            )) {
+                val f = java.io.File(dir, "dj_log.txt")
+                if (f.length() > 64_000) f.delete()
+                f.appendText("${java.util.Date()}: $message\n")
+            }
         } catch (_: Exception) {
         }
     }

@@ -987,6 +987,21 @@ object PlayerCore {
         return b.build()
     }
 
+    /** Journal partagé avec PlaybackService : service_log.txt (interne +
+     *  externe, comme crash_log.txt). */
+    private fun diagLog(message: String) {
+        try {
+            for (dir in listOfNotNull(
+                appContext.filesDir, appContext.getExternalFilesDir(null)
+            )) {
+                val f = java.io.File(dir, "service_log.txt")
+                if (f.length() > 64_000) f.delete()
+                f.appendText("${java.util.Date()}: [PlayerCore] $message\n")
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     private fun startService() {
         // Surtout pas startForegroundService : c'est une promesse que le
         // service appellera startForeground() sous ~10 s, or MediaSessionService
@@ -997,7 +1012,9 @@ object PlayerCore {
         // lui-même en avant-plan quand la lecture démarre.
         try {
             appContext.startService(Intent(appContext, PlaybackService::class.java))
-        } catch (_: Exception) {
+            diagLog("startService demandé")
+        } catch (e: Exception) {
+            diagLog("startService refusé : ${e::class.java.simpleName} ${e.message}")
             // App en arrière-plan (rare, les commandes viennent de l'UI) :
             // là, la version foreground est permise et la lecture qui démarre
             // fera poster la notification immédiatement.
@@ -1005,7 +1022,12 @@ object PlayerCore {
                 ContextCompat.startForegroundService(
                     appContext, Intent(appContext, PlaybackService::class.java)
                 )
-            } catch (_: Exception) {
+                diagLog("startForegroundService demandé")
+            } catch (e2: Exception) {
+                diagLog(
+                    "startForegroundService refusé : " +
+                        "${e2::class.java.simpleName} ${e2.message}"
+                )
             }
         }
     }
