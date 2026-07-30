@@ -44,6 +44,7 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Refresh
@@ -122,6 +123,7 @@ fun PlayerScreen(
     var showQueueSheet by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
     var showFxSheet by remember { mutableStateOf(false) }
+    var showTrackOptions by remember { mutableStateOf(false) }
     val sleepRemaining by vm.sleepRemainingMs.collectAsStateWithLifecycle()
 
     // Pas de défilement vertical : tout l'écran lecteur tient à l'écran
@@ -372,6 +374,18 @@ fun PlayerScreen(
                     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
             }
+            // Menu du morceau en cours (le même que dans la bibliothèque)
+            IconButton(
+                onClick = { showTrackOptions = true },
+                enabled = track != null
+            ) {
+                Icon(
+                    Icons.Rounded.MoreVert, "Options du morceau",
+                    tint = MaterialTheme.colorScheme.onSurface.copy(
+                        alpha = if (track != null) 0.6f else 0.25f
+                    )
+                )
+            }
             if (mode == PlayerMode.DJ) {
                 val recording by vm.djRecording.collectAsStateWithLifecycle()
                 IconButton(onClick = { vm.toggleDjRecording() }) {
@@ -475,6 +489,18 @@ fun PlayerScreen(
     // ------------------------------------------------------- file d'attente
     if (showFxSheet) {
         FxSheet(vm, dj = mode == PlayerMode.DJ) { showFxSheet = false }
+    }
+
+    // Menu d'options du morceau en cours (partagé avec la bibliothèque) —
+    // sur la version à jour de la bibliothèque si elle existe.
+    if (showTrackOptions) {
+        val cur = track
+        if (cur != null) {
+            val fresh = tracks.firstOrNull { it.uri == cur.uri } ?: cur
+            TrackOptionsDialogs(vm, tracks, fresh) { showTrackOptions = false }
+        } else {
+            showTrackOptions = false
+        }
     }
 
     if (showQueueSheet) {
