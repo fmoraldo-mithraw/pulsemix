@@ -21,6 +21,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
@@ -66,9 +68,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -322,22 +330,22 @@ fun PlayerScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-            val bassBoostOn by vm.bassBoost.collectAsStateWithLifecycle()
-            val speedBoostOn by vm.speedBoost.collectAsStateWithLifecycle()
-            IconButton(onClick = { vm.toggleBassBoost() }) {
-                Icon(
-                    Icons.Rounded.GraphicEq, "Bass boost",
-                    tint = if (bassBoostOn) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            }
-            IconButton(onClick = { vm.toggleSpeedBoost() }) {
-                Icon(
-                    Icons.Rounded.Speed, "Speed boost",
-                    tint = if (speedBoostOn) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            }
+            val bassLevel by vm.bassLevel.collectAsStateWithLifecycle()
+            val speedLevel by vm.speedLevel.collectAsStateWithLifecycle()
+            BoostButton(
+                icon = Icons.Rounded.GraphicEq,
+                label = "Bass boost",
+                level = bassLevel,
+                onToggle = { vm.toggleBassBoost() },
+                onLevel = { vm.setBassLevel(it) }
+            )
+            BoostButton(
+                icon = Icons.Rounded.Speed,
+                label = "Speed boost",
+                level = speedLevel,
+                onToggle = { vm.toggleSpeedBoost() },
+                onLevel = { vm.setSpeedLevel(it) }
+            )
             if (mode == PlayerMode.DJ) {
                 val recording by vm.djRecording.collectAsStateWithLifecycle()
                 IconButton(onClick = { vm.toggleDjRecording() }) {
@@ -810,6 +818,94 @@ private fun MixPlanCard(
                     Text("Répéter les transitions (jonctions seules)")
                 }
             }
+        }
+    }
+}
+
+/**
+ * Bouton de boost à crans (-3..+3).
+ * - Tap : bascule 0 ↔ +2 (boost standard).
+ * - Appui long puis glisser : chaque glissade d'un seuil (~40 dp) vers le
+ *   haut monte d'un cran, vers le bas descend d'un cran (jusqu'en négatif :
+ *   ralentir / couper les basses).
+ */
+@Composable
+private fun BoostButton(
+    icon: ImageVector,
+    label: String,
+    level: Int,
+    onToggle: () -> Unit,
+    onLevel: (Int) -> Unit
+) {
+    val stepPx = with(LocalDensity.current) { 40.dp.toPx() }
+    val curLevel by rememberUpdatedState(level)
+    val setLevel by rememberUpdatedState(onLevel)
+    val toggle by rememberUpdatedState(onToggle)
+    val haptics = LocalHapticFeedback.current
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { toggle() },
+                    onLongPress = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
+                )
+            }
+            .pointerInput(Unit) {
+                var dragLevel = 0
+                var acc = 0f
+                detectDragGesturesAfterLongPress(
+                    onDragStart = {
+                        dragLevel = curLevel
+                        acc = 0f
+                    },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        acc -= amount.y
+                        while (acc >= stepPx && dragLevel < 3) {
+                            dragLevel++
+                            acc -= stepPx
+                            setLevel(dragLevel)
+                            haptics.performHapticFeedback(
+                                HapticFeedbackType.LongPress
+                            )
+                        }
+                        while (acc <= -stepPx && dragLevel > -3) {
+                            dragLevel--
+                            acc += stepPx
+                            setLevel(dragLevel)
+                            haptics.performHapticFeedback(
+                                HapticFeedbackType.LongPress
+                            )
+                        }
+                        // En butée : ne pas accumuler au-delà d'un cran
+                        acc = acc.coerceIn(-stepPx, stepPx)
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon, label,
+            tint = when {
+                level > 0 -> MaterialTheme.colorScheme.primary
+                level < 0 -> MaterialTheme.colorScheme.tertiary
+                else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            }
+        )
+        if (level != 0) {
+            Text(
+                if (level > 0) "+$level" else "$level",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = if (level > 0) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 2.dp, end = 2.dp)
+            )
         }
     }
 }
