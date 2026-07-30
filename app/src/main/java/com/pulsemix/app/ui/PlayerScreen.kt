@@ -163,6 +163,18 @@ fun PlayerScreen(
             )
         }
 
+        // Échec de lancement (plan vide, aucun morceau analysé...) : dire
+        // pourquoi rien ne se passe au lieu de laisser des boutons muets.
+        val launchMsg by vm.launchMessage.collectAsStateWithLifecycle()
+        launchMsg?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
         Spacer(Modifier.height(12.dp))
 
         // ---------------------------------------------------- morceau courant

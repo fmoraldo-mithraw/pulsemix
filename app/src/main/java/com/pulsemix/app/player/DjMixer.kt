@@ -632,7 +632,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         try {
             audioTrack.play()
             ui.post { listener.onSessionReady(audioTrack.audioSessionId) }
-            deckA = openNextValid(startSegIndex, 1f) ?: return
+            deckA = openNextValid(startSegIndex, 1f)
+            if (deckA == null) {
+                djLog("aucun deck n'a pu s'ouvrir au lancement (décodage impossible ?)")
+                return
+            }
             deckA.startedAtFrame = 0L
             currentPhaseIndex = deckA.segment.phaseIndex
             announce(deckA)
@@ -1077,7 +1081,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     ui.post { listener.onProgress(p.coerceIn(0f, 1f)) }
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // Une panne du moteur DJ était avalée en silence : la lecture
+            // « ne démarrait jamais » sans aucune trace. On journalise.
+            djLog(android.util.Log.getStackTraceString(e))
         } finally {
             recorder?.stop()
             recorder = null
@@ -1090,6 +1097,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             audioTrack.release()
             running = false
             ui.post { listener.onStopped() }
+        }
+    }
+
+    /** Journal des pannes du moteur DJ : filesDir/dj_log.txt (borné). */
+    private fun djLog(message: String) {
+        try {
+            val f = java.io.File(context.filesDir, "dj_log.txt")
+            if (f.length() > 64_000) f.delete()
+            f.appendText("${java.util.Date()}: $message\n")
+        } catch (_: Exception) {
         }
     }
 
