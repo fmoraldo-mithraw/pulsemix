@@ -236,6 +236,29 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun saveTracksAsPlaylist(name: String, list: List<Track>) =
         com.pulsemix.app.data.PlaylistStore.save(name, list.map { it.uri })
 
+    // -------------------------------------------------- tags en ligne
+    val tagPending = com.pulsemix.app.library.TagFixer.pending
+    val tagProgress = com.pulsemix.app.library.TagFixer.progress
+
+    /** Cherche les tags corrects de toute la bibliothèque (MusicBrainz). */
+    fun fetchTagsAll() {
+        viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixAll(store) }
+    }
+
+    fun fetchTagsFor(track: Track) {
+        viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixOne(store, track) }
+    }
+
+    fun stopTagFetch() = com.pulsemix.app.library.TagFixer.requestStop()
+
+    fun acceptTag(s: com.pulsemix.app.library.TagFixer.Suggestion) {
+        com.pulsemix.app.library.TagFixer.accept(store, s)
+        viewModelScope.launch(Dispatchers.IO) { store.save() }
+    }
+
+    fun rejectTag(s: com.pulsemix.app.library.TagFixer.Suggestion) =
+        com.pulsemix.app.library.TagFixer.reject(s)
+
     fun playPlaylist(p: com.pulsemix.app.data.Playlist) {
         val byUri = tracks.value.associateBy { it.uri }
         val list = p.uris.mapNotNull { byUri[it] }

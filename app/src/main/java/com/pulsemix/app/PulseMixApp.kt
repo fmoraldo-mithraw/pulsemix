@@ -18,6 +18,7 @@ object Graph {
             PlayHistory.init(context)
             com.pulsemix.app.data.TransitionFeedback.init(context)
             com.pulsemix.app.data.PlaylistStore.init(context)
+            com.pulsemix.app.library.TagFixer.init(context)
         }
         PlayerCore.init(context)
         // Reprendre la dernière session (morceau + position) après une
