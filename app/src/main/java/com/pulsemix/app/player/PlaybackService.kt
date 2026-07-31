@@ -67,7 +67,9 @@ class PlaybackService : MediaSessionService() {
         val playing = player.isPlaying
         val meta = player.mediaMetadata
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_app)
+            // Icône monochrome dédiée : l'icône de l'appli (disque plein)
+            // rendait une silhouette illisible/invisible dans la barre.
+            .setSmallIcon(R.drawable.ic_stat_note)
             .setContentTitle(meta.title?.toString()?.ifBlank { null } ?: "PulseMix")
             .setContentText(meta.artist?.toString() ?: "")
             .setContentIntent(sessionIntent)
