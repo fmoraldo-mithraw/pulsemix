@@ -259,6 +259,23 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun rejectTag(s: com.pulsemix.app.library.TagFixer.Suggestion) =
         com.pulsemix.app.library.TagFixer.reject(s)
 
+    // -------------------------------------------------- import depuis URL
+    val importState = com.pulsemix.app.library.UrlImporter.state
+
+    /** Importe l'audio d'une URL dans le premier dossier scanné, puis analyse. */
+    fun importFromUrl(url: String) {
+        val folder = folders.value.firstOrNull() ?: return
+        viewModelScope.launch {
+            com.pulsemix.app.library.UrlImporter.import(getApplication(), url, folder)
+            // Nouveau(x) fichier(s) dans le dossier : relancer le scan
+            rescan()
+        }
+    }
+
+    fun stopImport() = com.pulsemix.app.library.UrlImporter.requestStop()
+    fun resetImport() = com.pulsemix.app.library.UrlImporter.reset()
+    fun hasFolder(): Boolean = folders.value.isNotEmpty()
+
     fun playPlaylist(p: com.pulsemix.app.data.Playlist) {
         val byUri = tracks.value.associateBy { it.uri }
         val list = p.uris.mapNotNull { byUri[it] }

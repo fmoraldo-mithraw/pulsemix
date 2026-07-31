@@ -22,10 +22,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -231,6 +235,109 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
             }
+        }
+    }
+}
+
+/**
+ * Écran « Importer depuis une URL » : colle un lien (fichier audio direct,
+ * item Internet Archive, flux podcast RSS) ; l'audio est téléchargé dans le
+ * dossier déjà scanné par le lecteur, puis analysé automatiquement.
+ *
+ * Note affichée : la récupération et l'usage des contenus relèvent de la
+ * responsabilité de l'utilisateur.
+ */
+@Composable
+fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
+    BackHandler { onBack() }
+    val state by vm.importState.collectAsStateWithLifecycle()
+    var url by remember { mutableStateOf("") }
+    val hasFolder = vm.hasFolder()
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        SubHeader("Importer depuis une URL", onBack)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Colle un lien direct vers un fichier audio, un item Internet " +
+                "Archive, ou un flux podcast RSS. Le fichier est téléchargé " +
+                "dans ton dossier de musique, puis analysé.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Tu es responsable de ce que tu télécharges et de son usage.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+        )
+        Spacer(Modifier.height(10.dp))
+
+        if (!hasFolder) {
+            Text(
+                "Choisis d'abord un dossier de musique dans la bibliothèque : " +
+                    "c'est là que les fichiers importés seront rangés.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+            return@Column
+        }
+
+        OutlinedTextField(
+            value = url,
+            onValueChange = { url = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("URL") },
+            placeholder = { Text("https://…") },
+            singleLine = true
+        )
+        Spacer(Modifier.height(8.dp))
+
+        val working = state is com.pulsemix.app.library.UrlImporter.State.Working
+        Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement
+            .spacedBy(8.dp)) {
+            Button(
+                onClick = { vm.importFromUrl(url) },
+                enabled = url.isNotBlank() && !working
+            ) { Text("Importer") }
+            if (working) {
+                OutlinedButton(onClick = { vm.stopImport() }) { Text("Stop") }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        when (val s = state) {
+            is com.pulsemix.app.library.UrlImporter.State.Working -> {
+                Text(
+                    s.message,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                LinearProgressIndicator(
+                    progress = {
+                        if (s.total > 0) s.done.toFloat() / s.total else 0f
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            is com.pulsemix.app.library.UrlImporter.State.Done -> {
+                Text(
+                    s.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                TextButton(onClick = { url = ""; vm.resetImport() }) {
+                    Text("Importer un autre lien")
+                }
+            }
+            is com.pulsemix.app.library.UrlImporter.State.Error -> {
+                Text(
+                    s.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            else -> {}
         }
     }
 }

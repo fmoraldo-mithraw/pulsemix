@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Label
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -91,6 +92,10 @@ fun LibraryScreen(
         Box(modifier.fillMaxSize()) { TagsScreen(vm, onBack = { subScreen = 0 }) }
         return
     }
+    if (subScreen == 3) {
+        Box(modifier.fillMaxSize()) { ImportUrlScreen(vm, onBack = { subScreen = 0 }) }
+        return
+    }
 
     Column(modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -100,6 +105,9 @@ fun LibraryScreen(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
+            IconButton(onClick = { subScreen = 3 }) {
+                Icon(Icons.Rounded.Download, "Importer depuis une URL")
+            }
             IconButton(onClick = { subScreen = 1 }) {
                 Icon(Icons.Rounded.QueueMusic, "Playlists")
             }
