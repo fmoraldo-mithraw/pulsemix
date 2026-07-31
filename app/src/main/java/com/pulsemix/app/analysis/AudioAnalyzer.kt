@@ -658,10 +658,15 @@ class AudioAnalyzer {
 
     /**
      * Détecte le début réel de la musique quand le morceau est préfacé d'un
-     * sketch ou d'une intro parlée : première fenêtre de 8 s dont l'énergie
-     * lissée se maintient à au moins 50 % du niveau « musique » du morceau
-     * (75e percentile). En deçà de 5 s, on considère que la musique commence
-     * tout de suite ; le saut est plafonné à 90 s.
+     * sketch ou d'une intro parlée. Volontairement CONSERVATEUR : une intro
+     * musicale douce (piano, nappe...) ne doit jamais être coupée.
+     *  - la musique « commence » à la première fenêtre de 8 s dont l'énergie
+     *    lissée atteint 32 % du niveau musique (75e percentile) — un vrai
+     *    passage musical calme dépasse ce seuil, un sketch parlé non ;
+     *  - on ne coupe que si le saut dépasse 10 s (un sketch est long) ;
+     *  - ET si l'avant-début est nettement plus calme que la musique
+     *    (< 55 % du niveau) — sinon c'est une intro musicale, on garde tout ;
+     *  - saut plafonné à 90 s.
      */
     private fun detectMusicStart(rms: List<Float>, blockMs: Double): Long {
         val n = rms.size
@@ -689,11 +694,16 @@ class AudioAnalyzer {
         while (i < cap) {
             var s = 0f
             for (j in i until i + win) s += smooth[j]
-            if (s / win >= 0.5f * musicLevel) break
+            if (s / win >= 0.32f * musicLevel) break
             i++
         }
-        // Musique quasi immédiate : pas d'intro à sauter
-        if (i * blockMs < 5_000.0) return 0L
+        // Saut court : pas un sketch, ne rien couper
+        if (i * blockMs < 10_000.0) return 0L
+        // L'avant-début doit être clairement plus calme que la musique :
+        // sinon c'est une intro musicale progressive, on la garde
+        var pre = 0f
+        for (j in 0 until i) pre += smooth[j]
+        if (pre / i >= 0.55f * musicLevel) return 0L
         // Petit pré-roll d'une demi-seconde avant le départ détecté
         return (i * blockMs - 500).toLong().coerceAtLeast(0L)
     }
