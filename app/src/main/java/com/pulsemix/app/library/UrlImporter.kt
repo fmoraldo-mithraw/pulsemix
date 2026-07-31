@@ -1,0 +1,280 @@
+package com.pulsemix.app.library
+
+import android.content.Context
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+/**
+ * Importe de l'audio depuis une URL vers le dossier déjà scanné par le
+ * lecteur (via SAF). Pensé pour les sources dont on a le droit de récupérer
+ * les fichiers : lien direct vers un fichier audio, item Internet Archive,
+ * ou entrée d'un flux podcast RSS.
+ *
+ * La récupération et l'usage des contenus relèvent de la responsabilité de
+ * l'utilisateur ; l'app ne fait que télécharger l'URL fournie.
+ */
+object UrlImporter {
+
+    sealed class State {
+        object Idle : State()
+        data class Working(val message: String, val done: Int, val total: Int) : State()
+        data class Done(val imported: Int, val message: String) : State()
+        data class Error(val message: String) : State()
+    }
+
+    val state: StateFlow<State> get() = _state
+    private val _state = MutableStateFlow<State>(State.Idle)
+
+    @Volatile private var stopRequested = false
+
+    fun requestStop() {
+        stopRequested = true
+    }
+
+    fun reset() {
+        _state.value = State.Idle
+    }
+
+    /**
+     * @param folderUri tree URI SAF d'un dossier scanné (destination).
+     */
+    suspend fun import(context: Context, rawUrl: String, folderUri: String) =
+        withContext(Dispatchers.IO) {
+            stopRequested = false
+            val url = rawUrl.trim()
+            if (url.isBlank()) {
+                _state.value = State.Error("URL vide.")
+                return@withContext
+            }
+            val root = try {
+                DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
+            } catch (_: Exception) {
+                null
+            }
+            if (root == null || !root.canWrite()) {
+                _state.value = State.Error(
+                    "Dossier de destination inaccessible en écriture. " +
+                        "Re-choisis le dossier dans la bibliothèque."
+                )
+                return@withContext
+            }
+            try {
+                val targets = resolveTargets(url)
+                if (targets.isEmpty()) {
+                    _state.value = State.Error(
+                        "Aucun fichier audio trouvé à cette URL."
+                    )
+                    return@withContext
+                }
+                var imported = 0
+                for ((i, t) in targets.withIndex()) {
+                    if (stopRequested) break
+                    _state.value = State.Working(
+                        "Téléchargement : ${t.name}", i, targets.size
+                    )
+                    if (downloadTo(context, root, t)) imported++
+                }
+                _state.value = State.Done(
+                    imported,
+                    if (imported == 0) "Rien n'a pu être importé."
+                    else "$imported fichier(s) importé(s). Analyse en cours…"
+                )
+            } catch (e: Exception) {
+                _state.value = State.Error(
+                    "Échec : ${e.message ?: e::class.java.simpleName}"
+                )
+            }
+        }
+
+    // ------------------------------------------------------------- ciblage
+
+    private data class Target(val url: String, val name: String)
+
+    /** Détermine les fichiers audio à télécharger selon le type d'URL. */
+    private fun resolveTargets(url: String): List<Target> {
+        val lower = url.lowercase()
+        // Internet Archive : page d'item -> métadonnées -> fichiers audio
+        val ia = Regex("archive\\.org/(details|download)/([^/?#]+)")
+            .find(lower)
+        if (ia != null) return archiveOrgTargets(ia.groupValues[2])
+        // Flux / page podcast (RSS ou Atom) : entrées <enclosure>
+        if (lower.endsWith(".xml") || lower.endsWith(".rss") ||
+            lower.contains("/feed") || lower.contains("/rss")
+        ) {
+            val fromFeed = podcastTargets(url)
+            if (fromFeed.isNotEmpty()) return fromFeed
+        }
+        // Lien direct vers un fichier audio
+        if (looksAudio(lower)) {
+            return listOf(Target(url, fileNameFromUrl(url)))
+        }
+        // Dernier recours : tenter le direct, la vérification du type se fera
+        // au téléchargement
+        return listOf(Target(url, fileNameFromUrl(url)))
+    }
+
+    private fun archiveOrgTargets(identifier: String): List<Target> {
+        val meta = httpText("https://archive.org/metadata/$identifier") ?: return emptyList()
+        val obj = JSONObject(meta)
+        val files = obj.optJSONArray("files") ?: return emptyList()
+        val server = obj.optString("server", "archive.org")
+        val dir = obj.optString("dir", "/$identifier")
+        val out = ArrayList<Target>()
+        val seenTitles = HashSet<String>()
+        for (i in 0 until files.length()) {
+            val f = files.getJSONObject(i)
+            val name = f.optString("name", "")
+            if (!looksAudio(name.lowercase())) continue
+            // Éviter les doublons de formats : garder un fichier par titre
+            val title = f.optString("title", name).lowercase()
+            if (!seenTitles.add(title)) continue
+            out.add(Target("https://$server$dir/$name", name))
+        }
+        return out
+    }
+
+    private fun podcastTargets(feedUrl: String): List<Target> {
+        val xml = httpText(feedUrl) ?: return emptyList()
+        val out = ArrayList<Target>()
+        val enclosure = Regex(
+            "<enclosure[^>]*url=\"([^\"]+)\"[^>]*>", RegexOption.IGNORE_CASE
+        )
+        val titles = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)
+            .findAll(xml).map { it.groupValues[1] }.toList()
+        var idx = 0
+        for (m in enclosure.findAll(xml)) {
+            val u = m.groupValues[1]
+            if (!looksAudio(u.lowercase()) && !u.lowercase().contains("audio")) continue
+            val t = titles.getOrNull(idx + 1)?.let { cleanXml(it) }
+                ?.take(80)?.ifBlank { null }
+            out.add(Target(u, (t ?: fileNameFromUrl(u)).ensureExt(u)))
+            idx++
+        }
+        return out
+    }
+
+    // ---------------------------------------------------------- transfert
+
+    private fun downloadTo(
+        context: Context,
+        root: DocumentFile,
+        t: Target
+    ): Boolean {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL(t.url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "PulseMix/1.4")
+            }
+            val type = conn.contentType ?: ""
+            // Refuser une page HTML renvoyée à la place d'un média
+            if (type.startsWith("text/") || type.contains("html")) return false
+            val name = uniqueName(root, sanitize(t.name).ensureExt(t.url, type))
+            val mime = when {
+                type.startsWith("audio/") -> type.substringBefore(';')
+                name.endsWith(".mp3") -> "audio/mpeg"
+                name.endsWith(".m4a") -> "audio/mp4"
+                name.endsWith(".flac") -> "audio/flac"
+                name.endsWith(".ogg") || name.endsWith(".opus") -> "audio/ogg"
+                name.endsWith(".wav") -> "audio/wav"
+                else -> "audio/*"
+            }
+            val doc = root.createFile(mime, name) ?: return false
+            context.contentResolver.openOutputStream(doc.uri)?.use { out ->
+                conn.inputStream.use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        if (stopRequested) {
+                            doc.delete()
+                            return false
+                        }
+                        val r = input.read(buf)
+                        if (r < 0) break
+                        out.write(buf, 0, r)
+                        total += r
+                    }
+                    if (total < 8_192) { // fichier suspect (erreur, page vide)
+                        doc.delete()
+                        return false
+                    }
+                }
+                return true
+            }
+            doc.delete()
+            false
+        } catch (_: Exception) {
+            false
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    // ------------------------------------------------------------- outils
+
+    private fun httpText(url: String): String? = try {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 12_000
+            readTimeout = 12_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "PulseMix/1.4")
+        }
+        val body = conn.inputStream.bufferedReader().use { it.readText() }
+        conn.disconnect()
+        body
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun looksAudio(s: String): Boolean =
+        Regex("\\.(mp3|m4a|aac|flac|ogg|opus|wav|weba)(\\?|$)").containsMatchIn(s)
+
+    private fun fileNameFromUrl(url: String): String {
+        val path = url.substringBefore('?').substringBefore('#')
+        val last = path.substringAfterLast('/').ifBlank { "import" }
+        return sanitize(java.net.URLDecoder.decode(last, "UTF-8"))
+    }
+
+    private fun String.ensureExt(url: String, contentType: String = ""): String {
+        if (Regex("\\.(mp3|m4a|aac|flac|ogg|opus|wav|weba)$", RegexOption.IGNORE_CASE)
+                .containsMatchIn(this)
+        ) return this
+        val ext = when {
+            contentType.contains("mpeg") -> "mp3"
+            contentType.contains("mp4") || contentType.contains("m4a") -> "m4a"
+            contentType.contains("flac") -> "flac"
+            contentType.contains("ogg") || contentType.contains("opus") -> "ogg"
+            contentType.contains("wav") -> "wav"
+            else -> Regex("\\.(mp3|m4a|aac|flac|ogg|opus|wav)")
+                .find(url.lowercase())?.groupValues?.get(1) ?: "mp3"
+        }
+        return "$this.$ext"
+    }
+
+    private fun sanitize(name: String): String =
+        name.replace(Regex("[/\\\\:*?\"<>|]"), "_").trim().take(120)
+            .ifBlank { "import.mp3" }
+
+    private fun cleanXml(s: String): String =
+        s.replace(Regex("<!\\[CDATA\\[|\\]\\]>"), "")
+            .replace("&amp;", "&").replace("&#39;", "'").trim()
+
+    private fun uniqueName(root: DocumentFile, name: String): String {
+        if (root.findFile(name) == null) return name
+        val dot = name.lastIndexOf('.')
+        val base = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        var i = 2
+        while (root.findFile("$base ($i)$ext") != null) i++
+        return "$base ($i)$ext"
+    }
+}
