@@ -274,6 +274,47 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun stopImport() = com.pulsemix.app.library.UrlImporter.requestStop()
     fun resetImport() = com.pulsemix.app.library.UrlImporter.reset()
+
+    /** Met à jour le binaire yt-dlp embarqué (extracteurs YouTube & co). */
+    fun updateImportEngine() {
+        viewModelScope.launch {
+            com.pulsemix.app.library.UrlImporter.updateEngine(getApplication())
+        }
+    }
+
+    // ------------------------------------------------- recherche YouTube
+    val ytResults =
+        kotlinx.coroutines.flow.MutableStateFlow<
+            List<com.pulsemix.app.library.StreamImporter.SearchResult>>(emptyList())
+    val ytSearching = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val ytSearchError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** Recherche sur YouTube (via yt-dlp, sans clé API). */
+    fun searchYoutube(query: String) {
+        if (query.isBlank() || ytSearching.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            ytSearching.value = true
+            ytSearchError.value = null
+            try {
+                ytResults.value =
+                    com.pulsemix.app.library.StreamImporter.search(
+                        getApplication(), query
+                    )
+                if (ytResults.value.isEmpty()) {
+                    ytSearchError.value = "Aucun résultat."
+                }
+            } catch (e: Exception) {
+                ytResults.value = emptyList()
+                ytSearchError.value = "Recherche impossible : " +
+                    (e.message ?: e::class.java.simpleName).take(160)
+            } finally {
+                ytSearching.value = false
+            }
+        }
+    }
+
+    fun cancelYoutubeSearch() =
+        com.pulsemix.app.library.StreamImporter.cancelSearch()
     fun hasFolder(): Boolean = folders.value.isNotEmpty()
 
     fun playPlaylist(p: com.pulsemix.app.data.Playlist) {

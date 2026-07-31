@@ -36,6 +36,7 @@ object UrlImporter {
 
     fun requestStop() {
         stopRequested = true
+        StreamImporter.requestStop()
     }
 
     fun reset() {
@@ -65,6 +66,11 @@ object UrlImporter {
                 )
                 return@withContext
             }
+            // Plateformes de streaming (YouTube, SoundCloud…) : yt-dlp embarqué
+            if (StreamImporter.handles(url)) {
+                importStream(context, url, root)
+                return@withContext
+            }
             try {
                 val targets = resolveTargets(url)
                 if (targets.isEmpty()) {
@@ -92,6 +98,115 @@ object UrlImporter {
                 )
             }
         }
+
+    // -------------------------------------------------- streaming (yt-dlp)
+
+    /**
+     * Import via yt-dlp : téléchargement + extraction MP3 dans le cache,
+     * puis copie vers le dossier SAF. Gère les playlists (une piste = un
+     * fichier). La barre de progression suit le pourcentage yt-dlp.
+     */
+    private fun importStream(
+        context: Context,
+        url: String,
+        root: DocumentFile
+    ) {
+        try {
+            val files = StreamImporter.download(context, url) { msg, pct ->
+                _state.value = State.Working(msg, pct.coerceAtLeast(0), 100)
+            }
+            if (files.isEmpty()) {
+                _state.value = if (stopRequested) {
+                    State.Done(0, "Import arrêté.")
+                } else {
+                    State.Error(
+                        "Aucun audio récupéré à cette URL. Si l'erreur vient " +
+                            "de l'extraction, essaie « Mettre à jour le moteur »."
+                    )
+                }
+                return
+            }
+            var imported = 0
+            for ((i, f) in files.withIndex()) {
+                if (stopRequested) break
+                _state.value = State.Working(
+                    "Copie : ${f.name}", i, files.size
+                )
+                if (copyLocalFile(context, root, f)) imported++
+            }
+            _state.value = State.Done(
+                imported,
+                if (imported == 0) "Rien n'a pu être importé."
+                else "$imported fichier(s) importé(s). Analyse en cours…"
+            )
+        } catch (e: Exception) {
+            _state.value = if (stopRequested) {
+                State.Done(0, "Import arrêté.")
+            } else {
+                State.Error(
+                    "Échec du téléchargement : " +
+                        (e.message ?: e::class.java.simpleName).take(200) +
+                        "\nSi l'erreur mentionne l'extraction ou le site, " +
+                        "essaie « Mettre à jour le moteur » puis relance."
+                )
+            }
+        } finally {
+            StreamImporter.cleanup(context)
+        }
+    }
+
+    /** Copie un fichier local (cache) vers le dossier SAF de la bibliothèque. */
+    private fun copyLocalFile(
+        context: Context,
+        root: DocumentFile,
+        src: java.io.File
+    ): Boolean {
+        return try {
+            val name = uniqueName(root, sanitize(src.name))
+            val mime = when {
+                name.endsWith(".mp3") -> "audio/mpeg"
+                name.endsWith(".m4a") -> "audio/mp4"
+                name.endsWith(".flac") -> "audio/flac"
+                name.endsWith(".ogg") || name.endsWith(".opus") -> "audio/ogg"
+                name.endsWith(".wav") -> "audio/wav"
+                else -> "audio/*"
+            }
+            val doc = root.createFile(mime, name) ?: return false
+            val out = context.contentResolver.openOutputStream(doc.uri)
+            if (out == null) {
+                doc.delete()
+                return false
+            }
+            out.use { o -> src.inputStream().use { it.copyTo(o, 64 * 1024) } }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Met à jour le binaire yt-dlp embarqué. À lancer quand un import
+     * streaming échoue : les extracteurs cassent quand les sites changent.
+     */
+    suspend fun updateEngine(context: Context) = withContext(Dispatchers.IO) {
+        _state.value = State.Working(
+            "Mise à jour du moteur de téléchargement…", 0, 0
+        )
+        try {
+            val version = StreamImporter.update(context)
+            _state.value = State.Done(
+                0,
+                "Moteur à jour" +
+                    (version?.let { " (yt-dlp $it)" } ?: "") +
+                    ". Relance l'import."
+            )
+        } catch (e: Exception) {
+            _state.value = State.Error(
+                "Mise à jour impossible : " +
+                    (e.message ?: e::class.java.simpleName).take(200)
+            )
+        }
+    }
 
     // ------------------------------------------------------------- ciblage
 

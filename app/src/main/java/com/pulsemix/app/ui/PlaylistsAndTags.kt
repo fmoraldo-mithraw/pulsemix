@@ -11,10 +11,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -33,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -240,9 +245,13 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
 }
 
 /**
- * Écran « Importer depuis une URL » : colle un lien (fichier audio direct,
- * item Internet Archive, flux podcast RSS) ; l'audio est téléchargé dans le
- * dossier déjà scanné par le lecteur, puis analysé automatiquement.
+ * Écran « Importer depuis une URL » :
+ *  - colle un lien (YouTube/SoundCloud/Bandcamp, fichier audio direct, item
+ *    Internet Archive, flux podcast RSS) ; ou
+ *  - cherche directement sur YouTube et télécharge un résultat d'un tap.
+ * L'audio arrive dans le dossier scanné par le lecteur, puis est analysé.
+ * En bas, « Mettre à jour yt-dlp » récupère la dernière version du moteur
+ * en temps réel (utile quand YouTube change son site et casse l'extraction).
  *
  * Note affichée : la récupération et l'usage des contenus relèvent de la
  * responsabilité de l'utilisateur.
@@ -251,24 +260,25 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
 fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     BackHandler { onBack() }
     val state by vm.importState.collectAsStateWithLifecycle()
+    val results by vm.ytResults.collectAsStateWithLifecycle()
+    val searching by vm.ytSearching.collectAsStateWithLifecycle()
+    val searchError by vm.ytSearchError.collectAsStateWithLifecycle()
     var url by remember { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }
     val hasFolder = vm.hasFolder()
+    val working = state is com.pulsemix.app.library.UrlImporter.State.Working
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         SubHeader("Importer depuis une URL", onBack)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Colle un lien direct vers un fichier audio, un item Internet " +
-                "Archive, ou un flux podcast RSS. Le fichier est téléchargé " +
-                "dans ton dossier de musique, puis analysé.",
+            "Colle un lien (YouTube, SoundCloud, Bandcamp, fichier audio, " +
+                "Internet Archive, podcast RSS) ou cherche sur YouTube. " +
+                "L'audio est téléchargé en MP3 dans ton dossier de musique, " +
+                "puis analysé. Tu es responsable de ce que tu télécharges " +
+                "et de son usage.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "Tu es responsable de ce que tu télécharges et de son usage.",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
         )
         Spacer(Modifier.height(10.dp))
 
@@ -282,6 +292,7 @@ fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             return@Column
         }
 
+        // ------------------------------------------------------ lien direct
         OutlinedTextField(
             value = url,
             onValueChange = { url = it },
@@ -291,10 +302,10 @@ fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             singleLine = true
         )
         Spacer(Modifier.height(8.dp))
-
-        val working = state is com.pulsemix.app.library.UrlImporter.State.Working
-        Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement
-            .spacedBy(8.dp)) {
+        Row(
+            horizontalArrangement = androidx.compose.foundation.layout
+                .Arrangement.spacedBy(8.dp)
+        ) {
             Button(
                 onClick = { vm.importFromUrl(url) },
                 enabled = url.isNotBlank() && !working
@@ -304,7 +315,8 @@ fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        // ----------------------------------------------- état de l'import
+        Spacer(Modifier.height(10.dp))
         when (val s = state) {
             is com.pulsemix.app.library.UrlImporter.State.Working -> {
                 Text(
@@ -334,10 +346,112 @@ fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 Text(
                     s.message,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             else -> {}
+        }
+
+        // ------------------------------------------------ recherche YouTube
+        Spacer(Modifier.height(12.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Chercher sur YouTube") },
+            placeholder = { Text("titre, artiste…") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(
+                onSearch = { vm.searchYoutube(query) }
+            ),
+            trailingIcon = {
+                IconButton(
+                    onClick = {
+                        if (searching) vm.cancelYoutubeSearch()
+                        else vm.searchYoutube(query)
+                    },
+                    enabled = searching || query.isNotBlank()
+                ) {
+                    Icon(
+                        if (searching) Icons.Rounded.Close
+                        else Icons.Rounded.Search,
+                        if (searching) "Annuler" else "Chercher"
+                    )
+                }
+            }
+        )
+        if (searching) {
+            Spacer(Modifier.height(6.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+        searchError?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
+        Spacer(Modifier.height(6.dp))
+        LazyColumn(Modifier.weight(1f)) {
+            items(results, key = { it.videoId }) { r ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // Un tap sur la ligne remplit le champ URL (pour
+                        // vérifier le lien avant de lancer, si on veut).
+                        .clickable { url = r.url }
+                        .padding(vertical = 6.dp)
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            r.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            listOf(r.channel, r.durationText)
+                                .filter { it.isNotBlank() }
+                                .joinToString(" • "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                                .copy(alpha = 0.6f)
+                        )
+                    }
+                    // Téléchargement direct du résultat, sans coller de lien
+                    IconButton(
+                        onClick = {
+                            url = r.url
+                            vm.importFromUrl(r.url)
+                        },
+                        enabled = !working
+                    ) {
+                        Icon(Icons.Rounded.Download, "Télécharger")
+                    }
+                }
+                HorizontalDivider()
+            }
+        }
+
+        // --------------------------------------- mise à jour du moteur
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                onClick = { vm.updateImportEngine() },
+                enabled = !working
+            ) { Text("Mettre à jour yt-dlp") }
+            Text(
+                "si YouTube casse l'extraction",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+            )
         }
     }
 }
