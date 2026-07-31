@@ -188,12 +188,41 @@ object TagFixer {
 
     // ---------------------------------------------------------- MusicBrainz
 
-    private data class Candidate(
+    data class Candidate(
         val title: String,
         val artist: String,
         val score: Int,
         val lengthMs: Long
     )
+
+    /**
+     * Recherche manuelle : l'utilisateur fournit titre (et artiste), on
+     * renvoie plusieurs candidats parmi lesquels choisir.
+     */
+    fun searchCandidates(title: String, artist: String): List<Candidate> =
+        lookup(title.trim(), artist.trim(), limit = 10)
+
+    /** Pré-remplissage du formulaire de recherche manuelle. */
+    fun prefill(t: Track): Pair<String, String> {
+        val cleaned = cleanTitle(t.title)
+        if (t.artist.isNotBlank()) return cleaned to t.artist
+        val split = splitArtistTitle(cleaned)
+        return if (split != null) split.second to split.first else cleaned to ""
+    }
+
+    /** Applique le candidat choisi à la main (bibliothèque seulement). */
+    fun applyManual(store: TrackStore, t: Track, c: Candidate) {
+        if (c.title.isBlank()) return
+        store.update(t.uri) {
+            it.copy(title = c.title, artist = c.artist.ifBlank { it.artist })
+        }
+        applied.value = (
+            listOf(Suggestion(t.uri, t.title, t.artist, c.title, c.artist, c.score)) +
+                applied.value
+            ).take(APPLIED_MAX)
+        pending.value = pending.value.filter { it.uri != t.uri }
+        save()
+    }
 
     /** Meilleur candidat : durée compatible d'abord, score ensuite. */
     private fun pickBest(cands: List<Candidate>, durMs: Long): Candidate? {
@@ -213,7 +242,7 @@ object TagFixer {
         lastRequestAt = System.currentTimeMillis()
     }
 
-    private fun lookup(title: String, artist: String): List<Candidate> {
+    private fun lookup(title: String, artist: String, limit: Int = 5): List<Candidate> {
         if (title.isBlank()) return emptyList()
         return try {
             throttle()
@@ -225,7 +254,7 @@ object TagFixer {
             }
             val url = URL(
                 "https://musicbrainz.org/ws/2/recording?query=" +
-                    URLEncoder.encode(q, "UTF-8") + "&fmt=json&limit=5"
+                    URLEncoder.encode(q, "UTF-8") + "&fmt=json&limit=$limit"
             )
             val conn = url.openConnection() as HttpURLConnection
             conn.connectTimeout = 8_000

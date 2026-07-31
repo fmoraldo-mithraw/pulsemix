@@ -47,6 +47,7 @@ fun TrackOptionsDialogs(
     var segEdit by remember(track.uri) { mutableStateOf(false) }
     var genreEdit by remember(track.uri) { mutableStateOf(false) }
     var delEdit by remember(track.uri) { mutableStateOf(false) }
+    var manualTagEdit by remember(track.uri) { mutableStateOf(false) }
 
     if (menuOpen) {
         AlertDialog(
@@ -99,6 +100,9 @@ fun TrackOptionsDialogs(
                     }
                     TextButton(onClick = { vm.fetchTagsFor(track); onClose() }) {
                         Text("Chercher les vrais tags en ligne")
+                    }
+                    TextButton(onClick = { manualTagEdit = true; menuOpen = false }) {
+                        Text("Corriger les tags à la main…")
                     }
                     TextButton(onClick = { delEdit = true; menuOpen = false }) {
                         Text(
@@ -291,6 +295,11 @@ fun TrackOptionsDialogs(
                 TextButton(onClick = onClose) { Text("Annuler") }
             }
         )
+    }
+
+    // -------------------------------------------- recherche manuelle des tags
+    if (manualTagEdit) {
+        ManualTagDialog(vm, track, onClose = onClose)
     }
 
     // --------------------------------------------------- confirmation suppression

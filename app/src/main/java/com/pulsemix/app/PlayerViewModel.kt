@@ -310,6 +310,47 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun rejectTag(s: com.pulsemix.app.library.TagFixer.Suggestion) =
         com.pulsemix.app.library.TagFixer.reject(s)
 
+    // ------------------------------------------- recherche manuelle de tags
+    val manualTagResults =
+        kotlinx.coroutines.flow.MutableStateFlow<
+            List<com.pulsemix.app.library.TagFixer.Candidate>>(emptyList())
+    val manualTagSearching = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val manualTagError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** Pré-remplissage (titre nettoyé, artiste déduit) du formulaire. */
+    fun manualTagPrefill(track: Track): Pair<String, String> =
+        com.pulsemix.app.library.TagFixer.prefill(track)
+
+    /** Recherche MusicBrainz avec les infos saisies par l'utilisateur. */
+    fun manualTagSearch(title: String, artist: String) {
+        if (title.isBlank() || manualTagSearching.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            manualTagSearching.value = true
+            manualTagError.value = null
+            manualTagResults.value = emptyList()
+            val res = com.pulsemix.app.library.TagFixer.searchCandidates(title, artist)
+            manualTagResults.value = res
+            if (res.isEmpty()) {
+                manualTagError.value =
+                    com.pulsemix.app.library.TagFixer.lastError.value
+                        ?: "Aucun résultat. Essaie d'autres mots (sans remix, " +
+                        "feat., etc.)."
+            }
+            manualTagSearching.value = false
+        }
+    }
+
+    fun resetManualTagSearch() {
+        manualTagResults.value = emptyList()
+        manualTagError.value = null
+    }
+
+    /** Applique le candidat choisi par l'utilisateur. */
+    fun applyManualTag(track: Track, c: com.pulsemix.app.library.TagFixer.Candidate) {
+        com.pulsemix.app.library.TagFixer.applyManual(store, track, c)
+        viewModelScope.launch(Dispatchers.IO) { store.save() }
+    }
+
     // -------------------------------------------------- import depuis URL
     val importState = com.pulsemix.app.library.UrlImporter.state
 

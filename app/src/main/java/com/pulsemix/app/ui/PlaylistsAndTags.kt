@@ -145,6 +145,8 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     val appliedList by vm.tagApplied.collectAsStateWithLifecycle()
     val tracks by vm.tracks.collectAsStateWithLifecycle()
     var showApplied by remember { mutableStateOf(false) }
+    // Recherche manuelle depuis une proposition incertaine
+    var manualFor by remember { mutableStateOf<com.pulsemix.app.data.Track?>(null) }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         SubHeader("Tags en ligne", onBack)
@@ -252,12 +254,22 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                                     color = MaterialTheme.colorScheme.error
                                 )
                             }
+                            // Ni l'un ni l'autre : chercher soi-même avec
+                            // des infos corrigées et choisir le bon résultat
+                            TextButton(onClick = {
+                                manualFor = tracks.find { it.uri == s.uri }
+                            }) { Text("Affiner…") }
                         }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
             }
         }
+    }
+
+    // ---------------------------------------- recherche manuelle depuis la liste
+    manualFor?.let { t ->
+        ManualTagDialog(vm, t, onClose = { manualFor = null })
     }
 
     // ------------------------------------- historique des corrections faites
