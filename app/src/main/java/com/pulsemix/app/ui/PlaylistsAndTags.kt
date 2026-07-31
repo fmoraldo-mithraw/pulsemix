@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
@@ -141,7 +142,9 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     val pending by vm.tagPending.collectAsStateWithLifecycle()
     val prog by vm.tagProgress.collectAsStateWithLifecycle()
     val tagError by vm.tagError.collectAsStateWithLifecycle()
+    val appliedList by vm.tagApplied.collectAsStateWithLifecycle()
     val tracks by vm.tracks.collectAsStateWithLifecycle()
+    var showApplied by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         SubHeader("Tags en ligne", onBack)
@@ -191,6 +194,11 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.error
             )
+        }
+        if (appliedList.isNotEmpty()) {
+            TextButton(onClick = { showApplied = true }) {
+                Text("Voir les morceaux corrigés (${appliedList.size})")
+            }
         }
 
         Spacer(Modifier.height(12.dp))
@@ -250,6 +258,55 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    // ------------------------------------- historique des corrections faites
+    if (showApplied) {
+        AlertDialog(
+            onDismissRequest = { showApplied = false },
+            title = { Text("Morceaux corrigés (${appliedList.size})") },
+            text = {
+                LazyColumn {
+                    items(appliedList.size) { i ->
+                        val s = appliedList[i]
+                        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Text(
+                                listOf(s.oldTitle, s.oldArtist)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" — "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.55f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "→ " + listOf(s.newTitle, s.newArtist)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" — "),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showApplied = false }) { Text("Fermer") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    vm.clearTagApplied()
+                    showApplied = false
+                }) {
+                    Text("Vider la liste", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        )
     }
 }
 

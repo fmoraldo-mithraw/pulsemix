@@ -40,6 +40,12 @@ object TagFixer {
     /** Dernière erreur réseau/MusicBrainz (null si tout va bien). */
     val lastError = MutableStateFlow<String?>(null)
 
+    /** Corrections appliquées (auto ou validées), la plus récente d'abord. */
+    val applied = MutableStateFlow<List<Suggestion>>(emptyList())
+
+    /** Nombre maximal d'entrées gardées dans l'historique des corrections. */
+    private const val APPLIED_MAX = 300
+
     /** Progression du passage bibliothèque : (faits, total, appliqués auto). */
     val progress: StateFlow<Triple<Int, Int, Int>?> get() = _progress
     private val _progress = MutableStateFlow<Triple<Int, Int, Int>?>(null)
@@ -96,7 +102,13 @@ object TagFixer {
                 artist = s.newArtist.ifBlank { it.artist }
             )
         }
+        applied.value = (listOf(s) + applied.value).take(APPLIED_MAX)
         pending.value = pending.value.filter { it.uri != s.uri }
+        save()
+    }
+
+    fun clearApplied() {
+        applied.value = emptyList()
         save()
     }
 
@@ -147,6 +159,14 @@ object TagFixer {
                         artist = best.artist.ifBlank { it.artist }
                     )
                 }
+                applied.value = (
+                    listOf(
+                        Suggestion(
+                            t.uri, t.title, t.artist,
+                            best.title, best.artist, best.score
+                        )
+                    ) + applied.value
+                ).take(APPLIED_MAX)
                 pending.value = pending.value.filter { it.uri != t.uri }
                 return true
             }
@@ -294,33 +314,33 @@ object TagFixer {
     // ---------------------------------------------------------- persistance
 
     private fun file() = java.io.File(appContext!!.filesDir, "tag_suggestions.json")
+    private fun appliedFile() = java.io.File(appContext!!.filesDir, "tag_applied.json")
 
-    private fun load() {
-        try {
-            val arr = JSONArray(file().readText())
-            val list = ArrayList<Suggestion>()
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                list.add(
-                    Suggestion(
-                        o.getString("uri"),
-                        o.optString("oldTitle", ""),
-                        o.optString("oldArtist", ""),
-                        o.optString("newTitle", ""),
-                        o.optString("newArtist", ""),
-                        o.optInt("score", 0)
-                    )
+    private fun readList(f: java.io.File): List<Suggestion> = try {
+        val arr = JSONArray(f.readText())
+        val list = ArrayList<Suggestion>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            list.add(
+                Suggestion(
+                    o.getString("uri"),
+                    o.optString("oldTitle", ""),
+                    o.optString("oldArtist", ""),
+                    o.optString("newTitle", ""),
+                    o.optString("newArtist", ""),
+                    o.optInt("score", 0)
                 )
-            }
-            pending.value = list
-        } catch (_: Exception) {
+            )
         }
+        list
+    } catch (_: Exception) {
+        emptyList()
     }
 
-    private fun save() {
+    private fun writeList(f: java.io.File, list: List<Suggestion>) {
         try {
             val arr = JSONArray()
-            for (s in pending.value) {
+            for (s in list) {
                 arr.put(
                     JSONObject()
                         .put("uri", s.uri)
@@ -331,8 +351,18 @@ object TagFixer {
                         .put("score", s.score)
                 )
             }
-            file().writeText(arr.toString())
+            f.writeText(arr.toString())
         } catch (_: Exception) {
         }
+    }
+
+    private fun load() {
+        pending.value = readList(file())
+        applied.value = readList(appliedFile())
+    }
+
+    private fun save() {
+        writeList(file(), pending.value)
+        writeList(appliedFile(), applied.value)
     }
 }
