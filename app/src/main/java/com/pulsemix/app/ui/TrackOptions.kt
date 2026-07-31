@@ -90,6 +90,9 @@ fun TrackOptionsDialogs(
                                     ?.let { " ($it)" } ?: "") + "…"
                         )
                     }
+                    TextButton(onClick = { vm.fetchTagsFor(track); onClose() }) {
+                        Text("Chercher les vrais tags en ligne")
+                    }
                     TextButton(onClick = { delEdit = true; menuOpen = false }) {
                         Text(
                             "Supprimer le fichier…",

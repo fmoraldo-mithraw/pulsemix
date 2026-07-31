@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -151,7 +152,10 @@ fun LibraryScreen(
         }
         if (folders.isNotEmpty() && !scanning) {
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedButton(onClick = { vm.rescan() }) {
                     Text(
                         if (unanalyzed > 0) "Reprendre l'analyse ($unanalyzed restants)"
@@ -161,7 +165,103 @@ fun LibraryScreen(
                 OutlinedButton(onClick = { vm.rescanFromScratch() }) {
                     Text("Tout réanalyser")
                 }
+                val tagProg by vm.tagProgress.collectAsStateWithLifecycle()
+                if (tagProg == null) {
+                    OutlinedButton(
+                        onClick = { vm.fetchTagsAll() },
+                        enabled = tracks.isNotEmpty()
+                    ) { Text("Tags en ligne") }
+                }
             }
+        }
+
+        // Recherche de tags en cours : progression + arrêt
+        run {
+            val tagProg by vm.tagProgress.collectAsStateWithLifecycle()
+            tagProg?.let { (done, total, applied) ->
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Tags en ligne : $done/$total — $applied corrigés auto",
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                    TextButton(onClick = { vm.stopTagFetch() }) { Text("Stop") }
+                }
+                LinearProgressIndicator(
+                    progress = { if (total > 0) done.toFloat() / total else 0f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        // Propositions de tags incertaines : liste à valider à la main
+        val tagPending by vm.tagPending.collectAsStateWithLifecycle()
+        var showTagDialog by remember { mutableStateOf(false) }
+        if (tagPending.isNotEmpty()) {
+            TextButton(onClick = { showTagDialog = true }) {
+                Text("Tags proposés : ${tagPending.size} à valider…")
+            }
+        }
+        if (showTagDialog) {
+            AlertDialog(
+                onDismissRequest = { showTagDialog = false },
+                title = { Text("Tags à valider (${tagPending.size})") },
+                text = {
+                    Column {
+                        Text(
+                            "Corrections trouvées en ligne dont l'appli n'est " +
+                                "pas sûre. Les fichiers audio ne sont pas " +
+                                "modifiés : seul l'affichage dans PulseMix change.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                            items(tagPending, key = { it.uri }) { s ->
+                                Column(Modifier.fillMaxWidth()) {
+                                    Text(
+                                        listOf(s.oldTitle, s.oldArtist)
+                                            .filter { it.isNotBlank() }
+                                            .joinToString(" — "),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                            .copy(alpha = 0.55f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "→ " + listOf(s.newTitle, s.newArtist)
+                                            .filter { it.isNotBlank() }
+                                            .joinToString(" — "),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Row {
+                                        TextButton(onClick = { vm.acceptTag(s) }) {
+                                            Text("Accepter")
+                                        }
+                                        TextButton(onClick = { vm.rejectTag(s) }) {
+                                            Text(
+                                                "Refuser",
+                                                color = MaterialTheme.colorScheme.error
+                                            )
+                                        }
+                                    }
+                                    HorizontalDivider(
+                                        color = MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showTagDialog = false }) { Text("Fermer") }
+                }
+            )
         }
 
         if (p != null) {
