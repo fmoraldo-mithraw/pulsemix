@@ -56,6 +56,13 @@ fun TrackOptionsDialogs(
             },
             text = {
                 Column {
+                    val plays = remember(track.uri) { vm.playCount(track) }
+                    Text(
+                        if (plays == 0) "Jamais joué"
+                        else "Joué $plays fois",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                    )
                     TextButton(onClick = { vm.preview(track); onClose() }) {
                         Text("▶ Écouter le meilleur passage")
                     }

@@ -279,6 +279,11 @@ object LibraryScanner {
                     for (k in h.keys()) map[k] = h.optLong(k)
                     PlayHistory.import(map)
                 }
+                rootObj.optJSONObject("playCounts")?.let { h ->
+                    val map = HashMap<String, Int>()
+                    for (k in h.keys()) map[k] = h.optInt(k)
+                    PlayHistory.importCounts(map)
+                }
             }
             val arr = rootObj.optJSONArray("tracks") ?: return
 
@@ -327,6 +332,9 @@ object LibraryScanner {
             val hist = JSONObject()
             for ((k, v) in PlayHistory.export()) hist.put(k, v)
             payload.put("history", hist)
+            val plays = JSONObject()
+            for ((k, v) in PlayHistory.exportCounts()) plays.put(k, v)
+            payload.put("playCounts", plays)
             context.contentResolver.openOutputStream(doc.uri, "wt")?.use {
                 it.write(payload.toString().toByteArray())
             }

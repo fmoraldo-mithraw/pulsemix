@@ -129,9 +129,15 @@ object MixEngine {
         val out = ArrayList<Track>(min(n, window.size))
         repeat(min(n, window.size)) {
             var idx = rnd.nextInt(window.size)
-            // anti-répétition : un morceau joué récemment obtient un re-tirage
-            if (!window[idx].favorite && PlayHistory.penalty(window[idx].uri) > 0.5f) {
+            // anti-répétition : un morceau joué récemment ou beaucoup trop
+            // joué obtient jusqu'à deux re-tirages
+            var tries = 0
+            while (tries < 2 && !window[idx].favorite &&
+                (PlayHistory.penalty(window[idx].uri) > 0.5f ||
+                    PlayHistory.overplayPenalty(window[idx].uri) > 0.5f)
+            ) {
                 idx = rnd.nextInt(window.size)
+                tries++
             }
             // favoris légèrement avantagés
             if (rnd.nextFloat() < 0.25f) {
@@ -156,6 +162,9 @@ object MixEngine {
         val harmonic = camelotScore(prev.camelot, cand.camelot) * 4f
         // Anti-répétition (48 h) et petit bonus favori
         val recency = PlayHistory.penalty(cand.uri) * 3f
+        // Compteur de lectures : un morceau beaucoup trop joué s'efface
+        // au profit des autres (sans devenir interdit)
+        val overplay = PlayHistory.overplayPenalty(cand.uri) * 3f
         val favBonus = if (cand.favorite) 0.5f else 0f
         // Jamais deux morceaux du même artiste d'affilée (si évitable)
         val sameArtist = if (cand.artist.isNotBlank() &&
@@ -173,7 +182,7 @@ object MixEngine {
                 abs(prev.energyMean - cand.energyMean) / 0.15f +
                 abs(prev.onsetRate - cand.onsetRate) / 3f
             ).coerceAtMost(3f) * 1.2f
-        return delta + dirPenalty - harmonic + recency - favBonus +
+        return delta + dirPenalty - harmonic + recency + overplay - favBonus +
             sameArtist + badPair + styleDist
     }
 
@@ -570,7 +579,8 @@ object MixEngine {
             val bright = abs((t.centroid - cLo) / cSpan - (seed.centroid - cLo) / cSpan)
             val onset = abs((t.onsetRate - oLo) / oSpan - (seed.onsetRate - oLo) / oSpan)
             return 2.5f * bpmDist + 0.8f * harmonic + 1.2f * energy +
-                0.6f * bright + 0.4f * onset + 0.5f * PlayHistory.penalty(t.uri)
+                0.6f * bright + 0.4f * onset + 0.5f * PlayHistory.penalty(t.uri) +
+                0.5f * PlayHistory.overplayPenalty(t.uri)
         }
 
         // Distances figées avant le tri (la pénalité d'historique varie avec

@@ -164,6 +164,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Pré-écoute du meilleur passage. */
     fun preview(track: Track) = PlayerCore.playPreview(track)
 
+    /** Nombre de lectures du morceau (compteur persistant). */
+    fun playCount(track: Track): Int =
+        com.pulsemix.app.data.PlayHistory.count(track.uri)
+
     fun toggleFavorite(track: Track) = updateTrack(track.uri) {
         it.copy(favorite = !it.favorite)
     }
