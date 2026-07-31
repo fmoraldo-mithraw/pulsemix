@@ -227,6 +227,15 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun savePlaylistFromQueue(name: String) =
         com.pulsemix.app.data.PlaylistStore.save(name, queue.value.map { it.uri })
 
+    /** Lit une liste arbitraire (résultat de recherche) comme file de lecture. */
+    fun playTracks(list: List<Track>) {
+        if (list.isNotEmpty()) PlayerCore.playNormal(list, 0)
+    }
+
+    /** Sauvegarde une liste arbitraire comme playlist (interface, sans fichier). */
+    fun saveTracksAsPlaylist(name: String, list: List<Track>) =
+        com.pulsemix.app.data.PlaylistStore.save(name, list.map { it.uri })
+
     fun playPlaylist(p: com.pulsemix.app.data.Playlist) {
         val byUri = tracks.value.associateBy { it.uri }
         val list = p.uris.mapNotNull { byUri[it] }
