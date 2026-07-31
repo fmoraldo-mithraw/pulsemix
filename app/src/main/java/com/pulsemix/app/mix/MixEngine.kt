@@ -423,10 +423,15 @@ object MixEngine {
         // titre présent dans deux dossiers différents)
         val deduped = plans.map { dedupePlan(it) }
 
-        // Durée cible : réduire chaque plan à la durée demandée
+        // Durée cible : réduire les plans trop longs, mais aussi ALLONGER
+        // les trop courts — les générateurs ont des tailles de pool fixes
+        // (4-6 morceaux par phase), donc sans extension un « 2 h » en DJ
+        // plafonnait à ~20 min quelle que soit la durée choisie.
         if (targetMinutes != null) {
             val targetMs = targetMinutes * 60_000L
-            return deduped.map { trimToDuration(it, targetMs, dj) }
+            return deduped.map {
+                extendToDuration(trimToDuration(it, targetMs, dj), targetMs, dj, tracks)
+            }
         }
         return deduped
     }
@@ -472,6 +477,59 @@ object MixEngine {
             plan.phases.mapIndexedNotNull { i, ph ->
                 if (phases[i].isEmpty()) null else Phase(ph.name, phases[i].toList())
             }
+        )
+    }
+
+    /**
+     * Allonge un plan trop court pour la durée cible : enchaîne des morceaux
+     * compatibles supplémentaires au bout de la dernière phase, tant que ça
+     * rapproche de la cible. L'arc des phases existantes est préservé.
+     */
+    private fun extendToDuration(
+        plan: MixPlan,
+        targetMs: Long,
+        dj: Boolean,
+        all: List<Track>
+    ): MixPlan {
+        val phases = plan.phases.map { it.tracks.toMutableList() }.toMutableList()
+        val last = phases.lastOrNull()?.takeIf { it.isNotEmpty() } ?: return plan
+        var total = phases.sumOf { ph -> ph.sumOf { trackLenMs(it, dj) } }
+        if (total >= targetMs) return plan
+
+        fun nameKey(t: Track): String? = t.title.trim().lowercase()
+            .takeIf { it.isNotBlank() && it != "?" }
+            ?.let { "$it|${t.artist.trim().lowercase()}" }
+
+        val usedUris = phases.flatten().map { it.uri }.toHashSet()
+        val usedNames = phases.flatten().mapNotNull { nameKey(it) }.toHashSet()
+        val pool = all.filter {
+            it.analyzed && it.bpm > 0f && !it.excluded &&
+                it.uri !in usedUris && nameKey(it) !in usedNames
+        }.toMutableList()
+
+        while (pool.isNotEmpty()) {
+            val prev = last.last()
+            var bestIdx = 0
+            var bestCost = Float.MAX_VALUE
+            for (i in pool.indices) {
+                val c = cost(prev, pool[i], ascending = true)
+                if (c < bestCost) {
+                    bestCost = c
+                    bestIdx = i
+                }
+            }
+            val next = pool.removeAt(bestIdx)
+            val newTotal = total + trackLenMs(next, dj)
+            // On s'arrête dès qu'ajouter éloigne de la cible plus que ça
+            // ne l'approche (au plus proche, léger dépassement compris).
+            if (abs(newTotal - targetMs) >= abs(total - targetMs)) break
+            last.add(next)
+            nameKey(next)?.let { usedNames.add(it) }
+            total = newTotal
+        }
+        return MixPlan(
+            plan.id, plan.name, plan.description,
+            plan.phases.mapIndexed { i, ph -> Phase(ph.name, phases[i].toList()) }
         )
     }
 
