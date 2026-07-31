@@ -121,12 +121,13 @@ object TagFixer {
     private fun handle(store: TrackStore, t: Track): Boolean {
         val cleaned = cleanTitle(t.title)
         val split = splitArtistTitle(cleaned)
+        val artistTag = cleanArtist(t.artist)
 
         // Essais du plus précis au plus vague : tag artiste existant, puis
         // découpage « Artiste - Titre » du nom de fichier, puis titre seul.
         // On s'arrête au premier essai qui donne une correction sûre.
         val attempts = buildList {
-            if (t.artist.isNotBlank()) add(cleaned to t.artist)
+            if (artistTag.isNotBlank()) add(cleaned to artistTag)
             if (split != null) add(split.second to split.first)
             add((split?.second ?: cleaned) to "")
         }.distinct()
@@ -205,7 +206,8 @@ object TagFixer {
     /** Pré-remplissage du formulaire de recherche manuelle. */
     fun prefill(t: Track): Pair<String, String> {
         val cleaned = cleanTitle(t.title)
-        if (t.artist.isNotBlank()) return cleaned to t.artist
+        val artist = cleanArtist(t.artist)
+        if (artist.isNotBlank()) return cleaned to artist
         val split = splitArtistTitle(cleaned)
         return if (split != null) split.second to split.first else cleaned to ""
     }
@@ -300,6 +302,21 @@ object TagFixer {
         val title = m.groupValues[2].trim()
         if (artist.isBlank() || title.isBlank()) return null
         return artist to title
+    }
+
+    // Valeurs d'artiste « poubelle » écrites par certains logiciels de
+    // téléchargement : à ignorer pour les recherches — le vrai artiste
+    // sera retrouvé via le nom de fichier ou MusicBrainz.
+    private val junkArtists = setOf(
+        "downloads", "download", "téléchargements", "telechargements",
+        "unknown", "unknown artist", "<unknown>", "artiste inconnu",
+        "various artists", "va", "audio", "music"
+    )
+
+    /** Artiste utilisable pour une recherche ("" si valeur poubelle). */
+    private fun cleanArtist(raw: String): String {
+        val a = raw.trim()
+        return if (a.lowercase() in junkArtists) "" else a
     }
 
     /** Nettoie un titre « nom de fichier » avant la recherche. */
