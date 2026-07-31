@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -145,8 +146,10 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     val appliedList by vm.tagApplied.collectAsStateWithLifecycle()
     val tracks by vm.tracks.collectAsStateWithLifecycle()
     var showApplied by remember { mutableStateOf(false) }
-    // Recherche manuelle depuis une proposition incertaine
+    // Recherche manuelle : depuis une proposition incertaine, ou depuis
+    // n'importe quel morceau via le sélecteur ci-dessous
     var manualFor by remember { mutableStateOf<com.pulsemix.app.data.Track?>(null) }
+    var pickTrack by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         SubHeader("Tags en ligne", onBack)
@@ -197,9 +200,15 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.error
             )
         }
-        if (appliedList.isNotEmpty()) {
-            TextButton(onClick = { showApplied = true }) {
-                Text("Voir les morceaux corrigés (${appliedList.size})")
+        Row {
+            TextButton(
+                onClick = { pickTrack = true },
+                enabled = tracks.isNotEmpty()
+            ) { Text("Corriger un morceau…") }
+            if (appliedList.isNotEmpty()) {
+                TextButton(onClick = { showApplied = true }) {
+                    Text("Morceaux corrigés (${appliedList.size})")
+                }
             }
         }
 
@@ -270,6 +279,71 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     // ---------------------------------------- recherche manuelle depuis la liste
     manualFor?.let { t ->
         ManualTagDialog(vm, t, onClose = { manualFor = null })
+    }
+
+    // -------------------------- choisir n'importe quel morceau à corriger
+    if (pickTrack) {
+        var filter by remember { mutableStateOf("") }
+        val filtered = remember(filter, tracks) {
+            val q = filter.trim()
+            (if (q.isBlank()) tracks
+            else tracks.filter {
+                it.title.contains(q, ignoreCase = true) ||
+                    it.artist.contains(q, ignoreCase = true)
+            }).take(60)
+        }
+        AlertDialog(
+            onDismissRequest = { pickTrack = false },
+            title = { Text("Quel morceau corriger ?") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = filter,
+                        onValueChange = { filter = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Filtrer (titre ou artiste)") },
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                        items(filtered, key = { it.uri }) { t ->
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        pickTrack = false
+                                        manualFor = t
+                                    }
+                                    .padding(vertical = 6.dp)
+                            ) {
+                                Text(
+                                    t.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (t.artist.isNotBlank()) {
+                                    Text(
+                                        t.artist,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                            .copy(alpha = 0.6f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { pickTrack = false }) { Text("Fermer") }
+            }
+        )
     }
 
     // ------------------------------------- historique des corrections faites
