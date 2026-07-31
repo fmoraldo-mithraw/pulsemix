@@ -270,6 +270,59 @@ fun LibraryScreen(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.secondary
             )
+            // Résultat de recherche/filtre : lecture directe comme file, et
+            // sauvegarde en playlist depuis l'interface (aucun fichier à gérer)
+            val filterActive = search.isNotBlank() || compatOnly || failedOnly
+            if (filterActive && displayed.isNotEmpty()) {
+                var showSaveSearch by remember { mutableStateOf(false) }
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { vm.playTracks(displayed) }) {
+                        Text("▶ Lire ces ${displayed.size} morceaux")
+                    }
+                    OutlinedButton(onClick = { showSaveSearch = true }) {
+                        Text("En playlist…")
+                    }
+                }
+                if (showSaveSearch) {
+                    var plName by remember {
+                        mutableStateOf(search.trim().ifBlank { "Sélection" })
+                    }
+                    AlertDialog(
+                        onDismissRequest = { showSaveSearch = false },
+                        title = { Text("Enregistrer comme playlist") },
+                        text = {
+                            Column {
+                                OutlinedTextField(
+                                    value = plName,
+                                    onValueChange = { plName = it },
+                                    label = { Text("Nom de la playlist") },
+                                    singleLine = true
+                                )
+                                Text(
+                                    "${displayed.size} morceaux, dans l'ordre affiché.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                        .copy(alpha = 0.6f)
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            Button(onClick = {
+                                if (plName.isNotBlank()) {
+                                    vm.saveTracksAsPlaylist(plName.trim(), displayed)
+                                }
+                                showSaveSearch = false
+                            }) { Text("Enregistrer") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showSaveSearch = false }) {
+                                Text("Annuler")
+                            }
+                        }
+                    )
+                }
+            }
             Spacer(Modifier.height(6.dp))
             val maxEnergy = tracks.maxOfOrNull { it.energyPeak }?.takeIf { it > 0f } ?: 1f
             LazyColumn {
