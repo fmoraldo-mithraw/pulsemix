@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
@@ -29,6 +31,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -145,7 +148,9 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     val tagError by vm.tagError.collectAsStateWithLifecycle()
     val appliedList by vm.tagApplied.collectAsStateWithLifecycle()
     val tracks by vm.tracks.collectAsStateWithLifecycle()
-    var showApplied by remember { mutableStateOf(false) }
+    // Afficher aussi les corrections déjà faites dans la liste, pour
+    // pouvoir les revoir / re-corriger
+    var showFixed by remember { mutableStateOf(false) }
     // Recherche manuelle : depuis une proposition incertaine, ou depuis
     // n'importe quel morceau via le sélecteur ci-dessous
     var manualFor by remember { mutableStateOf<com.pulsemix.app.data.Track?>(null) }
@@ -203,17 +208,10 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.error
             )
         }
-        Row {
-            TextButton(
-                onClick = { pickTrack = true },
-                enabled = tracks.isNotEmpty()
-            ) { Text("Corriger un morceau…") }
-            if (appliedList.isNotEmpty()) {
-                TextButton(onClick = { showApplied = true }) {
-                    Text("Morceaux corrigés (${appliedList.size})")
-                }
-            }
-        }
+        TextButton(
+            onClick = { pickTrack = true },
+            enabled = tracks.isNotEmpty()
+        ) { Text("Corriger un morceau…") }
 
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -228,7 +226,20 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 }
             }
         }
-        if (pending.isEmpty()) {
+        // Toggle : montrer aussi les corrections déjà appliquées, pour les
+        // vérifier à l'oreille et les refaire si besoin
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.clickable { showFixed = !showFixed }
+        ) {
+            Switch(checked = showFixed, onCheckedChange = { showFixed = it })
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Afficher les corrigés (${appliedList.size})",
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+        if (pending.isEmpty() && !(showFixed && appliedList.isNotEmpty())) {
             Text(
                 "Rien à valider.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -236,45 +247,81 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             )
         } else {
             LazyColumn {
-                items(pending, key = { it.uri }) { s ->
-                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                        Text(
-                            listOf(s.oldTitle, s.oldArtist)
-                                .filter { it.isNotBlank() }
-                                .joinToString(" — "),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                                .copy(alpha = 0.55f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            "→ " + listOf(s.newTitle, s.newArtist)
-                                .filter { it.isNotBlank() }
-                                .joinToString(" — "),
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Row {
-                            TextButton(onClick = { vm.acceptTag(s) }) {
-                                Text("Accepter")
+                items(pending, key = { "p:" + it.uri }) { s ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            TagChangeTexts(s)
+                            Row {
+                                TextButton(onClick = { vm.acceptTag(s) }) {
+                                    Text("Accepter")
+                                }
+                                TextButton(onClick = { vm.rejectTag(s) }) {
+                                    Text(
+                                        "Refuser",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                                // Ni l'un ni l'autre : voir la liste des
+                                // possibilités et choisir le bon résultat
+                                TextButton(onClick = {
+                                    manualAuto = true
+                                    manualFor = tracks.find { it.uri == s.uri }
+                                }) { Text("Chercher") }
                             }
-                            TextButton(onClick = { vm.rejectTag(s) }) {
+                        }
+                        // Écouter le morceau pour vérifier l'artiste
+                        IconButton(onClick = {
+                            tracks.find { it.uri == s.uri }?.let(vm::playTrack)
+                        }) { Icon(Icons.Rounded.PlayArrow, "Écouter") }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                }
+                if (showFixed && appliedList.isNotEmpty()) {
+                    item(key = "fixed-header") {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 12.dp)
+                        ) {
+                            Text(
+                                "Corrigés (${appliedList.size})",
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { vm.clearTagApplied() }) {
                                 Text(
-                                    "Refuser",
+                                    "Vider",
                                     color = MaterialTheme.colorScheme.error
                                 )
                             }
-                            // Ni l'un ni l'autre : voir la liste des
-                            // possibilités et choisir le bon résultat
-                            TextButton(onClick = {
-                                manualAuto = true
-                                manualFor = tracks.find { it.uri == s.uri }
-                            }) { Text("Chercher") }
                         }
                     }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                    itemsIndexed(appliedList, key = { i, _ -> "a:$i" }) { _, s ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                TagChangeTexts(s)
+                                // Correction douteuse ? Revoir la liste des
+                                // possibilités et en choisir une autre.
+                                TextButton(onClick = {
+                                    manualAuto = true
+                                    manualFor = tracks.find { it.uri == s.uri }
+                                }) { Text("Chercher") }
+                            }
+                            IconButton(onClick = {
+                                tracks.find { it.uri == s.uri }?.let(vm::playTrack)
+                            }) { Icon(Icons.Rounded.PlayArrow, "Écouter") }
+                        }
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -353,55 +400,28 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             }
         )
     }
+}
 
-    // ------------------------------------- historique des corrections faites
-    if (showApplied) {
-        AlertDialog(
-            onDismissRequest = { showApplied = false },
-            title = { Text("Morceaux corrigés (${appliedList.size})") },
-            text = {
-                LazyColumn {
-                    items(appliedList.size) { i ->
-                        val s = appliedList[i]
-                        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                            Text(
-                                listOf(s.oldTitle, s.oldArtist)
-                                    .filter { it.isNotBlank() }
-                                    .joinToString(" — "),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface
-                                    .copy(alpha = 0.55f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                "→ " + listOf(s.newTitle, s.newArtist)
-                                    .filter { it.isNotBlank() }
-                                    .joinToString(" — "),
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showApplied = false }) { Text("Fermer") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    vm.clearTagApplied()
-                    showApplied = false
-                }) {
-                    Text("Vider la liste", color = MaterialTheme.colorScheme.error)
-                }
-            }
-        )
-    }
+/** Lignes « ancien — artiste » puis « → nouveau — artiste » d'une correction. */
+@Composable
+private fun TagChangeTexts(s: com.pulsemix.app.library.TagFixer.Suggestion) {
+    Text(
+        listOf(s.oldTitle, s.oldArtist)
+            .filter { it.isNotBlank() }
+            .joinToString(" — "),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+    )
+    Text(
+        "→ " + listOf(s.newTitle, s.newArtist)
+            .filter { it.isNotBlank() }
+            .joinToString(" — "),
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+    )
 }
 
 /**
