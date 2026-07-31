@@ -23,8 +23,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Label
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -78,7 +80,17 @@ fun LibraryScreen(
     var failedOnly by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<Track?>(null) }
-    val playlists by vm.playlists.collectAsStateWithLifecycle()
+
+    // Sous-écrans : playlists et tags en ligne (la bibliothèque reste légère)
+    var subScreen by remember { mutableStateOf(0) }
+    if (subScreen == 1) {
+        Box(modifier.fillMaxSize()) { PlaylistsScreen(vm, onBack = { subScreen = 0 }) }
+        return
+    }
+    if (subScreen == 2) {
+        Box(modifier.fillMaxSize()) { TagsScreen(vm, onBack = { subScreen = 0 }) }
+        return
+    }
 
     Column(modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -88,6 +100,12 @@ fun LibraryScreen(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
+            IconButton(onClick = { subScreen = 1 }) {
+                Icon(Icons.Rounded.QueueMusic, "Playlists")
+            }
+            IconButton(onClick = { subScreen = 2 }) {
+                Icon(Icons.Rounded.Label, "Tags en ligne")
+            }
             IconButton(onClick = { showStats = true }) {
                 Icon(Icons.Rounded.BarChart, "Statistiques")
             }
@@ -107,29 +125,6 @@ fun LibraryScreen(
                 IconButton(onClick = { vm.removeFolder(f) }) {
                     Icon(
                         Icons.Rounded.Close, "Retirer le dossier",
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                    )
-                }
-            }
-        }
-
-        // ----------------------------------------------------------- playlists
-        for (pl in playlists) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "♪ ${pl.name} (${pl.uris.size})",
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                IconButton(onClick = { vm.playPlaylist(pl) }) {
-                    Icon(Icons.Rounded.PlayArrow, "Lire la playlist")
-                }
-                TextButton(onClick = { vm.exportPlaylist(pl) }) { Text("m3u") }
-                IconButton(onClick = { vm.deletePlaylist(pl.name) }) {
-                    Icon(
-                        Icons.Rounded.Close, "Supprimer la playlist",
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )
                 }
@@ -165,103 +160,7 @@ fun LibraryScreen(
                 OutlinedButton(onClick = { vm.rescanFromScratch() }) {
                     Text("Tout réanalyser")
                 }
-                val tagProg by vm.tagProgress.collectAsStateWithLifecycle()
-                if (tagProg == null) {
-                    OutlinedButton(
-                        onClick = { vm.fetchTagsAll() },
-                        enabled = tracks.isNotEmpty()
-                    ) { Text("Tags en ligne") }
-                }
             }
-        }
-
-        // Recherche de tags en cours : progression + arrêt
-        run {
-            val tagProg by vm.tagProgress.collectAsStateWithLifecycle()
-            tagProg?.let { (done, total, applied) ->
-                Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "Tags en ligne : $done/$total — $applied corrigés auto",
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.weight(1f),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                    )
-                    TextButton(onClick = { vm.stopTagFetch() }) { Text("Stop") }
-                }
-                LinearProgressIndicator(
-                    progress = { if (total > 0) done.toFloat() / total else 0f },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-
-        // Propositions de tags incertaines : liste à valider à la main
-        val tagPending by vm.tagPending.collectAsStateWithLifecycle()
-        var showTagDialog by remember { mutableStateOf(false) }
-        if (tagPending.isNotEmpty()) {
-            TextButton(onClick = { showTagDialog = true }) {
-                Text("Tags proposés : ${tagPending.size} à valider…")
-            }
-        }
-        if (showTagDialog) {
-            AlertDialog(
-                onDismissRequest = { showTagDialog = false },
-                title = { Text("Tags à valider (${tagPending.size})") },
-                text = {
-                    Column {
-                        Text(
-                            "Corrections trouvées en ligne dont l'appli n'est " +
-                                "pas sûre. Les fichiers audio ne sont pas " +
-                                "modifiés : seul l'affichage dans PulseMix change.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        LazyColumn(Modifier.heightIn(max = 400.dp)) {
-                            items(tagPending, key = { it.uri }) { s ->
-                                Column(Modifier.fillMaxWidth()) {
-                                    Text(
-                                        listOf(s.oldTitle, s.oldArtist)
-                                            .filter { it.isNotBlank() }
-                                            .joinToString(" — "),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                            .copy(alpha = 0.55f),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        "→ " + listOf(s.newTitle, s.newArtist)
-                                            .filter { it.isNotBlank() }
-                                            .joinToString(" — "),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Row {
-                                        TextButton(onClick = { vm.acceptTag(s) }) {
-                                            Text("Accepter")
-                                        }
-                                        TextButton(onClick = { vm.rejectTag(s) }) {
-                                            Text(
-                                                "Refuser",
-                                                color = MaterialTheme.colorScheme.error
-                                            )
-                                        }
-                                    }
-                                    HorizontalDivider(
-                                        color = MaterialTheme.colorScheme.surfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showTagDialog = false }) { Text("Fermer") }
-                }
-            )
         }
 
         if (p != null) {
