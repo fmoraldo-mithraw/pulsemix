@@ -168,6 +168,54 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun playCount(track: Track): Int =
         com.pulsemix.app.data.PlayHistory.count(track.uri)
 
+    /** Résultat du dernier export de la liste des titres. */
+    val exportMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /**
+     * Exporte la liste « Artiste - Titre » de toute la bibliothèque en
+     * fichier texte à la racine du dossier de musique (récupérable avec
+     * n'importe quel explorateur de fichiers).
+     */
+    fun exportTitleList() {
+        val folder = folders.value.firstOrNull()
+        if (folder == null) {
+            exportMessage.value = "Ajoute d'abord un dossier de musique."
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            exportMessage.value = try {
+                val root = androidx.documentfile.provider.DocumentFile.fromTreeUri(
+                    getApplication(), android.net.Uri.parse(folder)
+                )
+                if (root == null || !root.canWrite()) {
+                    "Dossier de musique inaccessible en écriture."
+                } else {
+                    val name = "PulseMix.titres.txt"
+                    root.findFile(name)?.delete()
+                    val doc = root.createFile("text/plain", name)
+                    if (doc == null) {
+                        "Impossible de créer le fichier dans le dossier."
+                    } else {
+                        val lines = tracks.value
+                            .map { t ->
+                                if (t.artist.isBlank()) t.title
+                                else "${t.artist} - ${t.title}"
+                            }
+                            .sortedBy { it.lowercase() }
+                        getApplication<android.app.Application>().contentResolver
+                            .openOutputStream(doc.uri)?.use { out ->
+                                out.write(lines.joinToString("\n").toByteArray())
+                            }
+                        "${lines.size} titres exportés dans « $name » " +
+                            "(racine du dossier de musique)."
+                    }
+                }
+            } catch (e: Exception) {
+                "Export impossible : ${e.message ?: e::class.java.simpleName}"
+            }
+        }
+    }
+
     fun toggleFavorite(track: Track) = updateTrack(track.uri) {
         it.copy(favorite = !it.favorite)
     }

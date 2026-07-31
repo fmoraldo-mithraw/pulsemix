@@ -132,6 +132,16 @@ fun LibraryScreen(
             )
             Spacer(Modifier.height(4.dp))
         }
+        // Résultat de l'export de la liste des titres (bouton des stats)
+        val exportMsg by vm.exportMessage.collectAsStateWithLifecycle()
+        exportMsg?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+            Spacer(Modifier.height(4.dp))
+        }
 
         // ------------------------------------------------------------ dossiers
         for (f in folders) {
@@ -409,6 +419,12 @@ fun LibraryScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showStats = false }) { Text("Fermer") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    vm.exportTitleList()
+                    showStats = false
+                }) { Text("Exporter les titres (.txt)") }
             }
         )
     }
