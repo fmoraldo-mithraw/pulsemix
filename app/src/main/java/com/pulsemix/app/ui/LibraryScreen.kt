@@ -1,6 +1,8 @@
 package com.pulsemix.app.ui
 
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -421,9 +423,16 @@ fun LibraryScreen(
                 TextButton(onClick = { showStats = false }) { Text("Fermer") }
             },
             dismissButton = {
-                TextButton(onClick = {
-                    vm.exportTitleList()
+                // Sélecteur système « Enregistrer sous » : l'utilisateur
+                // choisit le dossier et le nom du fichier.
+                val exportLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("text/plain")
+                ) { uri ->
+                    if (uri != null) vm.exportTitleList(uri)
                     showStats = false
+                }
+                TextButton(onClick = {
+                    exportLauncher.launch("PulseMix.titres.txt")
                 }) { Text("Exporter les titres (.txt)") }
             }
         )
