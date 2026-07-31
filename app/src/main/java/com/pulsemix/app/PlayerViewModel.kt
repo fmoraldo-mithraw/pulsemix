@@ -239,6 +239,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     // -------------------------------------------------- tags en ligne
     val tagPending = com.pulsemix.app.library.TagFixer.pending
     val tagProgress = com.pulsemix.app.library.TagFixer.progress
+    val tagError = com.pulsemix.app.library.TagFixer.lastError
 
     /** Cherche les tags corrects de toute la bibliothèque (MusicBrainz). */
     fun fetchTagsAll() {

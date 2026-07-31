@@ -140,6 +140,7 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     BackHandler { onBack() }
     val pending by vm.tagPending.collectAsStateWithLifecycle()
     val prog by vm.tagProgress.collectAsStateWithLifecycle()
+    val tagError by vm.tagError.collectAsStateWithLifecycle()
     val tracks by vm.tracks.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -181,6 +182,14 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             LinearProgressIndicator(
                 progress = { if (total > 0) done.toFloat() / total else 0f },
                 modifier = Modifier.fillMaxWidth()
+            )
+        }
+        tagError?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
             )
         }
 

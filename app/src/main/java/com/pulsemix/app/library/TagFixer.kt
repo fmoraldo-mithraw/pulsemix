@@ -37,6 +37,9 @@ object TagFixer {
     /** Propositions incertaines en attente de validation. */
     val pending = MutableStateFlow<List<Suggestion>>(emptyList())
 
+    /** Dernière erreur réseau/MusicBrainz (null si tout va bien). */
+    val lastError = MutableStateFlow<String?>(null)
+
     /** Progression du passage bibliothèque : (faits, total, appliqués auto). */
     val progress: StateFlow<Triple<Int, Int, Int>?> get() = _progress
     private val _progress = MutableStateFlow<Triple<Int, Int, Int>?>(null)
@@ -68,6 +71,7 @@ object TagFixer {
     suspend fun fixAll(store: TrackStore): Unit = withContext(Dispatchers.IO) {
         if (_progress.value != null) return@withContext
         stopRequested = false
+        lastError.value = null
         val list = store.tracks.value
         var applied = 0
         _progress.value = Triple(0, list.size, 0)
@@ -76,7 +80,6 @@ object TagFixer {
                 if (stopRequested) break
                 if (handle(store, t)) applied++
                 _progress.value = Triple(i + 1, list.size, applied)
-                Thread.sleep(1_100)
             }
         } finally {
             save()
@@ -105,33 +108,95 @@ object TagFixer {
     /** @return true si une correction sûre a été appliquée automatiquement. */
     private fun handle(store: TrackStore, t: Track): Boolean {
         val cleaned = cleanTitle(t.title)
-        val res = lookup(cleaned, t.artist) ?: return false
-        val (nt, na, score) = res
-        if (nt.isBlank()) return false
-        if (nt == t.title && (na.isBlank() || na == t.artist)) return false
+        val split = splitArtistTitle(cleaned)
 
-        val sameNorm = norm(nt) == norm(t.title) &&
-            (na.isBlank() || t.artist.isBlank() || norm(na) == norm(t.artist))
-        val sure = sameNorm || (score >= 97 && t.artist.isNotBlank())
-        if (sure) {
-            store.update(t.uri) {
-                it.copy(title = nt, artist = na.ifBlank { it.artist })
+        // Essais du plus précis au plus vague : tag artiste existant, puis
+        // découpage « Artiste - Titre » du nom de fichier, puis titre seul.
+        // On s'arrête au premier essai qui donne une correction sûre.
+        val attempts = buildList {
+            if (t.artist.isNotBlank()) add(cleaned to t.artist)
+            if (split != null) add(split.second to split.first)
+            add((split?.second ?: cleaned) to "")
+        }.distinct()
+
+        var proposal: Suggestion? = null
+        for ((qTitle, qArtist) in attempts) {
+            if (qTitle.isBlank()) continue
+            val best = pickBest(lookup(qTitle, qArtist), t.durationMs) ?: continue
+            if (best.title.isBlank()) continue
+            if (best.title == t.title &&
+                (best.artist.isBlank() || best.artist == t.artist)
+            ) return false // déjà correct
+
+            val durOk = durationClose(best.lengthMs, t.durationMs)
+            val titleMatch = norm(best.title) == norm(qTitle)
+            val artistMatch = qArtist.isNotBlank() &&
+                norm(best.artist) == norm(qArtist)
+
+            // Sûr : titre et artiste identiques à la casse près, ou titre
+            // identique + durée qui colle. Le score MusicBrainz seul ne
+            // suffit jamais : il est relatif à la recherche (le premier
+            // résultat frôle 100 même quand c'est un mauvais match).
+            val sure = (titleMatch && artistMatch) ||
+                (titleMatch && durOk) ||
+                (artistMatch && durOk && best.score >= 95)
+            if (sure) {
+                store.update(t.uri) {
+                    it.copy(
+                        title = best.title,
+                        artist = best.artist.ifBlank { it.artist }
+                    )
+                }
+                pending.value = pending.value.filter { it.uri != t.uri }
+                return true
             }
-            pending.value = pending.value.filter { it.uri != t.uri }
-            return true
+            // Proposition : plausible, mais on exige que la durée ne
+            // contredise pas la correspondance (inconnue tolérée).
+            if (proposal == null && best.score >= 60 &&
+                (durOk || best.lengthMs <= 0)
+            ) {
+                proposal = Suggestion(
+                    t.uri, t.title, t.artist, best.title, best.artist, best.score
+                )
+            }
         }
-        if (score >= 55) {
-            pending.value = pending.value.filter { it.uri != t.uri } +
-                Suggestion(t.uri, t.title, t.artist, nt, na, score)
+        if (proposal != null) {
+            pending.value = pending.value.filter { it.uri != t.uri } + proposal
         }
         return false
     }
 
     // ---------------------------------------------------------- MusicBrainz
 
-    private fun lookup(title: String, artist: String): Triple<String, String, Int>? {
-        if (title.isBlank()) return null
+    private data class Candidate(
+        val title: String,
+        val artist: String,
+        val score: Int,
+        val lengthMs: Long
+    )
+
+    /** Meilleur candidat : durée compatible d'abord, score ensuite. */
+    private fun pickBest(cands: List<Candidate>, durMs: Long): Candidate? {
+        val durOk = cands.filter { durationClose(it.lengthMs, durMs) }
+        return (durOk.ifEmpty { cands }).maxByOrNull { it.score }
+    }
+
+    private fun durationClose(a: Long, b: Long): Boolean =
+        a > 0 && b > 0 && kotlin.math.abs(a - b) <= 7_000
+
+    @Volatile private var lastRequestAt = 0L
+
+    /** Espacement ≥ 1,1 s entre requêtes (politesse MusicBrainz). */
+    private fun throttle() {
+        val wait = lastRequestAt + 1_100 - System.currentTimeMillis()
+        if (wait > 0) Thread.sleep(wait)
+        lastRequestAt = System.currentTimeMillis()
+    }
+
+    private fun lookup(title: String, artist: String): List<Candidate> {
+        if (title.isBlank()) return emptyList()
         return try {
+            throttle()
             val q = buildString {
                 append("recording:\"").append(title.replace("\"", " ")).append('"')
                 if (artist.isNotBlank()) {
@@ -140,7 +205,7 @@ object TagFixer {
             }
             val url = URL(
                 "https://musicbrainz.org/ws/2/recording?query=" +
-                    URLEncoder.encode(q, "UTF-8") + "&fmt=json&limit=1"
+                    URLEncoder.encode(q, "UTF-8") + "&fmt=json&limit=5"
             )
             val conn = url.openConnection() as HttpURLConnection
             conn.connectTimeout = 8_000
@@ -151,30 +216,73 @@ object TagFixer {
             )
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             conn.disconnect()
-            val recs = JSONObject(body).optJSONArray("recordings") ?: return null
-            if (recs.length() == 0) return null
-            val r = recs.getJSONObject(0)
-            val nt = r.optString("title", "")
-            val na = r.optJSONArray("artist-credit")
-                ?.optJSONObject(0)?.optString("name", "") ?: ""
-            Triple(nt, na, r.optInt("score", 0))
-        } catch (_: Exception) {
-            null
+            val recs = JSONObject(body).optJSONArray("recordings")
+                ?: return emptyList()
+            val out = ArrayList<Candidate>()
+            for (i in 0 until recs.length()) {
+                val r = recs.getJSONObject(i)
+                out.add(
+                    Candidate(
+                        r.optString("title", ""),
+                        r.optJSONArray("artist-credit")
+                            ?.optJSONObject(0)?.optString("name", "") ?: "",
+                        r.optInt("score", 0),
+                        r.optLong("length", 0L)
+                    )
+                )
+            }
+            lastError.value = null
+            out
+        } catch (e: Exception) {
+            lastError.value = "MusicBrainz injoignable : " +
+                (e.message ?: e::class.java.simpleName).take(120)
+            emptyList()
         }
+    }
+
+    /**
+     * « Artiste - Titre » : le format quasi universel des fichiers sans
+     * tags. Le séparateur doit être entouré d'espaces pour ne pas couper
+     * les mots composés (« Jean-Michel »).
+     */
+    private fun splitArtistTitle(s: String): Pair<String, String>? {
+        val m = Regex("^(.{2,60}?)\\s+[-–—|]\\s+(.{2,})$").find(s) ?: return null
+        val artist = m.groupValues[1].trim()
+        val title = m.groupValues[2].trim()
+        if (artist.isBlank() || title.isBlank()) return null
+        return artist to title
     }
 
     /** Nettoie un titre « nom de fichier » avant la recherche. */
     private fun cleanTitle(raw: String): String {
         var s = raw
-            .removeSuffix(".mp3").removeSuffix(".m4a").removeSuffix(".flac")
-            .removeSuffix(".ogg").removeSuffix(".wav")
+            .replace(
+                Regex(
+                    "\\.(mp3|m4a|aac|flac|ogg|opus|wav|weba)$",
+                    RegexOption.IGNORE_CASE
+                ), ""
+            )
             .replace('_', ' ')
+        // Identifiant vidéo yt-dlp en fin de nom : « Titre [dQw4w9WgXcQ] »
+        s = s.replace(Regex("\\s*\\[[A-Za-z0-9_-]{6,}\\]\\s*$"), " ")
         s = s.replace(
             Regex(
-                "[\\(\\[](official|clip|video|lyrics?|audio|hd|hq|4k|paroles)" +
+                "[\\(\\[](official|clip|video|lyrics?|audio|hd|hq|4k|paroles" +
+                    "|visuali[sz]er|explicit|remaster(ed)?)" +
                     "[^\\)\\]]*[\\)\\]]",
                 RegexOption.IGNORE_CASE
             ), " "
+        )
+        // « feat. X » : l'invité ne fait pas partie du titre MusicBrainz
+        s = s.replace(
+            Regex(
+                "[\\(\\[]\\s*(feat\\.?|ft\\.?|featuring|avec)\\s[^\\)\\]]*[\\)\\]]",
+                RegexOption.IGNORE_CASE
+            ), " "
+        )
+        s = s.replace(
+            Regex("\\s+(feat\\.?|ft\\.?|featuring)\\s+.*$", RegexOption.IGNORE_CASE),
+            " "
         )
         s = s.replace(Regex("^\\s*\\d{1,3}\\s*[-.]\\s*"), "")
         return s.replace(Regex("\\s+"), " ").trim()

@@ -86,6 +86,9 @@ object StreamImporter {
             .addOption("-x")
             .addOption("--audio-format", "mp3")
             .addOption("--audio-quality", "0")
+            // Écrit titre/artiste dans le fichier : le scan de la
+            // bibliothèque lit ces tags au lieu du nom de fichier.
+            .addOption("--embed-metadata")
             .addOption("--ignore-errors")
             .addOption("--no-mtime")
             .addOption("--no-warnings")
