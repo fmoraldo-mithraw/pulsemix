@@ -12,8 +12,8 @@ android {
         applicationId = "com.pulsemix.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
     }
 
     // Clé de signature partagée, committée dans le dépôt : tous les builds
@@ -49,6 +49,13 @@ android {
     buildFeatures {
         compose = true
     }
+    // youtubedl-android embarque Python/yt-dlp/ffmpeg comme des .so à extraire
+    // sur le disque : l'extraction exige le packaging « legacy » des jniLibs.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {
@@ -64,4 +71,9 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.core:core-ktx:1.13.1")
+    // yt-dlp embarqué : extraction de l'audio des pages web (plateformes
+    // vidéo, radios…) pour l'import depuis une URL. Le module ffmpeg sert
+    // aux post-traitements (-x, métadonnées, pochette).
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
 }

@@ -13,9 +13,12 @@ import java.net.URL
 
 /**
  * Importe de l'audio depuis une URL vers le dossier déjà scanné par le
- * lecteur (via SAF). Pensé pour les sources dont on a le droit de récupérer
- * les fichiers : lien direct vers un fichier audio, item Internet Archive,
- * ou entrée d'un flux podcast RSS.
+ * lecteur (via SAF).
+ *
+ * Trois chemins : lien direct vers un fichier audio, item Internet Archive,
+ * entrée d'un flux podcast RSS — téléchargés en HTTP simple ; toute autre
+ * page (plateforme vidéo, radio, mix…) passe par yt-dlp embarqué
+ * (YtDlpEngine) qui en extrait le flux audio.
  *
  * La récupération et l'usage des contenus relèvent de la responsabilité de
  * l'utilisateur ; l'app ne fait que télécharger l'URL fournie.
@@ -36,6 +39,7 @@ object UrlImporter {
 
     fun requestStop() {
         stopRequested = true
+        YtDlpEngine.cancel()
     }
 
     fun reset() {
@@ -67,19 +71,18 @@ object UrlImporter {
             }
             try {
                 val targets = resolveTargets(url)
-                if (targets.isEmpty()) {
-                    _state.value = State.Error(
-                        "Aucun fichier audio trouvé à cette URL."
-                    )
-                    return@withContext
-                }
                 var imported = 0
-                for ((i, t) in targets.withIndex()) {
-                    if (stopRequested) break
-                    _state.value = State.Working(
-                        "Téléchargement : ${t.name}", i, targets.size
-                    )
-                    if (downloadTo(context, root, t)) imported++
+                if (targets.isNotEmpty()) {
+                    for ((i, t) in targets.withIndex()) {
+                        if (stopRequested) break
+                        _state.value = State.Working(
+                            "Téléchargement : ${t.name}", i, targets.size
+                        )
+                        if (downloadTo(context, root, t)) imported++
+                    }
+                } else {
+                    // Page web : extraction de l'audio via yt-dlp embarqué
+                    imported = importViaYtDlp(context, root, url)
                 }
                 _state.value = State.Done(
                     imported,
@@ -87,11 +90,26 @@ object UrlImporter {
                     else "$imported fichier(s) importé(s). Analyse en cours…"
                 )
             } catch (e: Exception) {
-                _state.value = State.Error(
-                    "Échec : ${e.message ?: e::class.java.simpleName}"
-                )
+                _state.value =
+                    if (stopRequested) State.Done(0, "Import interrompu.")
+                    else State.Error("Échec : ${shortError(e)}")
             }
         }
+
+    /**
+     * Met à jour le yt-dlp embarqué (les sites changent souvent ; c'est le
+     * premier réflexe quand une extraction se met à échouer).
+     */
+    suspend fun updateEngine(context: Context) = withContext(Dispatchers.IO) {
+        if (_state.value is State.Working) return@withContext
+        _state.value = State.Working("Mise à jour de l'extracteur…", 0, 0)
+        try {
+            _state.value = State.Done(0, YtDlpEngine.update(context))
+        } catch (e: Exception) {
+            _state.value =
+                State.Error("Mise à jour impossible : ${shortError(e)}")
+        }
+    }
 
     // ------------------------------------------------------------- ciblage
 
@@ -115,9 +133,8 @@ object UrlImporter {
         if (looksAudio(lower)) {
             return listOf(Target(url, fileNameFromUrl(url)))
         }
-        // Dernier recours : tenter le direct, la vérification du type se fera
-        // au téléchargement
-        return listOf(Target(url, fileNameFromUrl(url)))
+        // Sinon : page web quelconque, à confier à yt-dlp (liste vide)
+        return emptyList()
     }
 
     private fun archiveOrgTargets(identifier: String): List<Target> {
@@ -160,6 +177,67 @@ object UrlImporter {
         return out
     }
 
+    // ------------------------------------------------------------- yt-dlp
+
+    /**
+     * Extrait l'audio d'une page web avec yt-dlp dans un dossier temporaire,
+     * puis copie le résultat dans le dossier scanné.
+     * @return nombre de fichiers copiés.
+     */
+    private fun importViaYtDlp(
+        context: Context,
+        root: DocumentFile,
+        url: String
+    ): Int {
+        _state.value = State.Working(
+            "Préparation de l'extracteur (long au premier lancement)…", 0, 0
+        )
+        val tmp = java.io.File(
+            context.cacheDir, "url-import-${System.currentTimeMillis()}"
+        )
+        try {
+            val files = YtDlpEngine.downloadAudio(context, url, tmp) { pct, eta ->
+                if (pct >= 0f) {
+                    val p = pct.coerceAtMost(100f).toInt()
+                    val rest = if (eta > 0) " — reste ~${eta} s" else ""
+                    _state.value = State.Working(
+                        "Extraction de l'audio… $p %$rest", p, 100
+                    )
+                } else {
+                    _state.value = State.Working("Extraction de l'audio…", 0, 0)
+                }
+            }
+            var imported = 0
+            for ((i, f) in files.withIndex()) {
+                if (stopRequested) break
+                _state.value = State.Working("Copie : ${f.name}", i, files.size)
+                if (copyIntoFolder(context, root, f)) imported++
+            }
+            return imported
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    /** Copie un fichier local (produit par yt-dlp) dans le dossier SAF. */
+    private fun copyIntoFolder(
+        context: Context,
+        root: DocumentFile,
+        file: java.io.File
+    ): Boolean {
+        val name = uniqueName(root, sanitize(file.name))
+        val doc = root.createFile(mimeFor(name), name) ?: return false
+        return try {
+            context.contentResolver.openOutputStream(doc.uri)?.use { out ->
+                file.inputStream().use { it.copyTo(out, 64 * 1024) }
+                true
+            } ?: run { doc.delete(); false }
+        } catch (_: Exception) {
+            doc.delete()
+            false
+        }
+    }
+
     // ---------------------------------------------------------- transfert
 
     private fun downloadTo(
@@ -179,15 +257,9 @@ object UrlImporter {
             // Refuser une page HTML renvoyée à la place d'un média
             if (type.startsWith("text/") || type.contains("html")) return false
             val name = uniqueName(root, sanitize(t.name).ensureExt(t.url, type))
-            val mime = when {
-                type.startsWith("audio/") -> type.substringBefore(';')
-                name.endsWith(".mp3") -> "audio/mpeg"
-                name.endsWith(".m4a") -> "audio/mp4"
-                name.endsWith(".flac") -> "audio/flac"
-                name.endsWith(".ogg") || name.endsWith(".opus") -> "audio/ogg"
-                name.endsWith(".wav") -> "audio/wav"
-                else -> "audio/*"
-            }
+            val mime =
+                if (type.startsWith("audio/")) type.substringBefore(';')
+                else mimeFor(name)
             val doc = root.createFile(mime, name) ?: return false
             context.contentResolver.openOutputStream(doc.uri)?.use { out ->
                 conn.inputStream.use { input ->
@@ -233,6 +305,27 @@ object UrlImporter {
         body
     } catch (_: Exception) {
         null
+    }
+
+    private fun mimeFor(name: String): String = when {
+        name.endsWith(".mp3") -> "audio/mpeg"
+        name.endsWith(".m4a") -> "audio/mp4"
+        name.endsWith(".aac") -> "audio/aac"
+        name.endsWith(".flac") -> "audio/flac"
+        name.endsWith(".ogg") || name.endsWith(".oga") ||
+            name.endsWith(".opus") -> "audio/ogg"
+        name.endsWith(".wav") -> "audio/wav"
+        name.endsWith(".mka") || name.endsWith(".weba") -> "audio/webm"
+        else -> "audio/*"
+    }
+
+    /** Les erreurs yt-dlp embarquent tout le stderr : ne garder que l'utile. */
+    private fun shortError(e: Exception): String {
+        val msg = e.message ?: return e::class.java.simpleName
+        val lines = msg.lines().filter { it.isNotBlank() }
+        val line = lines.lastOrNull { it.contains("ERROR", ignoreCase = true) }
+            ?: lines.firstOrNull() ?: e::class.java.simpleName
+        return line.take(300)
     }
 
     private fun looksAudio(s: String): Boolean =

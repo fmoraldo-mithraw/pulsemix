@@ -241,8 +241,9 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
 
 /**
  * Écran « Importer depuis une URL » : colle un lien (fichier audio direct,
- * item Internet Archive, flux podcast RSS) ; l'audio est téléchargé dans le
- * dossier déjà scanné par le lecteur, puis analysé automatiquement.
+ * item Internet Archive, flux podcast RSS, ou page d'une plateforme vidéo /
+ * radio prise en charge par yt-dlp) ; l'audio est téléchargé dans le dossier
+ * déjà scanné par le lecteur, puis analysé automatiquement.
  *
  * Note affichée : la récupération et l'usage des contenus relèvent de la
  * responsabilité de l'utilisateur.
@@ -259,8 +260,9 @@ fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
         Spacer(Modifier.height(4.dp))
         Text(
             "Colle un lien direct vers un fichier audio, un item Internet " +
-                "Archive, ou un flux podcast RSS. Le fichier est téléchargé " +
-                "dans ton dossier de musique, puis analysé.",
+                "Archive, un flux podcast RSS, ou la page d'une plateforme " +
+                "vidéo/radio (yt-dlp intégré). L'audio est téléchargé dans " +
+                "ton dossier de musique, puis analysé.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )
@@ -338,6 +340,15 @@ fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 )
             }
             else -> {}
+        }
+
+        Spacer(Modifier.weight(1f))
+        // Les sites changent souvent : mettre à jour yt-dlp est le premier
+        // réflexe quand l'extraction d'une page se met à échouer.
+        if (!working) {
+            TextButton(onClick = { vm.updateImportEngine() }) {
+                Text("Mettre à jour l'extracteur (yt-dlp)")
+            }
         }
     }
 }

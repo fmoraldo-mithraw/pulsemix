@@ -274,6 +274,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun stopImport() = com.pulsemix.app.library.UrlImporter.requestStop()
     fun resetImport() = com.pulsemix.app.library.UrlImporter.reset()
+
+    /** Met à jour le yt-dlp embarqué (quand une extraction échoue). */
+    fun updateImportEngine() {
+        viewModelScope.launch {
+            com.pulsemix.app.library.UrlImporter.updateEngine(getApplication())
+        }
+    }
+
     fun hasFolder(): Boolean = folders.value.isNotEmpty()
 
     fun playPlaylist(p: com.pulsemix.app.data.Playlist) {
