@@ -149,6 +149,9 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     // Recherche manuelle : depuis une proposition incertaine, ou depuis
     // n'importe quel morceau via le sélecteur ci-dessous
     var manualFor by remember { mutableStateOf<com.pulsemix.app.data.Track?>(null) }
+    // Vrai quand la recherche doit se lancer dès l'ouverture (bouton
+    // « Chercher » d'une proposition incertaine)
+    var manualAuto by remember { mutableStateOf(false) }
     var pickTrack by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -263,11 +266,12 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                                     color = MaterialTheme.colorScheme.error
                                 )
                             }
-                            // Ni l'un ni l'autre : chercher soi-même avec
-                            // des infos corrigées et choisir le bon résultat
+                            // Ni l'un ni l'autre : voir la liste des
+                            // possibilités et choisir le bon résultat
                             TextButton(onClick = {
+                                manualAuto = true
                                 manualFor = tracks.find { it.uri == s.uri }
-                            }) { Text("Affiner…") }
+                            }) { Text("Chercher") }
                         }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
@@ -278,7 +282,10 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
 
     // ---------------------------------------- recherche manuelle depuis la liste
     manualFor?.let { t ->
-        ManualTagDialog(vm, t, onClose = { manualFor = null })
+        ManualTagDialog(vm, t, autoSearch = manualAuto, onClose = {
+            manualFor = null
+            manualAuto = false
+        })
     }
 
     // -------------------------- choisir n'importe quel morceau à corriger
@@ -312,6 +319,7 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                                     .fillMaxWidth()
                                     .clickable {
                                         pickTrack = false
+                                        manualAuto = false
                                         manualFor = t
                                     }
                                     .padding(vertical = 6.dp)

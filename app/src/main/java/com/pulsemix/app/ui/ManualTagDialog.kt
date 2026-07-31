@@ -36,7 +36,12 @@ import com.pulsemix.app.data.Track
  * automatique ne trouve rien ou propose des résultats douteux.
  */
 @Composable
-fun ManualTagDialog(vm: PlayerViewModel, track: Track, onClose: () -> Unit) {
+fun ManualTagDialog(
+    vm: PlayerViewModel,
+    track: Track,
+    autoSearch: Boolean = false,
+    onClose: () -> Unit
+) {
     val prefill = remember(track.uri) { vm.manualTagPrefill(track) }
     var title by remember(track.uri) { mutableStateOf(prefill.first) }
     var artist by remember(track.uri) { mutableStateOf(prefill.second) }
@@ -44,8 +49,13 @@ fun ManualTagDialog(vm: PlayerViewModel, track: Track, onClose: () -> Unit) {
     val searching by vm.manualTagSearching.collectAsStateWithLifecycle()
     val error by vm.manualTagError.collectAsStateWithLifecycle()
 
-    // Ne pas montrer les résultats d'une recherche précédente
-    LaunchedEffect(track.uri) { vm.resetManualTagSearch() }
+    // Ne pas montrer les résultats d'une recherche précédente ; en mode
+    // autoSearch (bouton « Chercher » d'une proposition), lancer tout de
+    // suite la recherche pour afficher la liste des possibilités.
+    LaunchedEffect(track.uri) {
+        vm.resetManualTagSearch()
+        if (autoSearch && title.isNotBlank()) vm.manualTagSearch(title, artist)
+    }
 
     AlertDialog(
         onDismissRequest = onClose,
