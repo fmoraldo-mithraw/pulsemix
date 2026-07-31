@@ -166,6 +166,38 @@ class PlaybackService : MediaSessionService() {
         )
 
         val forwarding = object : ForwardingPlayer(PlayerCore.exo) {
+            // En DJ, ExoPlayer boucle sur une piste silencieuse minuscule :
+            // la barre de progression de la notification affichait 0:00-0:00
+            // en frétillant. On rapporte à la place la progression réelle du
+            // passage DJ en cours (position dans le meilleur passage).
+            private fun djDurationMs(): Long? =
+                if (PlayerCore.mode.value == PlayerMode.DJ)
+                    PlayerCore.currentTrack.value?.segmentMs?.coerceAtLeast(1L)
+                else null
+
+            override fun getDuration(): Long =
+                djDurationMs() ?: super.getDuration()
+
+            override fun getContentDuration(): Long =
+                djDurationMs() ?: super.getContentDuration()
+
+            override fun getCurrentPosition(): Long =
+                djDurationMs()?.let {
+                    (PlayerCore.progress.value * it).toLong().coerceIn(0L, it)
+                } ?: super.getCurrentPosition()
+
+            override fun getContentPosition(): Long =
+                djDurationMs()?.let {
+                    (PlayerCore.progress.value * it).toLong().coerceIn(0L, it)
+                } ?: super.getContentPosition()
+
+            override fun getBufferedPosition(): Long =
+                djDurationMs() ?: super.getBufferedPosition()
+
+            override fun isCurrentMediaItemSeekable(): Boolean =
+                if (PlayerCore.mode.value == PlayerMode.DJ) false
+                else super.isCurrentMediaItemSeekable()
+
             override fun seekToNext() {
                 PlayerCore.next()
             }
