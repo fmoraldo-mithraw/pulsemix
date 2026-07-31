@@ -486,7 +486,9 @@ object MixEngine {
         val candidates = all.filter {
             it.analyzed && it.bpm > 0f && !it.excluded && it.uri != seed.uri
         }
-        if (candidates.size < 4 || seed.bpm <= 0f) return null
+        // Un seul autre morceau analysé suffit : un mix court vaut mieux
+        // qu'un bouton qui ne fait rien.
+        if (candidates.isEmpty() || seed.bpm <= 0f) return null
 
         fun norm(sel: (Track) -> Float): Pair<Float, Float> {
             val values = candidates.map(sel)

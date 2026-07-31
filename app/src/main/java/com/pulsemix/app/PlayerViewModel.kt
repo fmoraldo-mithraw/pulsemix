@@ -142,9 +142,21 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Lance un mix « comme ce morceau » (même style/énergie). */
     fun startSimilar(seed: Track, djMode: Boolean) {
         viewModelScope.launch(Dispatchers.Default) {
-            val plan = MixEngine.similarPlan(tracks.value, seed) ?: return@launch
+            val plan = MixEngine.similarPlan(tracks.value, seed)
             withContext(Dispatchers.Main) {
-                if (djMode) PlayerCore.startDj(plan) else PlayerCore.startMix(plan)
+                when {
+                    // Rien ne se passait en silence : dire pourquoi.
+                    plan == null && seed.bpm <= 0f ->
+                        PlayerCore.launchMessage.value =
+                            "« ${seed.title} » n'est pas encore analysé : " +
+                                "lance l'analyse dans Bibliothèque, puis réessaie."
+                    plan == null ->
+                        PlayerCore.launchMessage.value =
+                            "Aucun autre morceau analysé : impossible de " +
+                                "construire un mix similaire."
+                    djMode -> PlayerCore.startDj(plan)
+                    else -> PlayerCore.startMix(plan)
+                }
             }
         }
     }
@@ -240,6 +252,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val tagPending = com.pulsemix.app.library.TagFixer.pending
     val tagProgress = com.pulsemix.app.library.TagFixer.progress
     val tagError = com.pulsemix.app.library.TagFixer.lastError
+    val tagApplied = com.pulsemix.app.library.TagFixer.applied
+
+    fun clearTagApplied() = com.pulsemix.app.library.TagFixer.clearApplied()
 
     /** Cherche les tags corrects de toute la bibliothèque (MusicBrainz). */
     fun fetchTagsAll() {

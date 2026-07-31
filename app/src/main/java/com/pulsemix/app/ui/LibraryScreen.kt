@@ -120,6 +120,19 @@ fun LibraryScreen(
         }
         Spacer(Modifier.height(8.dp))
 
+        // Échec de lancement d'un mix/DJ depuis le menu ⋮ d'un morceau :
+        // dire pourquoi rien ne se passe (le message n'était visible que
+        // dans l'écran lecteur).
+        val launchMsg by vm.launchMessage.collectAsStateWithLifecycle()
+        launchMsg?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+
         // ------------------------------------------------------------ dossiers
         for (f in folders) {
             Row(verticalAlignment = Alignment.CenterVertically) {
