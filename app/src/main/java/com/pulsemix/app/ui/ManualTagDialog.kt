@@ -1,7 +1,9 @@
 package com.pulsemix.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -13,6 +15,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -86,10 +89,20 @@ fun ManualTagDialog(
                     singleLine = true
                 )
                 Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { vm.manualTagSearch(title, artist) },
-                    enabled = title.isNotBlank() && !searching
-                ) { Text("Chercher") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { vm.manualTagSearch(title, artist) },
+                        enabled = title.isNotBlank() && !searching
+                    ) { Text("Chercher") }
+                    // Écrire directement ce qui est saisi, sans recherche
+                    OutlinedButton(
+                        onClick = {
+                            vm.saveTagsDirect(track, title, artist)
+                            onClose()
+                        },
+                        enabled = title.isNotBlank()
+                    ) { Text("Sauvegarder") }
+                }
                 if (searching) {
                     Spacer(Modifier.height(6.dp))
                     LinearProgressIndicator(Modifier.fillMaxWidth())

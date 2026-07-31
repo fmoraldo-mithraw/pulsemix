@@ -351,6 +351,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) { store.save() }
     }
 
+    fun saveTagsDirect(track: Track, title: String, artist: String) {
+        com.pulsemix.app.library.TagFixer.saveDirect(store, track, title, artist)
+        viewModelScope.launch(Dispatchers.IO) { store.save() }
+    }
+
     // -------------------------------------------------- import depuis URL
     val importState = com.pulsemix.app.library.UrlImporter.state
 

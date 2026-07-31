@@ -226,6 +226,25 @@ object TagFixer {
         save()
     }
 
+    /**
+     * Sauvegarde directe de tags saisis à la main, sans recherche.
+     * Contrairement à [applyManual], l'artiste est pris tel quel : le
+     * vider efface vraiment le tag artiste.
+     */
+    fun saveDirect(store: TrackStore, t: Track, title: String, artist: String) {
+        val newTitle = title.trim()
+        val newArtist = artist.trim()
+        if (newTitle.isBlank()) return
+        if (newTitle == t.title && newArtist == t.artist) return
+        store.update(t.uri) { it.copy(title = newTitle, artist = newArtist) }
+        applied.value = (
+            listOf(Suggestion(t.uri, t.title, t.artist, newTitle, newArtist, 0)) +
+                applied.value
+            ).take(APPLIED_MAX)
+        pending.value = pending.value.filter { it.uri != t.uri }
+        save()
+    }
+
     /** Meilleur candidat : durée compatible d'abord, score ensuite. */
     private fun pickBest(cands: List<Candidate>, durMs: Long): Candidate? {
         val durOk = cands.filter { durationClose(it.lengthMs, durMs) }
