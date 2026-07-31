@@ -26,8 +26,15 @@ object StreamImporter {
         val durationText: String
     )
 
-    private const val DOWNLOAD_ID = "pulsemix-stream-import"
-    private const val SEARCH_ID = "pulsemix-stream-search"
+    // Identifiants de processus UNIQUES par opération : la bibliothèque
+    // lève CanceledException quand un processus finit en erreur alors que
+    // son id a quitté sa table — un id fixe réutilisé entre deux imports
+    // qui se chevauchent déclenchait de faux « annulé » masquant la
+    // vraie erreur.
+    private val procSeq = java.util.concurrent.atomic.AtomicInteger()
+    @Volatile private var currentDownloadId: String? = null
+    @Volatile private var currentSearchId: String? = null
+    @Volatile private var stopRequested = false
 
     // Hôtes confiés à yt-dlp ; le reste passe par le téléchargement direct
     // de UrlImporter (fichier, Internet Archive, podcast).
@@ -62,7 +69,10 @@ object StreamImporter {
 
     /** Interrompt le téléchargement en cours (yt-dlp est tué). */
     fun requestStop() {
-        runCatching { YoutubeDL.getInstance().destroyProcessById(DOWNLOAD_ID) }
+        stopRequested = true
+        currentDownloadId?.let {
+            runCatching { YoutubeDL.getInstance().destroyProcessById(it) }
+        }
     }
 
     /**
@@ -93,14 +103,25 @@ object StreamImporter {
             .addOption("--no-mtime")
             .addOption("--no-warnings")
             .addOption("-o", File(dir, "%(title).120B [%(id)s].%(ext)s").absolutePath)
-        YoutubeDL.getInstance().execute(request, DOWNLOAD_ID) {
-                progress: Float, _: Long, _: String ->
-            val pct = progress.toInt()
-            onProgress(
-                if (pct in 0..100) "Téléchargement… $pct %"
-                else "Téléchargement…",
-                pct
-            )
+        stopRequested = false
+        val procId = "pulsemix-import-${procSeq.incrementAndGet()}"
+        currentDownloadId = procId
+        try {
+            YoutubeDL.getInstance().execute(request, procId) {
+                    progress: Float, _: Long, _: String ->
+                val pct = progress.toInt()
+                onProgress(
+                    if (pct in 0..100) "Téléchargement… $pct %"
+                    else "Téléchargement…",
+                    pct
+                )
+            }
+        } catch (e: YoutubeDL.CanceledException) {
+            // Vrai arrêt demandé : remonter pour l'état « Import arrêté ».
+            // Sinon (course interne de la lib), garder ce qui a été extrait.
+            if (stopRequested) throw e
+        } finally {
+            currentDownloadId = null
         }
         return dir.listFiles().orEmpty()
             .filter { f ->
@@ -146,10 +167,14 @@ object StreamImporter {
             .addOption("--flat-playlist")
             .addOption("--skip-download")
             .addOption("--no-warnings")
+        val procId = "pulsemix-search-${procSeq.incrementAndGet()}"
+        currentSearchId = procId
         val out = try {
-            YoutubeDL.getInstance().execute(request, SEARCH_ID).out
+            YoutubeDL.getInstance().execute(request, procId).out
         } catch (_: YoutubeDL.CanceledException) {
             return emptyList()
+        } finally {
+            currentSearchId = null
         }
         return out.lineSequence()
             .map { it.trim() }
@@ -177,7 +202,9 @@ object StreamImporter {
 
     /** Interrompt la recherche en cours. */
     fun cancelSearch() {
-        runCatching { YoutubeDL.getInstance().destroyProcessById(SEARCH_ID) }
+        currentSearchId?.let {
+            runCatching { YoutubeDL.getInstance().destroyProcessById(it) }
+        }
     }
 
     // ------------------------------------------------------------- outils

@@ -48,6 +48,10 @@ object UrlImporter {
      */
     suspend fun import(context: Context, rawUrl: String, folderUri: String) =
         withContext(Dispatchers.IO) {
+            // Un seul import à la fois : relancer pendant qu'un import
+            // tourne créait deux yt-dlp concurrents sur le même cache
+            // (erreurs « CanceledException » et fichiers écrasés).
+            if (_state.value is State.Working) return@withContext
             stopRequested = false
             val url = rawUrl.trim()
             if (url.isBlank()) {
