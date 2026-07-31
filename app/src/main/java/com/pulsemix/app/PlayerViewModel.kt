@@ -356,6 +356,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) { store.save() }
     }
 
+    fun revertTag(s: com.pulsemix.app.library.TagFixer.Suggestion) {
+        com.pulsemix.app.library.TagFixer.revert(store, s)
+        viewModelScope.launch(Dispatchers.IO) { store.save() }
+    }
+
     // -------------------------------------------------- import depuis URL
     val importState = com.pulsemix.app.library.UrlImporter.state
 

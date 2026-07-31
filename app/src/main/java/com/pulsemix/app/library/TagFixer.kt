@@ -227,6 +227,17 @@ object TagFixer {
     }
 
     /**
+     * Annule une correction : remet les tags d'origine enregistrés dans
+     * l'entrée d'historique, puis retire celle-ci de la liste des corrigés.
+     */
+    fun revert(store: TrackStore, s: Suggestion) {
+        if (s.oldTitle.isBlank()) return
+        store.update(s.uri) { it.copy(title = s.oldTitle, artist = s.oldArtist) }
+        applied.value = applied.value - s
+        save()
+    }
+
+    /**
      * Sauvegarde directe de tags saisis à la main, sans recherche.
      * Contrairement à [applyManual], l'artiste est pris tel quel : le
      * vider efface vraiment le tag artiste.

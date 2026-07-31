@@ -307,12 +307,21 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                         ) {
                             Column(Modifier.weight(1f)) {
                                 TagChangeTexts(s)
-                                // Correction douteuse ? Revoir la liste des
-                                // possibilités et en choisir une autre.
-                                TextButton(onClick = {
-                                    manualAuto = true
-                                    manualFor = tracks.find { it.uri == s.uri }
-                                }) { Text("Chercher") }
+                                Row {
+                                    // Correction douteuse ? Revoir la liste
+                                    // des possibilités, en choisir une autre.
+                                    TextButton(onClick = {
+                                        manualAuto = true
+                                        manualFor = tracks.find { it.uri == s.uri }
+                                    }) { Text("Chercher") }
+                                    // Ou revenir aux tags d'avant correction
+                                    TextButton(onClick = { vm.revertTag(s) }) {
+                                        Text(
+                                            "Rétablir l'original",
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
                             }
                             IconButton(onClick = {
                                 tracks.find { it.uri == s.uri }?.let(vm::playTrack)
