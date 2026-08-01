@@ -103,6 +103,13 @@ fun ManualTagDialog(
                         enabled = title.isNotBlank()
                     ) { Text("Sauvegarder") }
                 }
+                // Ignore les champs : écoute le morceau et l'identifie par
+                // son empreinte sonore (AcoustID), imparable quand les
+                // tags et le nom de fichier ne veulent rien dire
+                TextButton(
+                    onClick = { vm.manualTagIdentify(track) },
+                    enabled = !searching
+                ) { Text("Identifier par le son") }
                 if (searching) {
                     Spacer(Modifier.height(6.dp))
                     LinearProgressIndicator(Modifier.fillMaxWidth())

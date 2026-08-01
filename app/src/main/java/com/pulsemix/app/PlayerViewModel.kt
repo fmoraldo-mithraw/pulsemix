@@ -345,6 +345,26 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         manualTagError.value = null
     }
 
+    /** Identification par empreinte sonore (AcoustID) du morceau. */
+    fun manualTagIdentify(track: Track) {
+        if (manualTagSearching.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            manualTagSearching.value = true
+            manualTagError.value = null
+            manualTagResults.value = emptyList()
+            val res =
+                com.pulsemix.app.library.TagFixer.searchCandidatesBySound(track)
+            manualTagResults.value = res
+            if (res.isEmpty()) {
+                manualTagError.value =
+                    com.pulsemix.app.library.TagFixer.lastError.value
+                        ?: "Aucune correspondance sonore : ce morceau n'est " +
+                        "sans doute pas dans la base AcoustID."
+            }
+            manualTagSearching.value = false
+        }
+    }
+
     /** Applique le candidat choisi par l'utilisateur. */
     fun applyManualTag(track: Track, c: com.pulsemix.app.library.TagFixer.Candidate) {
         com.pulsemix.app.library.TagFixer.applyManual(store, track, c)

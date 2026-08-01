@@ -163,11 +163,12 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
         SubHeader("Tags en ligne", onBack)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Recherche les vrais titre et artiste de chaque morceau sur " +
-                "MusicBrainz. Les corrections sûres sont appliquées " +
-                "automatiquement ; les incertaines s'ajoutent à la liste " +
-                "ci-dessous, à valider à la main. Les fichiers audio ne sont " +
-                "jamais modifiés.",
+            "Identifie chaque morceau d'abord par son empreinte sonore " +
+                "(AcoustID écoute le son, peu importe les tags), puis par " +
+                "recherche texte MusicBrainz si le son ne suffit pas. Les " +
+                "corrections sûres sont appliquées automatiquement ; les " +
+                "incertaines s'ajoutent à la liste ci-dessous. Les fichiers " +
+                "audio ne sont jamais modifiés.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )

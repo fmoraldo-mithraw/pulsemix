@@ -68,23 +68,39 @@ object TagFixer {
     /** Cherche les tags d'un seul morceau (proposition ou application sûre). */
     suspend fun fixOne(store: TrackStore, track: Track): Unit =
         withContext(Dispatchers.IO) {
-            handle(store, track)
+            when (handleBySound(store, track)) {
+                SoundOutcome.APPLIED, SoundOutcome.DONE -> {}
+                SoundOutcome.NOT_FOUND -> handle(store, track)
+            }
             save()
             store.save()
         }
 
-    /** Passe toute la bibliothèque (1 requête/s : politesse MusicBrainz). */
+    /**
+     * Passe toute la bibliothèque : identification par empreinte sonore
+     * d'abord (AcoustID), recherche texte MusicBrainz en repli. Les
+     * morceaux les plus cassés — titre commençant par un chiffre et
+     * artiste poubelle type « Downloads » — passent en premier.
+     */
     suspend fun fixAll(store: TrackStore): Unit = withContext(Dispatchers.IO) {
         if (_progress.value != null) return@withContext
         stopRequested = false
         lastError.value = null
-        val list = store.tracks.value
+        val list = store.tracks.value.sortedByDescending {
+            if (it.title.trim().firstOrNull()?.isDigit() == true &&
+                it.artist.isNotBlank() && cleanArtist(it.artist).isBlank()
+            ) 1 else 0
+        }
         var applied = 0
         _progress.value = Triple(0, list.size, 0)
         try {
             for ((i, t) in list.withIndex()) {
                 if (stopRequested) break
-                if (handle(store, t)) applied++
+                when (handleBySound(store, t)) {
+                    SoundOutcome.APPLIED -> applied++
+                    SoundOutcome.DONE -> {}
+                    SoundOutcome.NOT_FOUND -> if (handle(store, t)) applied++
+                }
                 _progress.value = Triple(i + 1, list.size, applied)
             }
         } finally {
@@ -92,6 +108,72 @@ object TagFixer {
             store.save()
             _progress.value = null
         }
+    }
+
+    // ---------------------------------------------- identification sonore
+
+    private enum class SoundOutcome { APPLIED, DONE, NOT_FOUND }
+
+    /**
+     * Identifie le morceau par son empreinte sonore. APPLIED : correction
+     * sûre appliquée ; DONE : déjà correct ou proposition ajoutée (pas
+     * besoin du repli texte) ; NOT_FOUND : rien d'exploitable.
+     */
+    private fun handleBySound(store: TrackStore, t: Track): SoundOutcome {
+        val ctx = appContext ?: return SoundOutcome.NOT_FOUND
+        val fp = AcoustId.fingerprint(ctx, t.uri) ?: return SoundOutcome.NOT_FOUND
+        val cands = AcoustId.lookup(fp.first, fp.second)
+        val best = pickBest(cands, t.durationMs) ?: return SoundOutcome.NOT_FOUND
+        if (best.title.isBlank()) return SoundOutcome.NOT_FOUND
+        return when {
+            // L'empreinte est formelle : c'est cet enregistrement
+            best.score >= 90 -> {
+                if (best.title == t.title &&
+                    (best.artist.isBlank() || best.artist == t.artist)
+                ) {
+                    SoundOutcome.DONE
+                } else {
+                    store.update(t.uri) {
+                        it.copy(
+                            title = best.title,
+                            artist = best.artist.ifBlank { it.artist }
+                        )
+                    }
+                    applied.value = (
+                        listOf(
+                            Suggestion(
+                                t.uri, t.title, t.artist,
+                                best.title, best.artist, best.score
+                            )
+                        ) + applied.value
+                        ).take(APPLIED_MAX)
+                    pending.value = pending.value.filter { it.uri != t.uri }
+                    SoundOutcome.APPLIED
+                }
+            }
+            // Correspondance partielle : à valider à la main
+            best.score >= 60 -> {
+                pending.value = pending.value.filter { it.uri != t.uri } +
+                    Suggestion(
+                        t.uri, t.title, t.artist,
+                        best.title, best.artist, best.score
+                    )
+                SoundOutcome.DONE
+            }
+            else -> SoundOutcome.NOT_FOUND
+        }
+    }
+
+    /** Candidats par empreinte sonore, pour la recherche manuelle. */
+    fun searchCandidatesBySound(t: Track): List<Candidate> {
+        val ctx = appContext ?: return emptyList()
+        val fp = AcoustId.fingerprint(ctx, t.uri)
+        if (fp == null) {
+            lastError.value =
+                "Impossible de décoder l'audio pour calculer l'empreinte."
+            return emptyList()
+        }
+        return AcoustId.lookup(fp.first, fp.second)
     }
 
     /** Valide une proposition : applique à la bibliothèque (pas au fichier). */
