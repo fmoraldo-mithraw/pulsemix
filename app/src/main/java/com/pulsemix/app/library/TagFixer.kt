@@ -232,9 +232,13 @@ object TagFixer {
             // identique + durée qui colle. Le score MusicBrainz seul ne
             // suffit jamais : il est relatif à la recherche (le premier
             // résultat frôle 100 même quand c'est un mauvais match).
-            val sure = (titleMatch && artistMatch) ||
-                (titleMatch && durOk) ||
-                (artistMatch && durOk && best.score >= 95)
+            // Sans artiste dans la requête, jamais sûr : trop d'homonymes
+            // de titres — la réponse part toujours en proposition.
+            val sure = qArtist.isNotBlank() && (
+                (titleMatch && artistMatch) ||
+                    (titleMatch && durOk) ||
+                    (artistMatch && durOk && best.score >= 95)
+                )
             if (sure) {
                 store.update(t.uri) {
                     it.copy(
