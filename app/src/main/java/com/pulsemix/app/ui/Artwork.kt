@@ -54,59 +54,65 @@ object ArtworkCache {
     }
 
     suspend fun load(context: Context, uri: String, targetPx: Int): Bitmap? =
-        withContext(Dispatchers.IO) {
-            cache.get(uri)?.let { return@withContext it }
-            if (uri in misses) return@withContext null
+        withContext(Dispatchers.IO) { loadBlocking(context, uri, targetPx) }
 
-            // Cache disque : scroll instantané dès le premier lancement
-            val disk = diskFile(context, uri)
-            if (disk.exists()) {
-                val fromDisk = try {
-                    BitmapFactory.decodeFile(disk.absolutePath)
-                } catch (_: Exception) {
-                    null
-                }
-                if (fromDisk != null) {
-                    cache.put(uri, fromDisk)
-                    return@withContext fromDisk
-                }
-            }
+    /**
+     * Variante bloquante (widgets : pas de coroutine disponible).
+     * À n'appeler que depuis un thread de fond.
+     */
+    fun loadBlocking(context: Context, uri: String, targetPx: Int): Bitmap? {
+        cache.get(uri)?.let { return it }
+        if (uri in misses) return null
 
-            val mmr = MediaMetadataRetriever()
-            try {
-                mmr.setDataSource(context, Uri.parse(uri))
-                val bytes = mmr.embeddedPicture
-                if (bytes == null) {
-                    misses.add(uri)
-                    null
-                } else {
-                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                    var sample = 1
-                    while (bounds.outWidth / (sample * 2) >= 512) sample *= 2
-                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                    if (bmp != null) {
-                        cache.put(uri, bmp)
-                        try {
-                            java.io.FileOutputStream(disk).use {
-                                bmp.compress(Bitmap.CompressFormat.JPEG, 85, it)
-                            }
-                        } catch (_: Exception) {
-                        }
-                    } else misses.add(uri)
-                    bmp
-                }
+        // Cache disque : scroll instantané dès le premier lancement
+        val disk = diskFile(context, uri)
+        if (disk.exists()) {
+            val fromDisk = try {
+                BitmapFactory.decodeFile(disk.absolutePath)
             } catch (_: Exception) {
-                misses.add(uri)
                 null
-            } finally {
-                try {
-                    mmr.release()
-                } catch (_: Exception) {
-                }
+            }
+            if (fromDisk != null) {
+                cache.put(uri, fromDisk)
+                return fromDisk
             }
         }
+
+        val mmr = MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(context, Uri.parse(uri))
+            val bytes = mmr.embeddedPicture
+            if (bytes == null) {
+                misses.add(uri)
+                null
+            } else {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                var sample = 1
+                while (bounds.outWidth / (sample * 2) >= 512) sample *= 2
+                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                if (bmp != null) {
+                    cache.put(uri, bmp)
+                    try {
+                        java.io.FileOutputStream(disk).use {
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 85, it)
+                        }
+                    } catch (_: Exception) {
+                    }
+                } else misses.add(uri)
+                bmp
+            }
+        } catch (_: Exception) {
+            misses.add(uri)
+            null
+        } finally {
+            try {
+                mmr.release()
+            } catch (_: Exception) {
+            }
+        }
+    }
 }
 
 /** Jaquette d'un morceau, avec repli sur un emoji quand il n'y en a pas. */

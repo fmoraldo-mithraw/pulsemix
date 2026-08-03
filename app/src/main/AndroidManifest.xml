@@ -62,6 +62,34 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Widgets d'écran d'accueil : lecteur et file d'attente -->
+        <receiver
+            android:name=".widget.PlayerWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_player_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.QueueWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_queue_info" />
+        </receiver>
+
+        <service
+            android:name=".widget.QueueWidgetService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+
         <!-- Sonnerie plein écran : s'affiche par-dessus le verrouillage -->
         <activity
             android:name=".player.AlarmAlertActivity"

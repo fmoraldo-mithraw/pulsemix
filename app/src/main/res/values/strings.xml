@@ -1,3 +1,16 @@
 <resources>
     <string name="app_name">PulseMix</string>
+
+    <!-- Widgets d'écran d'accueil -->
+    <string name="widget_player_desc">Lecteur : morceau en cours et commandes</string>
+    <string name="widget_queue_desc">File d\'attente : les morceaux à venir</string>
+    <string name="widget_artwork">Jaquette</string>
+    <string name="widget_prev">Précédent</string>
+    <string name="widget_play">Lecture / pause</string>
+    <string name="widget_next">Suivant</string>
+    <string name="widget_open">Ouvrir PulseMix</string>
+    <string name="widget_nothing">Rien en lecture</string>
+    <string name="widget_tap_to_open">Touche pour ouvrir PulseMix</string>
+    <string name="widget_queue_title">File d\'attente</string>
+    <string name="widget_queue_empty">Aucun morceau en file.</string>
 </resources>

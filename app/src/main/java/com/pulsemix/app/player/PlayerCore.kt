@@ -170,6 +170,7 @@ object PlayerCore {
         set(value) {
             field = value
             queue.value = value
+            notifyWidgets()
         }
     private var sleepDeadline = 0L
     private var eqExo: android.media.audiofx.Equalizer? = null
@@ -213,6 +214,7 @@ object PlayerCore {
                 isPlaying.value = playing
                 if (mode.value == PlayerMode.DJ) mixer.setPaused(!playing)
                 persistState()
+                notifyWidgets()
             }
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
@@ -228,6 +230,7 @@ object PlayerCore {
                 currentPhase.value = phaseIndex
                 nextTrack.value = djNextAfter(track.uri)
                 recordHistory(track.uri)
+                notifyWidgets()
                 // La notification média suit ExoPlayer, qui joue la piste
                 // silencieuse en DJ : recopier le morceau réel dans ses
                 // métadonnées pour que notification, Bluetooth et voiture
@@ -937,6 +940,16 @@ object PlayerCore {
         }
         applyVolume()
         recordHistory(currentTrack.value?.uri)
+        notifyWidgets()
+    }
+
+    /** Redessine les widgets d'écran d'accueil (morceau, file, play/pause). */
+    private fun notifyWidgets() {
+        if (!initialized) return
+        try {
+            com.pulsemix.app.widget.PulseWidgets.refresh(appContext)
+        } catch (_: Exception) {
+        }
     }
 
     private fun recordHistory(uri: String?) {
