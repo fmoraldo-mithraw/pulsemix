@@ -177,6 +177,32 @@ fun PlayerScreen(
             )
         }
 
+        // Fin d'un mix : décompte avant l'enchaînement sur un mix du même
+        // type. Un tap arrête là — sans ça, la seule échappatoire serait de
+        // laisser démarrer le suivant pour le couper aussitôt.
+        val autoNextIn by vm.autoNextIn.collectAsStateWithLifecycle()
+        autoNextIn?.let { n ->
+            Spacer(Modifier.height(12.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { vm.cancelAutoNext() },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "$n",
+                    style = MaterialTheme.typography.displayLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    "Mix terminé — on enchaîne (touche pour rester ici)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+        }
+
         Spacer(Modifier.height(12.dp))
 
         // ---------------------------------------------------- morceau courant
@@ -778,7 +804,12 @@ fun PlayerScreen(
                                     showMixSheet = false
                                 },
                                 onStart = {
-                                    vm.startMix(plan, mixSheetDj)
+                                    // Les critères suivent le mix : ils
+                                    // servent à en régénérer un semblable
+                                    // quand celui-ci arrive au bout.
+                                    vm.startMix(
+                                        plan, mixSheetDj, targetMin, selectedGenre
+                                    )
                                     showMixSheet = false
                                 }
                             )

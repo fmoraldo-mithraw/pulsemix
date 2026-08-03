@@ -39,7 +39,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     interface Listener {
         fun onTrackChanged(track: Track, phaseIndex: Int)
         fun onProgress(progress: Float)
-        fun onStopped()
+        /** @param natural true si le set est allé à son terme. */
+        fun onStopped(natural: Boolean)
         /** Session audio du moteur DJ (pour y attacher l'égaliseur). */
         fun onSessionReady(sessionId: Int) {}
     }
@@ -173,7 +174,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             phase.tracks.filter { it.analyzed && it.bpm > 0f }.map { Segment(it, pi) }
         }
         if (segments.isEmpty()) {
-            ui.post { listener.onStopped() }
+            ui.post { listener.onStopped(false) }
             return
         }
         // Modulation par phase : segments un peu plus longs dans les phases
@@ -1356,8 +1357,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             } catch (_: Exception) {
             }
             audioTrack.release()
+            // `running` encore vrai = la boucle est sortie d'elle-même :
+            // le set est allé à son terme (un stop() manuel l'aurait mis
+            // à false avant). C'est ce qui déclenche l'enchaînement.
+            val natural = running
             running = false
-            ui.post { listener.onStopped() }
+            ui.post { listener.onStopped(natural) }
         }
     }
 

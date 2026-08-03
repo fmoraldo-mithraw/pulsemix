@@ -19,7 +19,11 @@ import com.pulsemix.app.data.TrackStore
 import com.pulsemix.app.mix.MixEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -221,6 +225,13 @@ object PlayerCore {
                 if (mode.value != PlayerMode.DJ) updateFromExo()
                 persistState()
             }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                // Fin d'un mix classique : la file est allée à son terme
+                if (state == Player.STATE_ENDED &&
+                    mode.value == PlayerMode.MIX
+                ) startAutoNext()
+            }
         })
 
         mixer = DjMixer(appContext, object : DjMixer.Listener {
@@ -256,7 +267,7 @@ object PlayerCore {
                 progress.value = p
             }
 
-            override fun onStopped() {
+            override fun onStopped(natural: Boolean) {
                 if (mode.value == PlayerMode.DJ) {
                     exo.stop()
                     isPlaying.value = false
@@ -267,6 +278,7 @@ object PlayerCore {
                 } catch (_: Exception) {
                 }
                 eqDj = null
+                if (natural) startAutoNext()
             }
 
             override fun onSessionReady(sessionId: Int) {
@@ -353,6 +365,7 @@ object PlayerCore {
     // ------------------------------------------------------------ lancements
 
     fun playNormal(tracks: List<Track>, startIndex: Int = 0) {
+        cancelAutoNext()
         if (tracks.isEmpty()) return
         launchMessage.value = null
         stopDjIfNeeded()
@@ -371,6 +384,7 @@ object PlayerCore {
     }
 
     fun playDouce(all: List<Track>, softness: Float) {
+        cancelAutoNext()
         val soft = MixEngine.softSelection(all, softness)
         if (soft.isEmpty()) {
             launchMessage.value = "Aucun morceau assez doux pour ce réglage."
@@ -393,6 +407,7 @@ object PlayerCore {
     }
 
     fun startMix(mixPlan: MixEngine.MixPlan) {
+        cancelAutoNext()
         if (mixPlan.phases.sumOf { it.tracks.size } == 0) {
             launchMessage.value = "Ce plan ne contient aucun morceau : rien à lancer."
             return
@@ -425,6 +440,7 @@ object PlayerCore {
     }
 
     fun startDj(mixPlan: MixEngine.MixPlan, fromPhase: Int = 0, rehearsal: Boolean = false) {
+        cancelAutoNext()
         if (mixPlan.phases.isEmpty()) return
         // Le moteur DJ ne joue que les morceaux analysés (BPM connu) : un
         // plan sans aucun morceau jouable s'arrêtait en silence, boutons
@@ -662,6 +678,7 @@ object PlayerCore {
 
     /** Pré-écoute du « meilleur passage » d'un morceau. */
     fun playPreview(t: Track) {
+        cancelAutoNext()
         stopDjIfNeeded()
         mode.value = PlayerMode.NORMAL
         clearPlanState()
@@ -969,6 +986,88 @@ object PlayerCore {
         if (mixer.isRunning) mixer.stop()
         exo.volume = 1f
         exo.repeatMode = Player.REPEAT_MODE_OFF
+    }
+
+    // ------------------------------------------------- enchaînement des mix
+
+    /**
+     * Ce qui a produit le mix en cours : de quoi en régénérer un autre du
+     * même genre quand celui-ci se termine. Les plans sont tirés au sort
+     * dans la bibliothèque, donc le suivant aura les mêmes caractéristiques
+     * sans être le même.
+     */
+    data class MixSpec(
+        val planId: String,
+        val dj: Boolean,
+        val targetMinutes: Int?,
+        val genre: String?
+    )
+
+    private var mixSpec: MixSpec? = null
+
+    /** Décompte affiché avant l'enchaînement (3, 2, 1), null sinon. */
+    val autoNextIn = MutableStateFlow<Int?>(null)
+
+    private val autoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var autoJob: Job? = null
+
+    /** Mémorise de quoi enchaîner (appelé au lancement d'un mix). */
+    fun setMixSpec(spec: MixSpec?) {
+        mixSpec = spec
+    }
+
+    /** Annule un enchaînement en cours (l'utilisateur reprend la main). */
+    fun cancelAutoNext() {
+        autoJob?.cancel()
+        autoJob = null
+        autoNextIn.value = null
+    }
+
+    /**
+     * Fin d'un mix : décompte 3-2-1 à l'écran, puis un nouveau mix du même
+     * type. Le plan se construit pendant le décompte, pour enchaîner sans
+     * blanc. Si rien ne peut être construit, on s'arrête simplement.
+     */
+    private fun startAutoNext() {
+        val spec = mixSpec ?: return
+        if (autoJob?.isActive == true) return
+        autoJob = autoScope.launch {
+            val store = try {
+                com.pulsemix.app.Graph.store
+            } catch (_: Exception) {
+                autoNextIn.value = null
+                return@launch
+            }
+            // Le plan se prépare pendant que le décompte tourne
+            val building = async {
+                val all = store.tracks.value
+                MixEngine.proposeMixes(
+                    all, spec.dj, spec.targetMinutes, spec.genre
+                ).firstOrNull { it.id == spec.planId }
+            }
+            for (n in 3 downTo 1) {
+                autoNextIn.value = n
+                delay(1_000)
+            }
+            val next = try {
+                building.await()
+            } catch (_: Exception) {
+                null
+            }
+            autoNextIn.value = null
+            // Lancer la lecture appelle cancelAutoNext() : on se retire
+            // d'abord, sinon la coroutine s'annulerait elle-même.
+            autoJob = null
+            withContext(Dispatchers.Main) {
+                if (next != null) {
+                    if (spec.dj) startDj(next) else startMix(next)
+                } else {
+                    launchMessage.value =
+                        "Impossible d'enchaîner : plus assez de morceaux " +
+                        "pour un nouveau « ${spec.planId} »."
+                }
+            }
+        }
     }
 
     /** Coupe la lecture en cours (réveil arrêté / répété). */

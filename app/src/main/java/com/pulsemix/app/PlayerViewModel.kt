@@ -483,8 +483,26 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun previewSegment(track: Track, startMs: Long, durMs: Long) =
         PlayerCore.playPreview(track.copy(bestStartMs = startMs, segmentMs = durMs))
 
-    fun startMix(plan: MixEngine.MixPlan, djMode: Boolean) {
+    /** Décompte avant l'enchaînement automatique en fin de mix (3, 2, 1). */
+    val autoNextIn = PlayerCore.autoNextIn
+
+    fun cancelAutoNext() = PlayerCore.cancelAutoNext()
+
+    /**
+     * @param targetMinutes et [genre] : les critères qui ont produit ce
+     * plan. Mémorisés pour pouvoir en régénérer un semblable quand celui-ci
+     * arrive au bout.
+     */
+    fun startMix(
+        plan: MixEngine.MixPlan,
+        djMode: Boolean,
+        targetMinutes: Int? = null,
+        genre: String? = null
+    ) {
         if (djMode) PlayerCore.startDj(plan) else PlayerCore.startMix(plan)
+        PlayerCore.setMixSpec(
+            PlayerCore.MixSpec(plan.id, djMode, targetMinutes, genre)
+        )
     }
 
     fun setSkipIntros(enabled: Boolean) = PlayerCore.setSkipIntros(enabled)

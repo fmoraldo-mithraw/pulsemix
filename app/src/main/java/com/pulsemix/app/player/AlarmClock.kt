@@ -255,6 +255,10 @@ object AlarmClock {
                         }
                         if (plan != null) {
                             PlayerCore.startDj(plan)
+                            // Le réveil ne doit pas s'arrêter au bout du set
+                            PlayerCore.setMixSpec(
+                                PlayerCore.MixSpec(plan.id, true, null, null)
+                            )
                         } else {
                             PlayerCore.playNormal(all.shuffled(), 0)
                         }

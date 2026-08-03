@@ -61,6 +61,10 @@ object PulseWidgets {
                     if (chosen != null) {
                         if (dj) PlayerCore.startDj(chosen)
                         else PlayerCore.startMix(chosen)
+                        // Enchaîner sur un mix du même type à la fin
+                        PlayerCore.setMixSpec(
+                            PlayerCore.MixSpec(chosen.id, dj, null, null)
+                        )
                     }
                     refresh(app)
                 } catch (_: Exception) {
