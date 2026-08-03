@@ -584,6 +584,42 @@ object PlayerCore {
         persistState()
     }
 
+    private var seekJob: Job? = null
+
+    /**
+     * Déplacement demandé à la barre de progression, une fois le doigt
+     * relâché. On n'y saute pas sèchement : le son descend, se replace, et
+     * remonte. En DJ, c'est le moteur qui s'en charge — il rouvre le
+     * morceau à l'endroit visé et y fait une vraie transition.
+     */
+    fun seekToFractionSmooth(f: Float) {
+        val frac = f.coerceIn(0f, 1f)
+        if (mode.value == PlayerMode.DJ) {
+            mixer.requestSeek(frac)
+            return
+        }
+        val d = exo.duration
+        if (d <= 0) return
+        seekJob?.cancel()
+        seekJob = autoScope.launch(Dispatchers.Main) {
+            val v0 = exo.volume
+            val steps = 10
+            // Descente rapide (le geste doit rester direct)
+            for (i in 1..steps) {
+                exo.volume = v0 * (1f - i.toFloat() / steps)
+                delay(14)
+            }
+            exo.seekTo((d * frac).toLong())
+            // Remontée un peu plus lente : l'arrivée est ainsi moins abrupte
+            for (i in 1..steps) {
+                exo.volume = v0 * i.toFloat() / steps
+                delay(22)
+            }
+            exo.volume = v0
+            persistState()
+        }
+    }
+
     // -------------------------------------------------- volume / EQ / sommeil
 
     /** Gain de normalisation (atténue les morceaux masterisés fort). */

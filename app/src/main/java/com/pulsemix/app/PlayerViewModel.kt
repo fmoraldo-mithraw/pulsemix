@@ -532,6 +532,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun setShuffle(enabled: Boolean) = PlayerCore.setShuffle(enabled)
     fun seekTo(fraction: Float) = PlayerCore.seekToFraction(fraction)
 
+    /** Déplacement validé (doigt relâché) : rejoint le point en fondu. */
+    fun seekToSmooth(fraction: Float) = PlayerCore.seekToFractionSmooth(fraction)
+
     /** Nombre de morceaux « doux » pour un seuil de douceur donné (aperçu du dialogue). */
     fun softCount(softness: Float): Int =
         MixEngine.softSelection(tracks.value, softness).size

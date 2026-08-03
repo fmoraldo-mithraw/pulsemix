@@ -290,21 +290,29 @@ fun PlayerScreen(
         Spacer(Modifier.height(10.dp))
 
         // -------------------------------------------------------- progression
+        // La barre suit la lecture, sauf pendant qu'on la déplace : le
+        // doigt garde la main, et rien ne bouge tant qu'il n'est pas
+        // relâché. Le déplacement se fait alors en fondu (en DJ, par une
+        // vraie transition vers le morceau repris à cet endroit).
+        var seeking by remember { mutableStateOf(false) }
+        var seekValue by remember { mutableFloatStateOf(0f) }
+        Slider(
+            value = if (seeking) seekValue else progress,
+            onValueChange = {
+                seeking = true
+                seekValue = it
+            },
+            onValueChangeFinished = {
+                seeking = false
+                vm.seekToSmooth(seekValue)
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
         if (mode == PlayerMode.DJ) {
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier.fillMaxWidth()
-            )
             Text(
                 "Meilleure minute en cours…",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-            )
-        } else {
-            Slider(
-                value = progress,
-                onValueChange = { vm.seekTo(it) },
-                modifier = Modifier.fillMaxWidth()
             )
         }
 

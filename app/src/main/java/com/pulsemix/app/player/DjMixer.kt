@@ -60,6 +60,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // compatibles, coupe franche quand le calage est impossible.
         const val FADE_LOCKED_HARMONIC_S = 18.0
         const val FADE_CUT_S = 6.0
+        // Déplacement dans le morceau : transition courte vers le même
+        // morceau repris ailleurs (assez longue pour ne pas claquer, assez
+        // brève pour que le geste reste direct)
+        const val SEEK_FADE_S = 2.5
         const val TAIL_MS = 16_000L
         // Durée minimale d'un passage en mode DJ : en dessous, on n'a pas
         // le temps d'apprécier le morceau entre deux transitions.
@@ -132,6 +136,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     @Volatile private var running = false
     @Volatile private var paused = false
     @Volatile private var pendingJump = -1
+    // Position visée par la barre de progression (-1 = aucune)
+    @Volatile private var pendingSeek = -1f
     @Volatile private var currentPhaseIndex = 0
     @Volatile private var startSegIndex = 0
     @Volatile private var rehearsal = false
@@ -225,6 +231,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         if (target >= 0) pendingJump = target
     }
 
+    /**
+     * Déplacement dans le morceau en cours (barre de progression). Il n'y a
+     * pas de « saut » en DJ : on ouvre un second deck sur le même morceau à
+     * l'endroit visé et on y fait une vraie transition, comme entre deux
+     * morceaux. @param fraction position visée dans le passage joué.
+     */
+    fun requestSeek(fraction: Float) {
+        pendingSeek = fraction.coerceIn(0f, 1f)
+    }
+
     // ------------------------------------------------------------------ deck
 
     private inner class Deck(
@@ -238,7 +254,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Premier morceau du set : il commence au DÉBUT du fichier (avec
         // l'option « sauter les intros parlées » si active), et déroule
         // jusqu'à la fin de son passage fort où la transition a lieu.
-        val playFromStart: Boolean = false
+        val playFromStart: Boolean = false,
+        // Déplacement manuel dans le morceau : le deck reprend là plutôt
+        // qu'au début du passage fort (la fin, elle, ne bouge pas).
+        val seekFromMs: Long? = null
     ) {
         val track: Track = segment.track
 
@@ -469,14 +488,21 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // naturellement sous le fondu d'entrée (pas de boucle de début :
             // essayée, jugée décevante). À l'autre bout, la boucle de sortie
             // (8 derniers battements) prend le relais sous le fondu de sortie.
-            startMs = if (playFromStart) {
-                if (PlayerCore.skipIntros.value && track.musicStartMs > 1_500L)
-                    track.musicStartMs
-                else 0L
-            } else anchor
-            logicalEndMs = if (playToEnd && track.durationMs > anchor)
+            val end = if (playToEnd && track.durationMs > anchor)
                 track.durationMs
             else min(anchor + segMs, track.durationMs)
+            startMs = when {
+                // Déplacement manuel : au moins 10 s à jouer après le point
+                // visé, sinon le deck n'aurait pas de quoi tenir le fondu
+                seekFromMs != null ->
+                    seekFromMs.coerceIn(0L, max(0L, end - 10_000L))
+                playFromStart ->
+                    if (PlayerCore.skipIntros.value && track.musicStartMs > 1_500L)
+                        track.musicStartMs
+                    else 0L
+                else -> anchor
+            }
+            logicalEndMs = end
             decodeEndMs = min(logicalEndMs + 2_000, track.durationMs)
 
             thread(name = "DjDeck-${track.title.take(12)}") {
@@ -853,6 +879,36 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     deckB = null
                     fadeStartF = -1L
                     echoBuf = null
+                }
+
+                // Déplacement demandé dans le morceau en cours : on rouvre
+                // le même morceau à l'endroit visé et on y fait une vraie
+                // transition. Ignoré si une transition est déjà en route —
+                // on ne va pas couper un fondu en cours.
+                val ps = pendingSeek
+                if (ps >= 0f) {
+                    pendingSeek = -1f
+                    if (deckB == null && !opening) {
+                        val from = a.startMs
+                        val to = a.logicalEndMs
+                        val at = from + ((to - from) * ps).toLong()
+                        opening = true
+                        val curRate = a.curRate
+                        val segIdx = a.segIndex
+                        val factor = phaseLengthFactor
+                            .getOrElse(segments[segIdx].phaseIndex) { 1f }
+                        thread(name = "DjSeek") {
+                            val d = Deck(
+                                segIdx, segments[segIdx], curRate, factor,
+                                playToEnd = segIdx == segments.size - 1,
+                                seekFromMs = at
+                            )
+                            val ok = if (d.open()) d else { d.close(); null }
+                            openResult.set(
+                                OpenResult(ok, SEEK_FADE_S, KIND_EQ, true, -1)
+                            )
+                        }
+                    }
                 }
 
                 // Programmer la prochaine transition. L'OUVERTURE du deck
