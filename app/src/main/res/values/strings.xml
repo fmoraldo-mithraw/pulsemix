@@ -11,6 +11,10 @@
     <string name="widget_open">Ouvrir PulseMix</string>
     <string name="widget_nothing">Rien en lecture</string>
     <string name="widget_tap_to_open">Touche pour ouvrir PulseMix</string>
+    <string name="widget_mix">MIX</string>
+    <string name="widget_dj">DJ</string>
+    <string name="widget_starting_mix">Préparation du mix…</string>
+    <string name="widget_starting_dj">Préparation du DJ set…</string>
     <string name="widget_queue_title">File d\'attente</string>
     <string name="widget_queue_empty">Aucun morceau en file.</string>
 </resources>

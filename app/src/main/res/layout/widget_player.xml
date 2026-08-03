@@ -86,6 +86,29 @@
                 android:padding="6dp"
                 android:src="@drawable/ic_widget_open"
                 android:contentDescription="@string/widget_open" />
+
+            <!-- Lancer un enchaînement sans ouvrir l'appli -->
+            <TextView
+                android:id="@+id/widget_mix"
+                android:layout_width="0dp"
+                android:layout_weight="1.1"
+                android:layout_height="36dp"
+                android:gravity="center"
+                android:textColor="#B497FF"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:text="@string/widget_mix" />
+
+            <TextView
+                android:id="@+id/widget_dj"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="36dp"
+                android:gravity="center"
+                android:textColor="#8AE0C8"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:text="@string/widget_dj" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

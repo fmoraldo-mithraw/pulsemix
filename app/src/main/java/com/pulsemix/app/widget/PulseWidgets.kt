@@ -25,7 +25,51 @@ object PulseWidgets {
     const val ACTION_TOGGLE = "com.pulsemix.app.widget.TOGGLE"
     const val ACTION_NEXT = "com.pulsemix.app.widget.NEXT"
     const val ACTION_PLAY_AT = "com.pulsemix.app.widget.PLAY_AT"
+    const val ACTION_MIX = "com.pulsemix.app.widget.MIX"
+    const val ACTION_DJ = "com.pulsemix.app.widget.DJ"
     const val EXTRA_INDEX = "index"
+
+    /**
+     * Construit puis lance un enchaînement sans passer par l'appli :
+     * « Flow continu » en mix classique, « Auto-DJ » avec le moteur DJ.
+     * Le plan se calcule hors du thread principal (toute la
+     * bibliothèque), le lancement revient sur le thread principal
+     * (ExoPlayer l'exige). onDone libère le broadcast (goAsync).
+     */
+    fun startMix(context: Context, dj: Boolean, onDone: () -> Unit) {
+        val app = context.applicationContext
+        Graph.init(app)
+        thread(name = "widget-mix") {
+            var plan: com.pulsemix.app.mix.MixEngine.MixPlan? = null
+            try {
+                val store = Graph.store
+                // La bibliothèque peut encore être en cours de chargement
+                var waited = 0
+                while (!store.loaded.value && waited < 8_000) {
+                    Thread.sleep(100)
+                    waited += 100
+                }
+                val all = store.tracks.value.filter { !it.excluded }
+                val plans = com.pulsemix.app.mix.MixEngine.proposeMixes(all, dj = dj)
+                plan = plans.find { it.id == if (dj) "auto" else "flow" }
+                    ?: plans.firstOrNull()
+            } catch (_: Exception) {
+            }
+            val chosen = plan
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                try {
+                    if (chosen != null) {
+                        if (dj) PlayerCore.startDj(chosen)
+                        else PlayerCore.startMix(chosen)
+                    }
+                    refresh(app)
+                } catch (_: Exception) {
+                } finally {
+                    onDone()
+                }
+            }
+        }
+    }
 
     /** Redessine tous les widgets posés (appelé quand l'état change). */
     fun refresh(context: Context) {
@@ -112,6 +156,12 @@ class PlayerWidget : AppWidgetProvider() {
             R.id.widget_next, PulseWidgets.action(context, cls, PulseWidgets.ACTION_NEXT)
         )
         views.setOnClickPendingIntent(R.id.widget_open, PulseWidgets.openApp(context))
+        views.setOnClickPendingIntent(
+            R.id.widget_mix, PulseWidgets.action(context, cls, PulseWidgets.ACTION_MIX)
+        )
+        views.setOnClickPendingIntent(
+            R.id.widget_dj, PulseWidgets.action(context, cls, PulseWidgets.ACTION_DJ)
+        )
         views.setOnClickPendingIntent(R.id.widget_title, PulseWidgets.openApp(context))
         views.setOnClickPendingIntent(R.id.widget_art, PulseWidgets.openApp(context))
         manager.updateAppWidget(ids, views)
@@ -150,10 +200,40 @@ class PlayerWidget : AppWidgetProvider() {
                 Graph.init(context)
                 PlayerCore.next()
             }
+            PulseWidgets.ACTION_MIX, PulseWidgets.ACTION_DJ -> {
+                val dj = intent.action == PulseWidgets.ACTION_DJ
+                // Retour visuel immédiat : la construction du plan prend
+                // un instant sur une grosse bibliothèque
+                showPreparing(context, dj)
+                val pending = goAsync()
+                PulseWidgets.startMix(context, dj) { pending.finish() }
+                return
+            }
             else -> super.onReceive(context, intent)
         }
         if (intent.action?.startsWith("com.pulsemix.app.widget.") == true) {
             PulseWidgets.refresh(context)
+        }
+    }
+
+    /** Affiche « Préparation… » le temps que le plan se construise. */
+    private fun showPreparing(context: Context, dj: Boolean) {
+        try {
+            val mgr = AppWidgetManager.getInstance(context) ?: return
+            val ids = mgr.getAppWidgetIds(
+                ComponentName(context, PlayerWidget::class.java)
+            )
+            if (ids.isEmpty()) return
+            val v = RemoteViews(context.packageName, R.layout.widget_player)
+            v.setTextViewText(
+                R.id.widget_title,
+                context.getString(
+                    if (dj) R.string.widget_starting_dj
+                    else R.string.widget_starting_mix
+                )
+            )
+            mgr.partiallyUpdateAppWidget(ids, v)
+        } catch (_: Exception) {
         }
     }
 }
