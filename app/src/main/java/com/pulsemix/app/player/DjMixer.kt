@@ -79,7 +79,23 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val KIND_HARMONIC = 2 // long blend + mid swap
         const val KIND_DARK = 3     // filter sweep passe-bas (le sortant s'étouffe)
         const val KIND_EQ = 4       // échange de basses classique, sans filtre
+        const val KIND_SLAM = 5     // coupe nette sur le temps fort + silence
         const val ECHO_FEEDBACK = 0.55f
+        // Mega cut : le sortant s'arrête sur le dernier temps de la mesure,
+        // un temps de silence, l'entrant démarre pile sur le temps fort.
+        const val FADE_SLAM_S = 0.6
+        // Rampe anti-clic de la coupe (5 ms : inaudible, mais évite le
+        // craquement d'une troncature brutale de la forme d'onde)
+        const val SLAM_RAMP_FRAMES = 220f
+
+        // Early teaser : quelques mesures avant la transition, un extrait
+        // du morceau entrant (bande vocale, sans basses ni aigus) se glisse
+        // sous le morceau en cours — on le « sent venir » avant qu'il arrive.
+        const val TEASE_BARS_LEAD = 8L    // ~15 s à 128 bpm
+        const val TEASE_BARS_AUDIBLE = 2L // durée réellement audible
+        const val TEASE_GAIN = 0.24f
+        // One-pole ~300 Hz : borne basse de la bande du teaser
+        const val TEASE_HP_ALPHA = 0.0423f
 
         // Forme de la jonction, par technique. Principe commun : une seule
         // source par bande à chaque instant. Le sortant cède ses basses
@@ -683,6 +699,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var fadeStartF = -1L
         var fadeLenF = 0L
         var fadeKindF = KIND_NORMAL
+        // Frame à laquelle le deck B commence à produire du son : le début
+        // du fondu d'ordinaire, plus tôt avec un teaser, plus tard sur une
+        // coupe nette (le silence).
+        var bStartF = -1L
+        // Fenêtre audible du teaser (-1 : pas de teaser sur ce passage)
+        var teaseStartF = -1L
+        var teaseEndF = -1L
         var echoBuf: FloatArray? = null
         var echoPos = 0
         var endFadeFrames = -1L
@@ -805,6 +828,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     deckB!!.close()
                     deckB = null
                     fadeStartF = -1L
+                    bStartF = -1L
+                    teaseStartF = -1L
+                    teaseEndF = -1L
                     echoBuf = null
                 }
 
@@ -826,7 +852,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         val fadeF = (fadeS * OUT_SR).toLong()
                         // 3 s d'avance : le deck est prêt (et pré-décodé)
                         // avant l'heure du fondu
-                        if (jumping || a.remainingOut <= fadeF + 3L * OUT_SR) {
+                        // Avance suffisante pour couvrir un éventuel teaser
+                        // (le deck doit tourner bien avant le fondu)
+                        val lead = if (fadeKind == KIND_CUT ||
+                            fadeKind == KIND_SLAM
+                        ) 3L * OUT_SR else 22L * OUT_SR
+                        if (jumping || a.remainingOut <= fadeF + lead) {
                             opening = true
                             val jt = pendingJump
                             thread(name = "DjOpen") {
@@ -898,7 +929,37 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                     .coerceIn(4_410, 88_200) * 2
                             )
                         } else null
-                        b.startedAtFrame = start
+
+                        // Par défaut, l'entrant démarre avec le fondu
+                        bStartF = fadeStartF
+                        teaseStartF = -1L
+                        teaseEndF = -1L
+
+                        if (fadeKindF == KIND_SLAM) {
+                            // Mega cut : `start` est un début de mesure. On
+                            // coupe le sortant un temps avant, le silence
+                            // dure ce temps, et l'entrant tombe pile sur le
+                            // temps fort.
+                            val beatF = period.toLong()
+                            val cutAt = max(framesGlobal, start - beatF)
+                            fadeStartF = cutAt
+                            fadeLenF = max(1L, start - cutAt)
+                            bStartF = start
+                        } else if (!ready.jumping && fadeKindF != KIND_CUT &&
+                            barF > 0
+                        ) {
+                            // Early teaser : l'entrant est lancé plusieurs
+                            // mesures avant le fondu (donc toujours en phase
+                            // avec le sortant) et n'est audible que sur les
+                            // premières, filtré en bande vocale.
+                            val ts = fadeStartF - TEASE_BARS_LEAD * barF
+                            if (ts > framesGlobal + OUT_SR / 2) {
+                                teaseStartF = ts
+                                teaseEndF = ts + TEASE_BARS_AUDIBLE * barF
+                                bStartF = ts
+                            }
+                        }
+                        b.startedAtFrame = bStartF
                         deckB = b
                         pendingJump = -1
                     }
@@ -913,10 +974,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     if (na == 0 && framesGlobal < fadeStartF) {
                         // Deck A épuisé plus tôt que prévu : démarrer B tout de suite
                         fadeStartF = framesGlobal
+                        bStartF = framesGlobal
+                        teaseStartF = -1L
                         b.startedAtFrame = framesGlobal
                     }
-                    if (framesGlobal + BLOCK_FRAMES > fadeStartF) {
-                        val off = max(0L, fadeStartF - framesGlobal).toInt()
+                    // B tourne dès bStartF : avec le fondu d'ordinaire, plus
+                    // tôt s'il y a un teaser, un temps plus tard sur un slam.
+                    if (framesGlobal + BLOCK_FRAMES > bStartF && bStartF >= 0) {
+                        val off = max(0L, bStartF - framesGlobal).toInt()
                         b.read(tmpB, off, BLOCK_FRAMES - off)
                     }
                 }
@@ -1021,9 +1086,32 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     var gB = 0f
                     var x = 0f
                     val inFade = fadeActive && gf >= fadeStartF
+                    // Early teaser : avant le fondu, un extrait du morceau
+                    // entrant réduit à sa bande vocale se glisse sous le
+                    // morceau en cours, à bas niveau. Enveloppe douce aux
+                    // deux bouts pour qu'il apparaisse et reparte sans
+                    // qu'on sache bien quand.
+                    val inTease = !inFade && bd != null && teaseStartF >= 0 &&
+                        gf >= teaseStartF && gf < teaseEndF
+                    if (inTease) {
+                        val span = (teaseEndF - teaseStartF).toFloat()
+                        val tp = ((gf - teaseStartF) / span).coerceIn(0f, 1f)
+                        // Fondu d'entrée/sortie sur 20 % de la fenêtre
+                        val env = min(tp / 0.2f, (1f - tp) / 0.2f)
+                            .coerceIn(0f, 1f)
+                        gB = TEASE_GAIN * env
+                    }
                     if (inFade) {
                         x = ((gf - fadeStartF).toFloat() / fadeLenF).coerceIn(0f, 1f)
-                        if (fadeKindF == KIND_CUT) {
+                        if (fadeKindF == KIND_SLAM) {
+                            // Mega cut : le sortant est coupé net (rampe de
+                            // 5 ms, juste pour ne pas claquer), silence d'un
+                            // temps, puis l'entrant tombe sur le temps fort.
+                            gA = 1f - ((gf - fadeStartF) / SLAM_RAMP_FRAMES)
+                                .coerceIn(0f, 1f)
+                            gB = ((gf - bStartF) / SLAM_RAMP_FRAMES)
+                                .coerceIn(0f, 1f)
+                        } else if (fadeKindF == KIND_CUT) {
                             // Coupe franche : sortie raide, entrée franche
                             gA = cos(x.pow(0.7f) * HALF_PI)
                             gB = sin(x.pow(1.3f) * HALF_PI)
@@ -1067,16 +1155,29 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     var vaR = aR
                     var vbL = bL
                     var vbR = bR
+                    if (inTease && bd != null) {
+                        // Bande vocale seule : passe-bas 2,5 kHz moins
+                        // passe-bas 300 Hz. Ni basses (elles se battraient
+                        // avec celles du morceau en cours), ni aigus (trop
+                        // repérables) — juste la voix et les nappes.
+                        bd.sweepLpL += TEASE_HP_ALPHA * (bL - bd.sweepLpL)
+                        bd.sweepLpR += TEASE_HP_ALPHA * (bR - bd.sweepLpR)
+                        bd.midLpL += MID_ALPHA * (bL - bd.midLpL)
+                        bd.midLpR += MID_ALPHA * (bR - bd.midLpR)
+                        vbL = bd.midLpL - bd.sweepLpL
+                        vbR = bd.midLpR - bd.sweepLpR
+                    }
                     if (inFade && bd != null) {
                         bd.lpL += BASS_ALPHA * (bL - bd.lpL)
                         bd.lpR += BASS_ALPHA * (bR - bd.lpR)
-                        // ENTRANT (commun à toutes les jonctions fondues) :
-                        // passe-bas 2 pôles qui s'ouvre. Au début il
-                        // n'apporte QUE ses basses — le sortant garde
-                        // médiums et aigus, donc rien ne se superpose ;
-                        // puis il s'ouvre vers le haut au moment où le
-                        // sortant s'efface. Une seule source par bande.
-                        if (fadeKindF != KIND_CUT) {
+                        // ENTRANT (commun aux jonctions fondues) : passe-bas
+                        // 2 pôles qui s'ouvre. Au début il n'apporte QUE ses
+                        // basses — le sortant garde médiums et aigus, donc
+                        // rien ne se superpose ; puis il s'ouvre vers le haut
+                        // au moment où le sortant s'efface. Une seule source
+                        // par bande. (Coupe nette et mega cut : aucun
+                        // traitement, les deux ne se croisent jamais.)
+                        if (fadeKindF != KIND_CUT && fadeKindF != KIND_SLAM) {
                             bd.sweepLpL += alphaB * (bL - bd.sweepLpL)
                             bd.sweepLpR += alphaB * (bR - bd.sweepLpR)
                             bd.sweep2L += alphaB * (bd.sweepLpL - bd.sweep2L)
@@ -1271,6 +1372,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     deckA = b
                     deckB = null
                     fadeStartF = -1L
+                    bStartF = -1L
+                    teaseStartF = -1L
+                    teaseEndF = -1L
                     echoBuf = null
                     currentPhaseIndex = b.segment.phaseIndex
                     announce(b)
@@ -1380,10 +1484,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 FADE_NORMAL_S to KIND_NORMAL,
                 14.0 to KIND_EQ
             )
-            // Deux morceaux énergiques : gestes francs, coupe écho permise
+            // Deux morceaux énergiques : gestes francs, coupe écho et mega
+            // cut permis — sur des morceaux qui tapent, l'arrêt net sur le
+            // temps fort fait son effet
             eOut > 0.17f && eIn > 0.17f -> listOf(
                 FADE_NORMAL_S to KIND_NORMAL,
                 7.0 to KIND_CUT,
+                FADE_SLAM_S to KIND_SLAM,
                 11.0 to KIND_EQ
             )
             // Sortant brillant : l'étouffer (passe-bas) sonne naturel
