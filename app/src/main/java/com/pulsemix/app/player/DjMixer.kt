@@ -83,14 +83,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val KIND_HARMONIC = 2 // long blend + mid swap
         const val KIND_DARK = 3     // filter sweep passe-bas (le sortant s'étouffe)
         const val KIND_EQ = 4       // échange de basses classique, sans filtre
-        const val KIND_SLAM = 5     // coupe nette sur le temps fort + silence
         const val ECHO_FEEDBACK = 0.55f
-        // Mega cut : le sortant s'arrête sur le dernier temps de la mesure,
-        // un temps de silence, l'entrant démarre pile sur le temps fort.
-        const val FADE_SLAM_S = 0.6
-        // Rampe anti-clic de la coupe (5 ms : inaudible, mais évite le
-        // craquement d'une troncature brutale de la forme d'onde)
-        const val SLAM_RAMP_FRAMES = 220f
 
         // Early teaser : quelques mesures avant la transition, un extrait
         // du morceau entrant (bande vocale, sans basses ni aigus) se glisse
@@ -903,13 +896,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         val (fadeS, fadeKind) =
                             fadeSpec(a, segments[nextIdx].track, rate, jumping)
                         val fadeF = (fadeS * OUT_SR).toLong()
-                        // 3 s d'avance : le deck est prêt (et pré-décodé)
-                        // avant l'heure du fondu
-                        // Avance suffisante pour couvrir un éventuel teaser
-                        // (le deck doit tourner bien avant le fondu)
-                        val lead = if (fadeKind == KIND_CUT ||
-                            fadeKind == KIND_SLAM
-                        ) 3L * OUT_SR else 22L * OUT_SR
+                        // Le deck doit être prêt (et pré-décodé) avant
+                        // l'heure du fondu, avec de quoi couvrir un
+                        // éventuel teaser qui le fait tourner bien avant.
+                        val lead = if (fadeKind == KIND_CUT) 3L * OUT_SR
+                        else 22L * OUT_SR
                         if (jumping || a.remainingOut <= fadeF + lead) {
                             opening = true
                             val jt = pendingJump
@@ -988,34 +979,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         teaseStartF = -1L
                         teaseEndF = -1L
 
-                        if (fadeKindF == KIND_SLAM) {
-                            // Mega cut : `start` est un début de mesure. On
-                            // coupe le sortant un temps avant, le silence
-                            // dure ce temps, et l'entrant tombe pile sur le
-                            // temps fort.
-                            val beatF = period.toLong()
-                            var onAt = start
-                            // La grille théorique (BPM + premier beat) dérive
-                            // vite de quelques dizaines de ms des frappes
-                            // réelles — invisible sur un fondu long, fatal
-                            // sur une coupe nette. On recale donc le point
-                            // d'entrée sur le kick effectif du sortant, en
-                            // gardant le même nombre de temps.
-                            val lastOn = a.onsets.lastOnsetFrame
-                            if (lastOn > 0 && period > 0) {
-                                val beats = Math.round((start - lastOn) / period)
-                                val snapped = lastOn + (beats * period).toLong()
-                                if (abs(snapped - start) < beatF / 3 &&
-                                    snapped > framesGlobal + OUT_SR / 20
-                                ) {
-                                    onAt = snapped
-                                }
-                            }
-                            val cutAt = max(framesGlobal, onAt - beatF)
-                            fadeStartF = cutAt
-                            fadeLenF = max(1L, onAt - cutAt)
-                            bStartF = onAt
-                        } else if (!ready.jumping && fadeKindF != KIND_CUT &&
+                        if (!ready.jumping && fadeKindF != KIND_CUT &&
                             barF > 0 && teaseThisTime(a, b)
                         ) {
                             // Early teaser : l'entrant est lancé plusieurs
@@ -1062,7 +1026,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         b.startedAtFrame = framesGlobal
                     }
                     // B tourne dès bStartF : avec le fondu d'ordinaire, plus
-                    // tôt s'il y a un teaser, un temps plus tard sur un slam.
+                    // tôt quand un teaser le fait démarrer en avance.
                     if (framesGlobal + BLOCK_FRAMES > bStartF && bStartF >= 0) {
                         val off = max(0L, bStartF - framesGlobal).toInt()
                         b.read(tmpB, off, BLOCK_FRAMES - off)
@@ -1177,15 +1141,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         gf >= teaseStartF && gf < teaseEndF
                     if (inFade) {
                         x = ((gf - fadeStartF).toFloat() / fadeLenF).coerceIn(0f, 1f)
-                        if (fadeKindF == KIND_SLAM) {
-                            // Mega cut : le sortant est coupé net (rampe de
-                            // 5 ms, juste pour ne pas claquer), silence d'un
-                            // temps, puis l'entrant tombe sur le temps fort.
-                            gA = 1f - ((gf - fadeStartF) / SLAM_RAMP_FRAMES)
-                                .coerceIn(0f, 1f)
-                            gB = ((gf - bStartF) / SLAM_RAMP_FRAMES)
-                                .coerceIn(0f, 1f)
-                        } else if (fadeKindF == KIND_CUT) {
+                        if (fadeKindF == KIND_CUT) {
                             // Coupe franche : sortie raide, entrée franche
                             gA = cos(x.pow(0.7f) * HALF_PI)
                             gB = sin(x.pow(1.3f) * HALF_PI)
@@ -1315,9 +1271,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // basses — le sortant garde médiums et aigus, donc
                         // rien ne se superpose ; puis il s'ouvre vers le haut
                         // au moment où le sortant s'efface. Une seule source
-                        // par bande. (Coupe nette et mega cut : aucun
-                        // traitement, les deux ne se croisent jamais.)
-                        if (fadeKindF != KIND_CUT && fadeKindF != KIND_SLAM) {
+                        // par bande. (Coupe nette : aucun traitement,
+                        // l'echo-out agit après le mixage.)
+                        if (fadeKindF != KIND_CUT) {
                             bd.sweepLpL += alphaB * (bL - bd.sweepLpL)
                             bd.sweepLpR += alphaB * (bR - bd.sweepLpR)
                             bd.sweep2L += alphaB * (bd.sweepLpL - bd.sweep2L)
@@ -1374,23 +1330,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             // KIND_CUT : pas de traitement spectral ici,
                             // l'echo-out agit après le mixage.
                         }
+                        // Enveloppes de kick par sous-fenêtre de 256 frames
+                        subA += abs(a.lpL) + abs(a.lpR)
                         subB += abs(bd.lpL) + abs(bd.lpR)
                         if ((i + 1) % 256 == 0) {
+                            a.onsets.feed(
+                                subA / 256, gf, (a.beatPeriodFrames * 0.6).toLong()
+                            )
                             bd.onsets.feed(
                                 subB / 256, gf, (bd.beatPeriodFrames * 0.6).toLong()
                             )
+                            subA = 0f
                             subB = 0f
                         }
-                    }
-                    // Enveloppe de kick du sortant, suivie EN PERMANENCE :
-                    // la position des frappes réelles sert à recaler les
-                    // coupes nettes, dont le timing doit être exact.
-                    subA += abs(a.lpL) + abs(a.lpR)
-                    if ((i + 1) % 256 == 0) {
-                        a.onsets.feed(
-                            subA / 256, gf, (a.beatPeriodFrames * 0.6).toLong()
-                        )
-                        subA = 0f
                     }
 
                     var l = (vaL * gA + vbL * gB) * master
@@ -1630,13 +1582,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 FADE_NORMAL_S to KIND_NORMAL,
                 14.0 to KIND_EQ
             )
-            // Deux morceaux énergiques : gestes francs, coupe écho et mega
-            // cut permis — sur des morceaux qui tapent, l'arrêt net sur le
-            // temps fort fait son effet
+            // Deux morceaux énergiques : gestes francs, coupe écho permise
             eOut > 0.17f && eIn > 0.17f -> listOf(
                 FADE_NORMAL_S to KIND_NORMAL,
                 7.0 to KIND_CUT,
-                FADE_SLAM_S to KIND_SLAM,
                 11.0 to KIND_EQ
             )
             // Sortant brillant : l'étouffer (passe-bas) sonne naturel
