@@ -97,11 +97,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // sous le morceau en cours — on le « sent venir » avant qu'il arrive.
         const val TEASE_BARS_LEAD = 8L    // ~15 s à 128 bpm
         const val TEASE_BARS_AUDIBLE = 2L // durée réellement audible
-        const val TEASE_GAIN = 0.30f
-        // Atténuation de la même bande sur le morceau en cours pendant le
-        // teaser : on creuse la place au lieu d'empiler. Partielle (55 %) :
-        // couper net s'entendrait comme un trou.
-        const val TEASE_DUCK = 0.55f
+        // Le teaser sonne au niveau du morceau, pas en fond sonore : sa
+        // bande passe à plein volume, et c'est le morceau en cours qui lui
+        // cède la place.
+        const val TEASE_GAIN = 1.0f
+        // La bande occupée par le teaser est donc quasiment retirée du
+        // morceau en cours (90 %) : les deux ne se marchent pas dessus.
+        const val TEASE_DUCK = 0.90f
         // Mesures d'étalonnage avant de juger ce qui est « saillant »
         const val TEASE_REF_BARS = 2
         // Une mesure est retenue si elle dépasse la référence de 25 %
