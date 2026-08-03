@@ -71,6 +71,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val BASS_SWAP_CUT = 0.95f
         // Boucle de sortie : durée maximale rejouée en boucle (garde-fou)
         const val LOOP_MAX_OUT: Long = 30L * 44_100L
+        // Marge de sortie supplémentaire contre les saccades : 0,3 s de
+        // PCM float stéréo (8 octets par frame)
+        const val OUT_EXTRA_FRAMES = 13_230 // 0,3 s à 44,1 kHz
+        const val OUT_EXTRA_BYTES = OUT_EXTRA_FRAMES * 8
         // One-pole ~2,5 kHz : extraction des médiums (mid swap)
         const val MID_ALPHA = 0.30f
         // Types de transition : une technique de DJ par situation
@@ -162,6 +166,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     private var lastFadeKind = -1
     // Un teaser vient-il d'être joué ? (jamais deux transitions de suite)
     private var lastTeased = false
+    // Décalage entre ce qui est calculé et ce qui sort des haut-parleurs
+    @Volatile private var outLatencyMs = 0L
 
     /**
      * Le teaser est un effet, pas une signature : environ une transition
@@ -704,8 +710,20 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     .build()
             )
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .setBufferSizeInBytes(max(minBuf * 3, 256 * 1024))
+            // Réserve de sortie : c'est le temps dont dispose le thread de
+            // mixage quand le système lui prend le CPU (ouverture d'une
+            // autre appli, GC...). 0,3 s ajoutés aux ~0,75 s de base après
+            // des saccades constatées à l'usage.
+            .setBufferSizeInBytes(
+                max(minBuf * 3, 256 * 1024) + OUT_EXTRA_BYTES
+            )
             .build()
+        // Le son écrit maintenant ne se fera entendre qu'une fois le tampon
+        // écoulé : les annonces à l'interface sont retardées d'autant, sinon
+        // le titre changerait une seconde avant qu'on entende le morceau.
+        outLatencyMs = (
+            audioTrack.bufferSizeInFrames.toLong() * 1000L / OUT_SR
+            ).coerceIn(0L, 2_000L)
 
         var deckA: Deck? = null
         var deckB: Deck? = null
@@ -1542,7 +1560,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     private fun announce(deck: Deck) {
         val t = deck.track
         val p = deck.segment.phaseIndex
-        ui.post { listener.onTrackChanged(t, p) }
+        // Retardé de la latence du tampon de sortie : le morceau annoncé
+        // est celui qu'on entend, pas celui qu'on vient de calculer.
+        ui.postDelayed({ listener.onTrackChanged(t, p) }, outLatencyMs)
     }
 
     /**
