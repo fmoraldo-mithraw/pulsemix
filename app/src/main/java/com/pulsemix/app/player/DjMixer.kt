@@ -50,8 +50,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val OUT_SR = 44100
         const val BLOCK_FRAMES = 2048
         // Fondus longs (plusieurs mesures) pour « sentir arriver » le
-        // morceau entrant : il est audible tôt (plafonné et sans basses,
-        // donc propre), et ne prend le dessus qu'en seconde moitié.
+        // morceau entrant : il pose d'abord ses basses seules (filtré),
+        // et ne s'ouvre en pleine bande qu'au moment où le sortant
+        // s'efface — jamais deux morceaux entiers en même temps.
         const val FADE_NORMAL_S = 14.0
         const val FADE_JUMP_S = 5.0
         // Jonctions adaptatives : long blend quand tempos calés et tonalités
@@ -76,6 +77,23 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val KIND_DARK = 3     // filter sweep passe-bas (le sortant s'étouffe)
         const val KIND_EQ = 4       // échange de basses classique, sans filtre
         const val ECHO_FEEDBACK = 0.55f
+
+        // Forme de la jonction, par technique. Principe commun : une seule
+        // source par bande à chaque instant. Le sortant cède ses basses
+        // très tôt, l'entrant n'apporte D'ABORD que les siennes (passe-bas
+        // raide), puis s'ouvre vers le haut pendant que le sortant s'efface.
+        // [bassOutStart, bassOutEnd, openStart, openEnd, holdA, riseB]
+        //  - bassOut* : fenêtre où le sortant perd ses basses
+        //  - open*    : fenêtre où l'entrant s'ouvre au-delà des basses
+        //  - holdA    : le sortant reste à plein volume jusque-là
+        //  - riseB    : l'entrant atteint son plein volume à cet instant
+        val SHAPE_NORMAL = floatArrayOf(0.04f, 0.18f, 0.30f, 0.72f, 0.52f, 0.74f)
+        val SHAPE_DARK = floatArrayOf(0.08f, 0.26f, 0.42f, 0.86f, 0.58f, 0.82f)
+        val SHAPE_EQ = floatArrayOf(0.04f, 0.16f, 0.24f, 0.64f, 0.46f, 0.68f)
+        val SHAPE_HARMONIC = floatArrayOf(0.28f, 0.44f, 0.30f, 0.80f, 0.45f, 0.80f)
+        // Coupure du passe-bas de l'entrant : basses seules -> bande pleine
+        const val OPEN_FC_LOW = 140f
+        const val OPEN_FC_HIGH = 16_000f
     }
 
     /** Détecteur d'attaques (kicks) sur l'enveloppe de basses d'un deck. */
@@ -236,9 +254,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Passe-bas ~2,5 kHz : bande médiums = midLp - lp (mid swap)
         var midLpL = 0f
         var midLpR = 0f
-        // Passe-bas balayé (filter sweep du sortant)
+        // Passe-bas balayé (filter sweep du sortant ; second étage pour
+        // l'ouverture progressive de l'entrant : 2 pôles = 12 dB/octave,
+        // assez raide pour n'entendre QUE les basses au début)
         var sweepLpL = 0f
         var sweepLpR = 0f
+        var sweep2L = 0f
+        var sweep2R = 0f
         val onsets = OnsetTracker()
 
         /** Micro-correction de synchro pendant le fade (cumul borné à ±0,4 %,
@@ -907,19 +929,49 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 // s'amincit). KIND_DARK : passe-bas ~6 kHz -> ~150 Hz (le
                 // sortant s'assombrit et s'étouffe). Coefficient recalculé
                 // par bloc (suffisant à 2048 frames).
+                val xb = if (fadeActive && framesGlobal >= fadeStartF)
+                    ((framesGlobal - fadeStartF).toFloat() / fadeLenF)
+                        .coerceIn(0f, 1f)
+                else 0f
+                // Forme de la jonction (voir SHAPE_*)
+                val shape = when (fadeKindF) {
+                    KIND_DARK -> SHAPE_DARK
+                    KIND_EQ -> SHAPE_EQ
+                    KIND_HARMONIC -> SHAPE_HARMONIC
+                    else -> SHAPE_NORMAL
+                }
+                val holdA = shape[4]
+                val riseB = shape[5]
                 var sweepAlpha = 0f
                 if (fadeActive && framesGlobal >= fadeStartF &&
                     (fadeKindF == KIND_NORMAL || fadeKindF == KIND_DARK)
                 ) {
-                    val xb = ((framesGlobal - fadeStartF).toFloat() / fadeLenF)
-                        .coerceIn(0f, 1f)
+                    // KIND_NORMAL : passe-haut qui grimpe VITE au début —
+                    // le sortant est vidé de ses basses dès ~15 % du fondu
+                    // (c'est là que l'entrant pose les siennes), puis
+                    // continue de s'amincir jusqu'à ~6 kHz.
                     // KIND_DARK : le filtre se referme sur les premiers 60 %
                     // puis RESTE fermé — le sortant ronronne étouffé pendant
                     // que l'entrant arrive, sans être vraiment là.
                     val fc = if (fadeKindF == KIND_NORMAL)
-                        40f * 10f.pow(2.2f * xb)
+                        60f * 10f.pow(2.0f * xb.pow(0.55f))
                     else 6_000f * 10f.pow(-1.6f * (xb / 0.6f).coerceAtMost(1f))
                     sweepAlpha = 1f - exp(-2f * Math.PI.toFloat() * fc / OUT_SR)
+                }
+                // Entrant : passe-bas 2 pôles dont la coupure monte de
+                // 140 Hz (basses seules) à 16 kHz, puis fondu vers le
+                // signal plein pour une ouverture totale et transparente.
+                var alphaB = 0f
+                var openMix = 0f
+                if (fadeActive && framesGlobal >= fadeStartF &&
+                    fadeKindF != KIND_CUT
+                ) {
+                    val o = ((xb - shape[2]) / (shape[3] - shape[2]))
+                        .coerceIn(0f, 1f)
+                    val fcB = OPEN_FC_LOW *
+                        (OPEN_FC_HIGH / OPEN_FC_LOW).pow(o.pow(1.4f))
+                    alphaB = 1f - exp(-2f * Math.PI.toFloat() * fcB / OUT_SR)
+                    openMix = o.pow(3f)
                 }
                 var subA = 0f
                 var subB = 0f
@@ -960,31 +1012,31 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     val inFade = fadeActive && gf >= fadeStartF
                     if (inFade) {
                         x = ((gf - fadeStartF).toFloat() / fadeLenF).coerceIn(0f, 1f)
-                        if (fadeKindF == KIND_HARMONIC) {
+                        if (fadeKindF == KIND_CUT) {
+                            // Coupe franche : sortie raide, entrée franche
+                            gA = cos(x.pow(0.7f) * HALF_PI)
+                            gB = sin(x.pow(1.3f) * HALF_PI)
+                        } else if (fadeKindF == KIND_HARMONIC) {
                             // Long blend : les deux morceaux sont faits pour
                             // se superposer, courbes equal-power symétriques
+                            // (l'entrant reste filtré jusqu'à mi-parcours,
+                            // donc la superposition reste lisible)
                             gA = cos(x * HALF_PI)
                             gB = sin(x * HALF_PI)
-                        } else if (fadeKindF == KIND_DARK) {
-                            // Sweep sombre : le sortant reste présent (mais
-                            // étouffé) pendant plus de la moitié du fondu, et
-                            // l'entrant se fait sentir longtemps sans être
-                            // vraiment là — il ne prend le dessus que tard.
-                            val xa = ((x - 0.45f) / 0.55f).coerceIn(0f, 1f)
-                            gA = cos(xa.pow(0.9f) * HALF_PI)
-                            gB = sin(x.pow(2.0f) * HALF_PI)
                         } else {
-                            // Sortie raide : le sortant descend vite dès le
-                            // début du fondu (moins de bouillie à mi-parcours)
-                            gA = cos(x.pow(0.7f) * HALF_PI)
-                            // Entrée progressive : l'entrant s'annonce dès le
-                            // premier quart, mais PLAFONNÉ (~-5 dB) sur la
-                            // première moitié — on le sent venir sans qu'il
-                            // soit fort. (Coupe écho : entrée franche.)
-                            gB = sin(x.pow(1.3f) * HALF_PI)
-                            if (fadeKindF != KIND_CUT) {
-                                gB *= 0.55f + 0.45f * (x / 0.5f).coerceAtMost(1f)
-                            }
+                            // Le sortant garde son plein volume tant qu'il
+                            // porte le morceau — il est déjà aminci par le
+                            // filtre — puis s'efface franchement sur la fin.
+                            gA = if (x < holdA) 1f else cos(
+                                ((x - holdA) / (1f - holdA))
+                                    .coerceIn(0f, 1f).pow(0.75f) * HALF_PI
+                            )
+                            // L'entrant monte vite : il n'est encore que
+                            // basses, donc aucun risque de brouiller le
+                            // sortant. Plein volume quand celui-ci s'efface.
+                            gB = sin(
+                                (x / riseB).coerceAtMost(1f).pow(0.85f) * HALF_PI
+                            )
                         }
                     }
                     var master = 1f
@@ -1007,75 +1059,65 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     if (inFade && bd != null) {
                         bd.lpL += BASS_ALPHA * (bL - bd.lpL)
                         bd.lpR += BASS_ALPHA * (bR - bd.lpR)
+                        // ENTRANT (commun à toutes les jonctions fondues) :
+                        // passe-bas 2 pôles qui s'ouvre. Au début il
+                        // n'apporte QUE ses basses — le sortant garde
+                        // médiums et aigus, donc rien ne se superpose ;
+                        // puis il s'ouvre vers le haut au moment où le
+                        // sortant s'efface. Une seule source par bande.
+                        if (fadeKindF != KIND_CUT) {
+                            bd.sweepLpL += alphaB * (bL - bd.sweepLpL)
+                            bd.sweepLpR += alphaB * (bR - bd.sweepLpR)
+                            bd.sweep2L += alphaB * (bd.sweepLpL - bd.sweep2L)
+                            bd.sweep2R += alphaB * (bd.sweepLpR - bd.sweep2R)
+                            vbL = bd.sweep2L + (bL - bd.sweep2L) * openMix
+                            vbR = bd.sweep2R + (bR - bd.sweep2R) * openMix
+                        }
+                        // SORTANT : cède ses basses tôt et vite, pour
+                        // laisser la place à celles de l'entrant.
+                        val bassOut = ((x - shape[0]) / (shape[1] - shape[0]))
+                            .coerceIn(0f, 1f)
                         when (fadeKindF) {
                             KIND_HARMONIC -> {
-                                // Long blend : bass swap à ~45 % du fondu,
-                                // puis mid swap à ~55 % — les deux morceaux
-                                // s'échangent bande par bande, façon EQ 3
-                                // bandes d'une table de mixage.
-                                val swap = ((x - 0.45f) / 0.10f).coerceIn(0f, 1f)
-                                val cutA = BASS_SWAP_CUT * swap
-                                val cutB = BASS_SWAP_CUT * (1f - swap)
+                                // Long blend : bass swap, puis mid swap —
+                                // le sortant se vide bande par bande, façon
+                                // EQ 3 bandes d'une table de mixage.
+                                val cutA = BASS_SWAP_CUT * bassOut
                                 vaL -= cutA * a.lpL
                                 vaR -= cutA * a.lpR
-                                vbL -= cutB * bd.lpL
-                                vbR -= cutB * bd.lpR
                                 a.midLpL += MID_ALPHA * (aL - a.midLpL)
                                 a.midLpR += MID_ALPHA * (aR - a.midLpR)
-                                bd.midLpL += MID_ALPHA * (bL - bd.midLpL)
-                                bd.midLpR += MID_ALPHA * (bR - bd.midLpR)
-                                val ms = ((x - 0.55f) / 0.10f).coerceIn(0f, 1f)
+                                val ms = ((x - 0.55f) / 0.15f).coerceIn(0f, 1f)
                                 val mCutA = 0.8f * ms
-                                val mCutB = 0.8f * (1f - ms)
                                 vaL -= mCutA * (a.midLpL - a.lpL)
                                 vaR -= mCutA * (a.midLpR - a.lpR)
-                                vbL -= mCutB * (bd.midLpL - bd.lpL)
-                                vbR -= mCutB * (bd.midLpR - bd.lpR)
                             }
                             KIND_NORMAL -> {
                                 // Filter sweep passe-haut : le sortant
-                                // s'amincit (basses puis médiums) pendant
-                                // que l'entrant récupère ses basses tôt.
+                                // s'amincit, ses basses partent dès ~15 %
+                                // (le passe-haut s'en charge : pas de
+                                // soustraction en plus, qui déphaserait).
                                 a.sweepLpL += sweepAlpha * (aL - a.sweepLpL)
                                 a.sweepLpR += sweepAlpha * (aR - a.sweepLpR)
                                 vaL = aL - a.sweepLpL
                                 vaR = aR - a.sweepLpR
-                                // Le balayage retire les basses du sortant dès
-                                // ~20 % du fondu : l'entrant récupère les
-                                // siennes à 25 % (45 % laissait un trou de
-                                // graves entre les deux).
-                                val rel = ((x - 0.25f) / 0.10f).coerceIn(0f, 1f)
-                                val cutB = BASS_SWAP_CUT * (1f - rel)
-                                vbL -= cutB * bd.lpL
-                                vbR -= cutB * bd.lpR
                             }
                             KIND_DARK -> {
                                 // Filter sweep passe-bas : le sortant
-                                // s'assombrit et s'étouffe — il garde ses
-                                // basses plus longtemps, l'entrant récupère
-                                // les siennes à ~50 % seulement.
+                                // s'assombrit et s'étouffe, et cède quand
+                                // même ses basses tôt (sinon deux lignes de
+                                // basse cohabiteraient).
                                 a.sweepLpL += sweepAlpha * (aL - a.sweepLpL)
                                 a.sweepLpR += sweepAlpha * (aR - a.sweepLpR)
-                                vaL = a.sweepLpL
-                                vaR = a.sweepLpR
-                                val rel = ((x - 0.50f) / 0.10f).coerceIn(0f, 1f)
-                                val cutB = BASS_SWAP_CUT * (1f - rel)
-                                vbL -= cutB * bd.lpL
-                                vbR -= cutB * bd.lpR
-                                // Et le sortant cède ses basses au même moment
-                                vaL -= BASS_SWAP_CUT * rel * a.lpL
-                                vaR -= BASS_SWAP_CUT * rel * a.lpR
+                                vaL = a.sweepLpL - BASS_SWAP_CUT * bassOut * a.lpL
+                                vaR = a.sweepLpR - BASS_SWAP_CUT * bassOut * a.lpR
                             }
                             KIND_EQ -> {
                                 // Échange de basses classique, sans filtre :
                                 // la transition « table de mixage » sobre.
-                                val swap = ((x - 0.45f) / 0.10f).coerceIn(0f, 1f)
-                                val cutA = BASS_SWAP_CUT * swap
-                                val cutB = BASS_SWAP_CUT * (1f - swap)
+                                val cutA = BASS_SWAP_CUT * bassOut
                                 vaL -= cutA * a.lpL
                                 vaR -= cutA * a.lpR
-                                vbL -= cutB * bd.lpL
-                                vbR -= cutB * bd.lpR
                             }
                             // KIND_CUT : pas de traitement spectral ici,
                             // l'echo-out agit après le mixage.
