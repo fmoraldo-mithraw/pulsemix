@@ -59,6 +59,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Réveil matin : lancement protégé par un service en avant-plan -->
+        <service
+            android:name=".player.AlarmService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
         <!-- Réveil matin : sonnerie à l'heure dite + ré-armement au boot -->
         <receiver
             android:name=".player.AlarmReceiver"

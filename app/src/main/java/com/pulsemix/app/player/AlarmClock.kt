@@ -138,11 +138,11 @@ object AlarmClock {
 
     /**
      * Sonnerie — appelé par [AlarmReceiver] à l'heure dite, appli
-     * éventuellement fermée. Ré-arme pour demain, met le volume au
-     * plancher, lance le mix configuré puis laisse [startRamp] monter
-     * le son. onDone libère le broadcast (goAsync).
+     * éventuellement fermée. Ré-arme pour demain puis délègue le
+     * lancement à [AlarmService] (service en avant-plan : le processus
+     * est protégé pendant tout le chargement, un broadcast seul n'est
+     * garanti que ~10 s).
      */
-    @OptIn(DelicateCoroutinesApi::class)
     fun fire(context: Context, onDone: () -> Unit) {
         com.pulsemix.app.Graph.init(context)
         if (!enabled.value) {
@@ -150,9 +150,25 @@ object AlarmClock {
             return
         }
         schedule(context) // demain, même heure
+        try {
+            AlarmService.start(context)
+        } catch (_: Exception) {
+            // Dernier recours (démarrage de service refusé) : lancement
+            // direct depuis le broadcast
+            launchNow(context) {}
+        }
+        onDone()
+    }
 
-        // Le broadcast ne garde le CPU éveillé que quelques secondes :
-        // on prend le relais le temps de charger la bibliothèque
+    /**
+     * Charge la bibliothèque, met le volume au plancher, lance le mix
+     * configuré et laisse [startRamp] monter le son. Appelé par
+     * [AlarmService] ; onDone est invoqué une fois la lecture lancée.
+     */
+    @OptIn(DelicateCoroutinesApi::class)
+    fun launchNow(context: Context, onDone: () -> Unit) {
+        // Ceinture + bretelles : le CPU reste éveillé même si le
+        // service se fait arrêter avant la fin du chargement
         val wl = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "pulsemix:alarm")
         try {
