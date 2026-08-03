@@ -445,18 +445,63 @@ object MixEngine {
         return deduped
     }
 
-    /** Supprime les doublons d'un plan : par fichier ET par titre+artiste. */
+    /**
+     * Titre réduit à sa substance : sans numéro de piste, sans extension,
+     * sans mentions de habillage, sans ponctuation ni accents. « 03 - Le
+     * Bien Qui Fait Mal (Official Video).mp3 » et « le bien qui fait
+     * mal.flac » donnent la même chose.
+     */
+    private fun normTitle(raw: String): String {
+        var s = raw.lowercase().trim()
+        s = s.replace(
+            Regex("\\.(mp3|m4a|aac|flac|ogg|oga|opus|wav|wma|mp4)$"), ""
+        )
+        s = s.replace(Regex("^\\s*\\d{1,3}\\s*[-._)]\\s*"), "")
+        s = s.replace(
+            Regex(
+                "[\\(\\[][^\\)\\]]*(official|clip|video|lyrics?|audio|hd|hq|4k" +
+                    "|paroles|visuali[sz]er|explicit|remaster(ed)?|feat\\.?|ft\\.?" +
+                    ")[^\\)\\]]*[\\)\\]]"
+            ), " "
+        )
+        s = s.replace(Regex("\\s*\\[[a-z0-9_-]{6,}\\]\\s*$"), " ")
+        s = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "")
+        s = s.replace(Regex("[^a-z0-9]+"), "")
+        return s
+    }
+
+    /**
+     * Clés d'identité d'un morceau, pour n'en garder qu'un exemplaire dans
+     * un plan. Le fichier ne suffit pas : la même chanson traîne souvent en
+     * plusieurs copies aux tags différents (numéro de piste en tête,
+     * artiste « Downloads », suffixe YouTube). On la reconnaît alors par
+     * son titre réduit, seul ou avec l'artiste, et par sa durée — deux
+     * copies du même enregistrement durent la même chose.
+     */
+    private fun dupKeys(t: Track): List<String> {
+        val title = normTitle(t.title)
+        if (title.isEmpty() || title == "?") return listOf(t.uri)
+        val keys = ArrayList<String>(3)
+        keys.add(t.uri)
+        keys.add("t:$title")
+        if (t.durationMs > 0) {
+            // Durée au pas de 4 s : absorbe les silences de fin et les
+            // encodages différents sans confondre deux morceaux distincts
+            keys.add("d:$title:${t.durationMs / 4_000}")
+        }
+        return keys
+    }
+
+    /** Supprime les doublons d'un plan (même fichier ou même chanson). */
     private fun dedupePlan(plan: MixPlan): MixPlan {
         val seen = HashSet<String>()
         val phases = plan.phases.mapNotNull { ph ->
             val kept = ph.tracks.filter { t ->
-                val byName = t.title.trim().lowercase()
-                    .takeIf { it.isNotBlank() && it != "?" }
-                    ?.let { "$it|${t.artist.trim().lowercase()}" }
-                if (t.uri in seen || (byName != null && byName in seen)) false
+                val keys = dupKeys(t)
+                if (keys.any { it in seen }) false
                 else {
-                    seen.add(t.uri)
-                    if (byName != null) seen.add(byName)
+                    seen.addAll(keys)
                     true
                 }
             }
@@ -507,15 +552,13 @@ object MixEngine {
         var total = phases.sumOf { ph -> ph.sumOf { trackLenMs(it, dj) } }
         if (total >= targetMs) return plan
 
-        fun nameKey(t: Track): String? = t.title.trim().lowercase()
-            .takeIf { it.isNotBlank() && it != "?" }
-            ?.let { "$it|${t.artist.trim().lowercase()}" }
-
-        val usedUris = phases.flatten().map { it.uri }.toHashSet()
-        val usedNames = phases.flatten().mapNotNull { nameKey(it) }.toHashSet()
+        // Mêmes clés d'identité que dedupePlan : la rallonge ne doit pas
+        // réintroduire une chanson déjà présente sous un autre fichier.
+        val used = HashSet<String>()
+        for (t in phases.flatten()) used.addAll(dupKeys(t))
         val pool = all.filter {
             it.analyzed && it.bpm > 0f && !it.excluded &&
-                it.uri !in usedUris && nameKey(it) !in usedNames
+                dupKeys(it).none { k -> k in used }
         }.toMutableList()
 
         while (pool.isNotEmpty()) {
@@ -535,7 +578,7 @@ object MixEngine {
             // ne l'approche (au plus proche, léger dépassement compris).
             if (abs(newTotal - targetMs) >= abs(total - targetMs)) break
             last.add(next)
-            nameKey(next)?.let { usedNames.add(it) }
+            used.addAll(dupKeys(next))
             total = newTotal
         }
         return MixPlan(

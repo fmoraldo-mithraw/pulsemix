@@ -90,31 +90,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val KIND_EQ = 4       // échange de basses classique, sans filtre
         const val ECHO_FEEDBACK = 0.55f
 
-        // Early teaser : quelques mesures avant la transition, un extrait
-        // du morceau entrant (bande vocale, sans basses ni aigus) se glisse
-        // sous le morceau en cours — on le « sent venir » avant qu'il arrive.
-        const val TEASE_BARS_LEAD = 8L    // ~15 s à 128 bpm
-        const val TEASE_BARS_AUDIBLE = 2L // durée réellement audible
-        // Le teaser sonne au niveau du morceau, pas en fond sonore : sa
-        // bande passe à plein volume, et c'est le morceau en cours qui lui
-        // cède la place.
-        const val TEASE_GAIN = 1.0f
-        // La bande occupée par le teaser est donc quasiment retirée du
-        // morceau en cours (90 %) : les deux ne se marchent pas dessus.
-        const val TEASE_DUCK = 0.90f
-        // Mesures d'étalonnage avant de juger ce qui est « saillant »
-        const val TEASE_REF_BARS = 2
-        // Une mesure est retenue si elle dépasse la référence de 25 %
-        const val TEASE_OPEN_RATIO = 1.25f
-        // One-pole ~300 Hz : borne basse de la bande du teaser (cascadé en
-        // 2 pôles, soit 12 dB/octave : sans ça les basses du morceau
-        // entrant bavent sur celles du morceau en cours)
-        const val TEASE_HP_ALPHA = 0.0423f
-        // Tonalités : en dessous, les deux morceaux chanteraient faux
-        // ensemble — pas de teaser (voir teaseThisTime)
-        const val TEASE_MIN_HARMONY = 0.6f
-        // Attaque de l'extrait : franche mais sans clic (~30 ms)
-        const val TEASE_ATTACK_FRAMES = 1_300f
 
         // Forme de la jonction, par technique. Principe commun : une seule
         // source par bande à chaque instant. Le sortant cède ses basses
@@ -175,37 +150,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     // Dernière technique utilisée : évite deux fois de suite la même quand
     // plusieurs conviennent (variété façon DJ)
     private var lastFadeKind = -1
-    // Un teaser vient-il d'être joué ? (jamais deux transitions de suite)
-    private var lastTeased = false
     // Décalage entre ce qui est calculé et ce qui sort des haut-parleurs
     @Volatile private var outLatencyMs = 0L
     // Suivi du cran de vitesse manuel : un changement demandé s'applique
     // vite, le retour au tempo naturel se fait en douceur
     private var lastSpeedLevel = 0
     private var manualRamp = false
-
-    /**
-     * Le teaser est un effet, pas une signature : environ une transition
-     * sur trois, jamais deux de suite. Tirage déterministe par paire de
-     * morceaux — la même jonction se comporte toujours pareil.
-     *
-     * Condition impérative : les tonalités doivent aller ensemble. Faire
-     * chanter deux morceaux en même temps dans des tonalités étrangères
-     * sonne faux — c'est exactement ce qui « gêne l'oreille ». Les tempos,
-     * eux, sont forcément calés ici (sinon la jonction serait une coupe,
-     * et les coupes n'ont pas de teaser).
-     */
-    private fun teaseThisTime(a: Deck, b: Deck): Boolean {
-        if (lastTeased) return false
-        if (MixEngine.camelotScore(a.track.camelot, b.track.camelot) <
-            TEASE_MIN_HARMONY
-        ) return false
-        // Une jonction compatible sur deux : la condition d'harmonie
-        // écarte déjà une bonne part des transitions, un tirage plus sévère
-        // rendrait le teaser anecdotique.
-        val h = (a.track.uri.hashCode() * 31 + b.track.uri.hashCode()) ushr 1
-        return h % 2 == 0
-    }
 
     // ------------------------------------------------------------------ API
 
@@ -330,9 +280,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var sweepLpR = 0f
         var sweep2L = 0f
         var sweep2R = 0f
-        // Second pôle du passe-bas de la bande du teaser
-        var teaseMid2L = 0f
-        var teaseMid2R = 0f
         val onsets = OnsetTracker()
 
         /** Micro-correction de synchro pendant le fade (cumul borné à ±0,4 %,
@@ -764,28 +711,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var fadeStartF = -1L
         var fadeLenF = 0L
         var fadeKindF = KIND_NORMAL
-        // Frame à laquelle le deck B commence à produire du son : le début
-        // du fondu d'ordinaire, plus tôt avec un teaser, plus tard sur une
-        // coupe nette (le silence).
-        var bStartF = -1L
         // Fin de la dernière transition : le nouveau morceau garde le tempo
         // calé quelques secondes de plus avant de revenir au sien
         var fadeEndF = 0L
-        // Teaser : fenêtre d'écoute (l'entrant tourne, muet) puis fenêtre
-        // audible choisie dedans. -1 : pas de teaser sur ce passage.
-        var teaseStartF = -1L
-        var teaseEndF = -1L
-        var teaseBarF = 0L
-        // Fenêtre finalement laissée audible (décidée en cours de route)
-        var teaseAudFrom = -1L
-        var teaseAudTo = -1L
-        // Énergie vocale mesurée : référence des premières mesures, puis
-        // accumulateur de la mesure en cours
-        var teaseRef = 0f
-        var teaseRefBars = 0
-        var teaseBarAcc = 0.0
-        var teaseBarN = 0
-        var teaseBarIdx = -1
         var echoBuf: FloatArray? = null
         var echoPos = 0
         var endFadeFrames = -1L
@@ -923,9 +851,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     deckB!!.close()
                     deckB = null
                     fadeStartF = -1L
-                    bStartF = -1L
-                    teaseStartF = -1L
-                    teaseEndF = -1L
                     echoBuf = null
                 }
 
@@ -945,12 +870,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         val (fadeS, fadeKind) =
                             fadeSpec(a, segments[nextIdx].track, rate, jumping)
                         val fadeF = (fadeS * OUT_SR).toLong()
-                        // Le deck doit être prêt (et pré-décodé) avant
-                        // l'heure du fondu, avec de quoi couvrir un
-                        // éventuel teaser qui le fait tourner bien avant.
-                        val lead = if (fadeKind == KIND_CUT) 3L * OUT_SR
-                        else 22L * OUT_SR
-                        if (jumping || a.remainingOut <= fadeF + lead) {
+                        // 3 s d'avance : le deck est prêt (et pré-décodé)
+                        // avant l'heure du fondu
+                        if (jumping || a.remainingOut <= fadeF + 3L * OUT_SR) {
                             opening = true
                             val jt = pendingJump
                             thread(name = "DjOpen") {
@@ -1023,39 +945,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             )
                         } else null
 
-                        // Par défaut, l'entrant démarre avec le fondu
-                        bStartF = fadeStartF
-                        teaseStartF = -1L
-                        teaseEndF = -1L
-
-                        if (!ready.jumping && fadeKindF != KIND_CUT &&
-                            barF > 0 && teaseThisTime(a, b)
-                        ) {
-                            // Early teaser : l'entrant est lancé plusieurs
-                            // mesures avant le fondu (donc toujours en phase
-                            // avec le sortant) et n'est audible que sur les
-                            // premières, filtré en bande vocale.
-                            val ts = fadeStartF - TEASE_BARS_LEAD * barF
-                            if (ts > framesGlobal + OUT_SR / 2) {
-                                // L'entrant tourne (muet) sur toute cette
-                                // fenêtre ; on y cherchera le moment le plus
-                                // parlant pour le laisser passer.
-                                teaseStartF = ts
-                                teaseEndF = fadeStartF
-                                teaseBarF = barF
-                                teaseAudFrom = -1L
-                                teaseAudTo = -1L
-                                teaseRef = 0f
-                                teaseRefBars = 0
-                                teaseBarAcc = 0.0
-                                teaseBarN = 0
-                                teaseBarIdx = -1
-                                bStartF = ts
-                                lastTeased = true
-                            }
-                        }
-                        if (teaseStartF < 0) lastTeased = false
-                        b.startedAtFrame = bStartF
+                        b.startedAtFrame = fadeStartF
                         deckB = b
                         pendingJump = -1
                     }
@@ -1070,14 +960,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     if (na == 0 && framesGlobal < fadeStartF) {
                         // Deck A épuisé plus tôt que prévu : démarrer B tout de suite
                         fadeStartF = framesGlobal
-                        bStartF = framesGlobal
-                        teaseStartF = -1L
                         b.startedAtFrame = framesGlobal
                     }
-                    // B tourne dès bStartF : avec le fondu d'ordinaire, plus
-                    // tôt quand un teaser le fait démarrer en avance.
-                    if (framesGlobal + BLOCK_FRAMES > bStartF && bStartF >= 0) {
-                        val off = max(0L, bStartF - framesGlobal).toInt()
+                    if (framesGlobal + BLOCK_FRAMES > fadeStartF) {
+                        val off = max(0L, fadeStartF - framesGlobal).toInt()
                         b.read(tmpB, off, BLOCK_FRAMES - off)
                     }
                 }
@@ -1182,12 +1068,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     var gB = 0f
                     var x = 0f
                     val inFade = fadeActive && gf >= fadeStartF
-                    // Early teaser : avant le fondu, l'entrant tourne muet ;
-                    // on le laisse passer sur le passage le plus parlant
-                    // (voir le bloc d'écoute plus bas), réduit à sa bande
-                    // vocale et à bas niveau.
-                    val inTease = !inFade && bd != null && teaseStartF >= 0 &&
-                        gf >= teaseStartF && gf < teaseEndF
                     if (inFade) {
                         x = ((gf - fadeStartF).toFloat() / fadeLenF).coerceIn(0f, 1f)
                         if (fadeKindF == KIND_CUT) {
@@ -1234,100 +1114,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     var vaR = aR
                     var vbL = bL
                     var vbR = bR
-                    if (inTease && bd != null) {
-                        // Bande vocale seule, 12 dB/octave aux deux bouts :
-                        // passe-haut 300 Hz (les basses sont celles du
-                        // morceau en cours, une seule ligne à la fois) puis
-                        // passe-bas 2,5 kHz (les aigus trahiraient tout de
-                        // suite qu'un second morceau tourne). Des pentes
-                        // douces laissaient baver les deux extrémités.
-                        bd.sweepLpL += TEASE_HP_ALPHA * (bL - bd.sweepLpL)
-                        bd.sweepLpR += TEASE_HP_ALPHA * (bR - bd.sweepLpR)
-                        bd.sweep2L += TEASE_HP_ALPHA * (bd.sweepLpL - bd.sweep2L)
-                        bd.sweep2R += TEASE_HP_ALPHA * (bd.sweepLpR - bd.sweep2R)
-                        val hpL = bL - bd.sweep2L
-                        val hpR = bR - bd.sweep2R
-                        bd.midLpL += MID_ALPHA * (hpL - bd.midLpL)
-                        bd.midLpR += MID_ALPHA * (hpR - bd.midLpR)
-                        bd.teaseMid2L += MID_ALPHA * (bd.midLpL - bd.teaseMid2L)
-                        bd.teaseMid2R += MID_ALPHA * (bd.midLpR - bd.teaseMid2R)
-                        vbL = bd.teaseMid2L
-                        vbR = bd.teaseMid2R
-
-                        // --- Choix du moment à laisser entendre ---
-                        // Un teaser n'a d'intérêt que sur une partie
-                        // reconnaissable : on mesure l'énergie de la bande
-                        // vocale mesure par mesure, on se fait une idée du
-                        // morceau sur les premières, puis on ouvre sur la
-                        // première mesure nettement au-dessus — c'est là
-                        // que chante la voix ou le thème.
-                        if (teaseBarF > 0 && teaseAudFrom < 0) {
-                            teaseBarAcc += abs(vbL) + abs(vbR)
-                            teaseBarN++
-                            val idx = ((gf - teaseStartF) / teaseBarF).toInt()
-                            if (idx != teaseBarIdx) {
-                                if (teaseBarIdx >= 0 && teaseBarN > 0) {
-                                    val avg = (teaseBarAcc / teaseBarN).toFloat()
-                                    if (teaseRefBars < TEASE_REF_BARS) {
-                                        // Mesures d'étalonnage
-                                        teaseRef =
-                                            (teaseRef * teaseRefBars + avg) /
-                                            (teaseRefBars + 1)
-                                        teaseRefBars++
-                                    } else if (avg > TEASE_OPEN_RATIO * teaseRef &&
-                                        gf + TEASE_BARS_AUDIBLE * teaseBarF <= teaseEndF
-                                    ) {
-                                        teaseAudFrom = gf
-                                        teaseAudTo =
-                                            gf + TEASE_BARS_AUDIBLE * teaseBarF
-                                    }
-                                }
-                                teaseBarAcc = 0.0
-                                teaseBarN = 0
-                                teaseBarIdx = idx
-                            }
-                            // Repli : rien de saillant, mais on ne renonce
-                            // pas — les dernières mesures avant le fondu
-                            // feront l'affaire.
-                            if (teaseAudFrom < 0 && teaseRefBars >= TEASE_REF_BARS &&
-                                gf >= teaseEndF - TEASE_BARS_AUDIBLE * teaseBarF
-                            ) {
-                                teaseAudFrom = gf
-                                teaseAudTo = teaseEndF
-                            }
-                        }
-                        if (teaseAudFrom >= 0 && gf >= teaseAudFrom &&
-                            gf < teaseAudTo
-                        ) {
-                            // L'extrait entre FRANCHEMENT, sur le temps —
-                            // un fondu d'entrée le rendrait flou et on ne
-                            // reconnaîtrait rien. Il repart en revanche sur
-                            // toute la dernière mesure, en laissant le
-                            // morceau en cours reprendre sa place sans
-                            // qu'on sache dire quand.
-                            val since = (gf - teaseAudFrom).toFloat()
-                            val left = (teaseAudTo - gf).toFloat()
-                            val attack = (since / TEASE_ATTACK_FRAMES)
-                                .coerceIn(0f, 1f)
-                            val release = (left / teaseBarF.toFloat())
-                                .coerceIn(0f, 1f)
-                            // Courbe en puissance : la fin s'efface vite au
-                            // début puis traîne, comme un fondu naturel
-                            val env = min(attack, release * release)
-                            // On creuse la place : le morceau en cours perd
-                            // la bande où joue le teaser, et elle seule. Ses
-                            // basses (le groove continue) et ses aigus
-                            // (charley, air du mix) restent intacts — sans
-                            // ça le teaser serait masqué pile là où il joue.
-                            a.sweepLpL += TEASE_HP_ALPHA * (aL - a.sweepLpL)
-                            a.sweepLpR += TEASE_HP_ALPHA * (aR - a.sweepLpR)
-                            a.midLpL += MID_ALPHA * (aL - a.midLpL)
-                            a.midLpR += MID_ALPHA * (aR - a.midLpR)
-                            val duck = TEASE_DUCK * env
-                            vaL -= duck * (a.midLpL - a.sweepLpL)
-                            vaR -= duck * (a.midLpR - a.sweepLpR)
-                        }
-                    }
                     if (inFade && bd != null) {
                         bd.lpL += BASS_ALPHA * (bL - bd.lpL)
                         bd.lpR += BASS_ALPHA * (bR - bd.lpR)
@@ -1533,9 +1319,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     deckA = b
                     deckB = null
                     fadeStartF = -1L
-                    bStartF = -1L
-                    teaseStartF = -1L
-                    teaseEndF = -1L
                     fadeEndF = framesGlobal
                     echoBuf = null
                     currentPhaseIndex = b.segment.phaseIndex
