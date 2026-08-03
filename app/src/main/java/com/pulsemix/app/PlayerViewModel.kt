@@ -38,6 +38,18 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val sleepRemainingMs = PlayerCore.sleepRemainingMs
     val queue = PlayerCore.queue
 
+    // ------------------------------------------------------- réveil matin
+    val alarmEnabled = com.pulsemix.app.player.AlarmClock.enabled
+    val alarmHour = com.pulsemix.app.player.AlarmClock.hour
+    val alarmMinute = com.pulsemix.app.player.AlarmClock.minute
+    val alarmMixId = com.pulsemix.app.player.AlarmClock.mixId
+    val alarmRamp = com.pulsemix.app.player.AlarmClock.rampMinutes
+
+    fun setAlarm(enabled: Boolean, hour: Int, minute: Int, mixId: String, ramp: Int) =
+        com.pulsemix.app.player.AlarmClock.configure(
+            getApplication(), enabled, hour, minute, mixId, ramp
+        )
+
     init {
         // Scan automatique au démarrage : rafraîchit la bibliothèque, restaure
         // les sauvegardes des dossiers si besoin et les maintient à jour.

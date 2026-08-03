@@ -10,6 +10,13 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Réveil matin : alarme exacte + ré-armement après redémarrage -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+
     <application
         android:name=".PulseMixApp"
         android:allowBackup="true"
@@ -51,6 +58,16 @@
             android:name=".library.AnalysisService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Réveil matin : sonnerie à l'heure dite + ré-armement au boot -->
+        <receiver
+            android:name=".player.AlarmReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".player.PlaybackService"

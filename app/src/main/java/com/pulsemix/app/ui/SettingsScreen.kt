@@ -1,5 +1,6 @@
 package com.pulsemix.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +17,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -23,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.PlayerViewModel
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
     val skipIntros by vm.skipIntros.collectAsStateWithLifecycle()
@@ -60,7 +63,129 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         )
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
+        // ------------------------------------------------------ réveil matin
         val context = androidx.compose.ui.platform.LocalContext.current
+        val alarmOn by vm.alarmEnabled.collectAsStateWithLifecycle()
+        val alarmH by vm.alarmHour.collectAsStateWithLifecycle()
+        val alarmM by vm.alarmMinute.collectAsStateWithLifecycle()
+        val alarmMix by vm.alarmMixId.collectAsStateWithLifecycle()
+        val alarmRamp by vm.alarmRamp.collectAsStateWithLifecycle()
+        var showTimePicker by androidx.compose.runtime.remember {
+            androidx.compose.runtime.mutableStateOf(false)
+        }
+
+        Text("Réveil matin", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        SettingSwitch(
+            title = "Réveil musical",
+            subtitle = "La musique se lance à l'heure choisie et le volume " +
+                "monte petit à petit jusqu'au maximum du téléphone.",
+            checked = alarmOn,
+            onChange = { vm.setAlarm(it, alarmH, alarmM, alarmMix, alarmRamp) }
+        )
+        if (alarmOn) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "%02d:%02d".format(alarmH, alarmM),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.width(12.dp))
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { showTimePicker = true }
+                ) { Text("Changer l'heure") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Type de mix au réveil :",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            com.pulsemix.app.player.AlarmClock.MIX_CHOICES.forEach { (id, label) ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable {
+                        vm.setAlarm(true, alarmH, alarmM, id, alarmRamp)
+                    }
+                ) {
+                    androidx.compose.material3.RadioButton(
+                        selected = id == alarmMix,
+                        onClick = {
+                            vm.setAlarm(true, alarmH, alarmM, id, alarmRamp)
+                        }
+                    )
+                    Text(label, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Montée du volume : $alarmRamp min",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Slider(
+                value = alarmRamp.toFloat(),
+                onValueChange = {
+                    vm.setAlarm(true, alarmH, alarmM, alarmMix, it.toInt())
+                },
+                valueRange = 1f..10f,
+                steps = 8
+            )
+            // Android 12 : la permission « alarmes exactes » peut être
+            // révoquée — le réveil deviendrait approximatif (± 10 min)
+            val alarmMgr = context.getSystemService(
+                android.app.AlarmManager::class.java
+            )
+            if (android.os.Build.VERSION.SDK_INT >= 31 &&
+                alarmMgr != null && !alarmMgr.canScheduleExactAlarms()
+            ) {
+                Text(
+                    "Les alarmes exactes sont désactivées pour PulseMix : le " +
+                        "réveil pourra dériver de plusieurs minutes. Autorise-" +
+                        "les dans les réglages Android.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                androidx.compose.material3.OutlinedButton(onClick = {
+                    try {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.provider.Settings
+                                    .ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                                android.net.Uri.parse(
+                                    "package:${context.packageName}"
+                                )
+                            )
+                        )
+                    } catch (_: Exception) {
+                    }
+                }) { Text("Autoriser les alarmes exactes") }
+            }
+        }
+        if (showTimePicker) {
+            val state = androidx.compose.material3.rememberTimePickerState(
+                initialHour = alarmH, initialMinute = alarmM, is24Hour = true
+            )
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showTimePicker = false },
+                title = { Text("Heure du réveil") },
+                text = { androidx.compose.material3.TimePicker(state = state) },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        vm.setAlarm(
+                            true, state.hour, state.minute, alarmMix, alarmRamp
+                        )
+                        showTimePicker = false
+                    }) { Text("OK") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = { showTimePicker = false }
+                    ) { Text("Annuler") }
+                }
+            )
+        }
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
         Text("Arrière-plan", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(
