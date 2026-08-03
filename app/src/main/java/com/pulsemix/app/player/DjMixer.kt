@@ -156,6 +156,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     // Dernière technique utilisée : évite deux fois de suite la même quand
     // plusieurs conviennent (variété façon DJ)
     private var lastFadeKind = -1
+    // Un teaser vient-il d'être joué ? (jamais deux transitions de suite)
+    private var lastTeased = false
+
+    /**
+     * Le teaser est un effet, pas une signature : environ une transition
+     * sur trois, jamais deux de suite. Tirage déterministe par paire de
+     * morceaux — la même jonction se comporte toujours pareil.
+     */
+    private fun teaseThisTime(a: Deck, b: Deck): Boolean {
+        if (lastTeased) return false
+        val h = (a.track.uri.hashCode() * 31 + b.track.uri.hashCode()) ushr 1
+        return h % 3 == 0
+    }
 
     // ------------------------------------------------------------------ API
 
@@ -941,12 +954,29 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             // dure ce temps, et l'entrant tombe pile sur le
                             // temps fort.
                             val beatF = period.toLong()
-                            val cutAt = max(framesGlobal, start - beatF)
+                            var onAt = start
+                            // La grille théorique (BPM + premier beat) dérive
+                            // vite de quelques dizaines de ms des frappes
+                            // réelles — invisible sur un fondu long, fatal
+                            // sur une coupe nette. On recale donc le point
+                            // d'entrée sur le kick effectif du sortant, en
+                            // gardant le même nombre de temps.
+                            val lastOn = a.onsets.lastOnsetFrame
+                            if (lastOn > 0 && period > 0) {
+                                val beats = Math.round((start - lastOn) / period)
+                                val snapped = lastOn + (beats * period).toLong()
+                                if (abs(snapped - start) < beatF / 3 &&
+                                    snapped > framesGlobal + OUT_SR / 20
+                                ) {
+                                    onAt = snapped
+                                }
+                            }
+                            val cutAt = max(framesGlobal, onAt - beatF)
                             fadeStartF = cutAt
-                            fadeLenF = max(1L, start - cutAt)
-                            bStartF = start
+                            fadeLenF = max(1L, onAt - cutAt)
+                            bStartF = onAt
                         } else if (!ready.jumping && fadeKindF != KIND_CUT &&
-                            barF > 0
+                            barF > 0 && teaseThisTime(a, b)
                         ) {
                             // Early teaser : l'entrant est lancé plusieurs
                             // mesures avant le fondu (donc toujours en phase
@@ -957,8 +987,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 teaseStartF = ts
                                 teaseEndF = ts + TEASE_BARS_AUDIBLE * barF
                                 bStartF = ts
+                                lastTeased = true
                             }
                         }
+                        if (teaseStartF < 0) lastTeased = false
                         b.startedAtFrame = bStartF
                         deckB = b
                         pendingJump = -1
@@ -1234,19 +1266,23 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             // KIND_CUT : pas de traitement spectral ici,
                             // l'echo-out agit après le mixage.
                         }
-                        // Enveloppes de kick par sous-fenêtre de 256 frames
-                        subA += abs(a.lpL) + abs(a.lpR)
                         subB += abs(bd.lpL) + abs(bd.lpR)
                         if ((i + 1) % 256 == 0) {
-                            a.onsets.feed(
-                                subA / 256, gf, (a.beatPeriodFrames * 0.6).toLong()
-                            )
                             bd.onsets.feed(
                                 subB / 256, gf, (bd.beatPeriodFrames * 0.6).toLong()
                             )
-                            subA = 0f
                             subB = 0f
                         }
+                    }
+                    // Enveloppe de kick du sortant, suivie EN PERMANENCE :
+                    // la position des frappes réelles sert à recaler les
+                    // coupes nettes, dont le timing doit être exact.
+                    subA += abs(a.lpL) + abs(a.lpR)
+                    if ((i + 1) % 256 == 0) {
+                        a.onsets.feed(
+                            subA / 256, gf, (a.beatPeriodFrames * 0.6).toLong()
+                        )
+                        subA = 0f
                     }
 
                     var l = (vaL * gA + vbL * gB) * master
