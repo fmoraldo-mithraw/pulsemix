@@ -71,6 +71,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val BASS_SWAP_CUT = 0.95f
         // Boucle de sortie : durée maximale rejouée en boucle (garde-fou)
         const val LOOP_MAX_OUT: Long = 30L * 44_100L
+        // Retour au tempo naturel après une transition : le morceau
+        // s'installe pendant 4 s, puis remonte à ~1 %/s (un calage de 8 %
+        // se résorbe en ~7 s, sous le seuil où l'oreille suit la dérive).
+        const val SETTLE_FRAMES: Long = 4L * 44_100L
+        const val NATURAL_STEP = 0.0005f
         // Marge de sortie supplémentaire contre les saccades : 0,3 s de
         // PCM float stéréo (8 octets par frame)
         const val OUT_EXTRA_FRAMES = 13_230 // 0,3 s à 44,1 kHz
@@ -167,6 +172,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     private var lastTeased = false
     // Décalage entre ce qui est calculé et ce qui sort des haut-parleurs
     @Volatile private var outLatencyMs = 0L
+    // Suivi du cran de vitesse manuel : un changement demandé s'applique
+    // vite, le retour au tempo naturel se fait en douceur
+    private var lastSpeedLevel = 0
+    private var manualRamp = false
 
     /**
      * Le teaser est un effet, pas une signature : environ une transition
@@ -737,6 +746,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // du fondu d'ordinaire, plus tôt avec un teaser, plus tard sur une
         // coupe nette (le silence).
         var bStartF = -1L
+        // Fin de la dernière transition : le nouveau morceau garde le tempo
+        // calé quelques secondes de plus avant de revenir au sien
+        var fadeEndF = 0L
         // Teaser : fenêtre d'écoute (l'entrant tourne, muet) puis fenêtre
         // audible choisie dedans. -1 : pas de teaser sur ce passage.
         var teaseStartF = -1L
@@ -852,12 +864,27 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
                 val a = deckA ?: break
 
-                // Hors crossfade : le deck actif glisse vers son tempo cible
-                // (naturel, ou crans de vitesse) à ~11 %/s — un cran de 8 %
-                // s'applique en ~0,7 s — sans jamais casser la grille.
+                // Hors crossfade, le deck actif rejoint son tempo cible.
+                // Deux régimes très différents :
+                //  - retour au tempo naturel après une transition : le
+                //    morceau a été calé sur le tempo du précédent, il faut
+                //    l'y ramener SANS que ça s'entende. On laisse d'abord
+                //    le morceau s'installer, puis on glisse à ~1 %/s.
+                //  - cran de vitesse demandé à la main : réponse immédiate
+                //    (~11 %/s), l'utilisateur doit entendre son geste.
                 if (deckB == null) {
-                    val target = 1f + 0.08f * PlayerCore.speedLevel.value
-                    a.nudgeTowardNatural(0.005f, framesGlobal, target)
+                    val level = PlayerCore.speedLevel.value
+                    val target = 1f + 0.08f * level
+                    if (level != lastSpeedLevel) {
+                        lastSpeedLevel = level
+                        manualRamp = true
+                    }
+                    if (abs(a.curRate - target) < 1e-4f) manualRamp = false
+                    if (manualRamp) {
+                        a.nudgeTowardNatural(0.005f, framesGlobal, target)
+                    } else if (framesGlobal > fadeEndF + SETTLE_FRAMES) {
+                        a.nudgeTowardNatural(NATURAL_STEP, framesGlobal, target)
+                    }
                 }
 
                 // Boucle live (bouton maintenu dans le panneau Effets ;
@@ -1471,6 +1498,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     bStartF = -1L
                     teaseStartF = -1L
                     teaseEndF = -1L
+                    fadeEndF = framesGlobal
                     echoBuf = null
                     currentPhaseIndex = b.segment.phaseIndex
                     announce(b)
