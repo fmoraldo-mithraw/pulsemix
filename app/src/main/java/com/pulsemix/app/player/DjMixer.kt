@@ -97,7 +97,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // sous le morceau en cours — on le « sent venir » avant qu'il arrive.
         const val TEASE_BARS_LEAD = 8L    // ~15 s à 128 bpm
         const val TEASE_BARS_AUDIBLE = 2L // durée réellement audible
-        const val TEASE_GAIN = 0.24f
+        const val TEASE_GAIN = 0.30f
+        // Atténuation de la même bande sur le morceau en cours pendant le
+        // teaser : on creuse la place au lieu d'empiler. Partielle (55 %) :
+        // couper net s'entendrait comme un trou.
+        const val TEASE_DUCK = 0.55f
         // Mesures d'étalonnage avant de juger ce qui est « saillant »
         const val TEASE_REF_BARS = 2
         // Une mesure est retenue si elle dépasse la référence de 25 %
@@ -1287,6 +1291,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             val env = min(tp / 0.2f, (1f - tp) / 0.2f)
                                 .coerceIn(0f, 1f)
                             gB = TEASE_GAIN * env
+                            // On creuse la place : le morceau en cours perd
+                            // la bande où joue le teaser, et elle seule. Ses
+                            // basses (le groove continue) et ses aigus
+                            // (charley, air du mix) restent intacts — sans
+                            // ça le teaser serait masqué pile là où il joue.
+                            a.sweepLpL += TEASE_HP_ALPHA * (aL - a.sweepLpL)
+                            a.sweepLpR += TEASE_HP_ALPHA * (aR - a.sweepLpR)
+                            a.midLpL += MID_ALPHA * (aL - a.midLpL)
+                            a.midLpR += MID_ALPHA * (aR - a.midLpR)
+                            val duck = TEASE_DUCK * env
+                            vaL -= duck * (a.midLpL - a.sweepLpL)
+                            vaR -= duck * (a.midLpR - a.sweepLpR)
                         }
                     }
                     if (inFade && bd != null) {
