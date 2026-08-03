@@ -60,6 +60,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val FADE_LOCKED_HARMONIC_S = 18.0
         const val FADE_CUT_S = 6.0
         const val TAIL_MS = 16_000L
+        // Durée minimale d'un passage en mode DJ : en dessous, on n'a pas
+        // le temps d'apprécier le morceau entre deux transitions.
+        const val MIN_SEGMENT_MS = 60_000L
         const val HALF_PI = (Math.PI / 2).toFloat()
         // One-pole ~120 Hz à 44,1 kHz pour l'extraction des basses
         const val BASS_ALPHA = 0.017f
@@ -432,9 +435,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // Modulation par phase, puis ré-arrondi aux phrases de 16 temps
             // pour que la fin reste sur une frontière musicale.
             var segMs = (track.segmentMs * lengthFactor).toLong()
+            // Plancher : un passage plus court ne laisse pas le temps
+            // d'apprécier le morceau (les fondus mangent déjà ~30 s à eux
+            // deux). Borné par ce qu'il reste de morceau après l'ancre.
+            segMs = max(segMs, min(MIN_SEGMENT_MS, track.durationMs - anchor))
             if (track.bpm > 0f) {
                 val phraseMs = 16.0 * 60_000.0 / track.bpm
-                val phrases = floor(segMs / phraseMs).toLong()
+                var phrases = floor(segMs / phraseMs).toLong()
+                // L'arrondi ne doit pas faire repasser sous le plancher
+                if (phrases * phraseMs < segMs - 1) {
+                    phrases = ceil(segMs / phraseMs).toLong()
+                }
                 if (phrases >= 2) segMs = (phrases * phraseMs).toLong()
             }
             // Le deck démarre pile sur le passage fort et déroule le morceau

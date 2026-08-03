@@ -248,7 +248,9 @@ fun TrackOptionsDialogs(
             )
         }
         var durS by remember(track.uri) {
-            mutableIntStateOf((track.segmentMs / 1000L).toInt().coerceIn(20, 90))
+            // Le moteur DJ applique un plancher d'1 min : proposer moins
+            // n'aurait aucun effet
+            mutableIntStateOf((track.segmentMs / 1000L).toInt().coerceIn(60, 240))
         }
         AlertDialog(
             onDismissRequest = onClose,
@@ -266,7 +268,7 @@ fun TrackOptionsDialogs(
                         valueRange = 0f..maxStartS.coerceAtLeast(1f)
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        for (d in listOf(30, 45, 60, 90)) {
+                        for (d in listOf(60, 90, 120, 180)) {
                             FilterChip(
                                 selected = durS == d,
                                 onClick = { durS = d },

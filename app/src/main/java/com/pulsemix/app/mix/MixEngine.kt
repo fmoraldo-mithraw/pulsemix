@@ -466,7 +466,9 @@ object MixEngine {
     }
 
     private fun trackLenMs(t: Track, dj: Boolean): Long =
-        if (dj) t.segmentMs.coerceAtLeast(20_000L)
+        // Mode DJ : plancher aligné sur DjMixer.MIN_SEGMENT_MS, sinon les
+        // estimations de durée d'un plan sont trop courtes
+        if (dj) t.segmentMs.coerceAtLeast(60_000L)
         else t.durationMs.coerceAtLeast(60_000L)
 
     /** Retire des morceaux (par la fin des phases les plus longues) jusqu'à

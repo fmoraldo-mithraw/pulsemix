@@ -232,9 +232,12 @@ object TagFixer {
             // identique + durée qui colle. Le score MusicBrainz seul ne
             // suffit jamais : il est relatif à la recherche (le premier
             // résultat frôle 100 même quand c'est un mauvais match).
-            // Sans artiste dans la requête, jamais sûr : trop d'homonymes
-            // de titres — la réponse part toujours en proposition.
-            val sure = qArtist.isNotBlank() && (
+            // Deux garde-fous : sans artiste dans la requête, jamais sûr
+            // (trop d'homonymes de titres) ; et si le morceau n'a pas
+            // d'artiste exploitable au départ (tag vide ou poubelle type
+            // « Downloads »), on ne remplace jamais en silence — la
+            // réponse part en proposition, à valider à la main.
+            val sure = artistTag.isNotBlank() && qArtist.isNotBlank() && (
                 (titleMatch && artistMatch) ||
                     (titleMatch && durOk) ||
                     (artistMatch && durOk && best.score >= 95)
