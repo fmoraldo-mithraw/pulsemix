@@ -46,9 +46,13 @@ object AlarmClock {
     val mixId = MutableStateFlow("douce")
     val rampMinutes = MutableStateFlow(3)
 
+    /** Durées de répétition proposées, en minutes. */
+    val SNOOZE_CHOICES = listOf(10, 15, 20)
+
     const val ACTION_FIRE = "com.pulsemix.app.ALARM_FIRE"
     private const val PREFS = "alarm"
     private const val REQ_FIRE = 4242
+    private const val REQ_SNOOZE = 4243
 
     private var loaded = false
     private var rampJob: Job? = null
@@ -132,8 +136,60 @@ object AlarmClock {
     }
 
     private fun cancel(context: Context) {
+        val am = context.getSystemService(AlarmManager::class.java) ?: return
+        am.cancel(firePending(context))
+        am.cancel(snoozePending(context))
+    }
+
+    private fun snoozePending(context: Context): PendingIntent =
+        PendingIntent.getBroadcast(
+            context, REQ_SNOOZE,
+            Intent(context, AlarmReceiver::class.java).setAction(ACTION_FIRE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    /**
+     * Répéter : coupe la musique et reprogramme la sonnerie dans
+     * [minutes] minutes (sans toucher à l'alarme quotidienne).
+     */
+    fun snooze(context: Context, minutes: Int) {
+        stopRinging()
+        val at = System.currentTimeMillis() + minutes * 60_000L
+        val am = context.getSystemService(AlarmManager::class.java)
+        if (am != null) {
+            val show = PendingIntent.getActivity(
+                context, 0, Intent(context, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            try {
+                am.setAlarmClock(
+                    AlarmManager.AlarmClockInfo(at, show), snoozePending(context)
+                )
+            } catch (_: SecurityException) {
+                am.setWindow(
+                    AlarmManager.RTC_WAKEUP, at, 60_000L, snoozePending(context)
+                )
+            }
+        }
+        AlarmService.stop(context)
+    }
+
+    /** Arrêter le réveil : musique coupée, notification retirée. */
+    fun dismiss(context: Context) {
+        stopRinging()
         context.getSystemService(AlarmManager::class.java)
-            ?.cancel(firePending(context))
+            ?.cancel(snoozePending(context))
+        AlarmService.stop(context)
+    }
+
+    /** Coupe la musique et la montée du volume en cours. */
+    private fun stopRinging() {
+        rampJob?.cancel()
+        rampJob = null
+        try {
+            PlayerCore.stopPlayback()
+        } catch (_: Exception) {
+        }
     }
 
     /**

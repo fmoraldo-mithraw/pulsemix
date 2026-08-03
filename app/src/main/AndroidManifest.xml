@@ -16,6 +16,9 @@
         android:name="android.permission.SCHEDULE_EXACT_ALARM"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- Sonnerie plein écran par-dessus l'écran verrouillé -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
 
     <application
         android:name=".PulseMixApp"
@@ -58,6 +61,16 @@
             android:name=".library.AnalysisService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Sonnerie plein écran : s'affiche par-dessus le verrouillage -->
+        <activity
+            android:name=".player.AlarmAlertActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.PulseMix" />
 
         <!-- Réveil matin : lancement protégé par un service en avant-plan -->
         <service

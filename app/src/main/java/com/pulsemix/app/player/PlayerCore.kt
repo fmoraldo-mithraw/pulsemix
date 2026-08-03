@@ -958,6 +958,17 @@ object PlayerCore {
         exo.repeatMode = Player.REPEAT_MODE_OFF
     }
 
+    /** Coupe la lecture en cours (réveil arrêté / répété). */
+    fun stopPlayback() {
+        if (!initialized) return
+        stopDjIfNeeded()
+        try {
+            exo.stop()
+        } catch (_: Exception) {
+        }
+        isPlaying.value = false
+    }
+
     fun releaseAll() {
         if (!initialized) return
         mixer.stop()
