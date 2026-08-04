@@ -710,7 +710,9 @@ object PlayerCore {
                     // Le fondu ne doit pas déborder de la fin du fichier :
                     // le son s'arrêterait net avant d'avoir fini de sortir.
                     val remain = player.duration - player.currentPosition
-                    if (remain > 0) eff = min(fadeMs, max(600L, remain - 250L))
+                    if (remain > 0) {
+                        eff = fadeMs.coerceAtMost((remain - 250L).coerceAtLeast(600L))
+                    }
                 } catch (_: Exception) {
                     releaseTail()
                 }
