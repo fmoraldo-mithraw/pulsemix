@@ -173,7 +173,6 @@ class PlayerWidget : AppWidgetProvider() {
         views.setOnClickPendingIntent(
             R.id.widget_next, PulseWidgets.action(context, cls, PulseWidgets.ACTION_NEXT)
         )
-        views.setOnClickPendingIntent(R.id.widget_open, PulseWidgets.openApp(context))
         views.setOnClickPendingIntent(
             R.id.widget_mix, PulseWidgets.action(context, cls, PulseWidgets.ACTION_MIX)
         )

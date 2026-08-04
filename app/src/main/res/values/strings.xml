@@ -8,7 +8,6 @@
     <string name="widget_prev">Précédent</string>
     <string name="widget_play">Lecture / pause</string>
     <string name="widget_next">Suivant</string>
-    <string name="widget_open">Ouvrir PulseMix</string>
     <string name="widget_nothing">Rien en lecture</string>
     <string name="widget_tap_to_open">Touche pour ouvrir PulseMix</string>
     <string name="widget_mix">MIX</string>
