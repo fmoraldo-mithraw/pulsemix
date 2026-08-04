@@ -600,18 +600,41 @@ object TagFixer {
     private fun appliedFile() = java.io.File(appContext!!.filesDir, "tag_applied.json")
     private fun checkedFile() = java.io.File(appContext!!.filesDir, "tag_checked.json")
 
+    /**
+     * Version du moteur d'identification. Un verdict « déjà examiné » ne
+     * vaut que pour le moteur qui l'a rendu : quand celui-ci est corrigé,
+     * les verdicts d'avant sont oubliés, sinon le correctif n'atteindrait
+     * jamais les morceaux déjà passés — et la correction resterait
+     * invisible.
+     *
+     * 2 : la durée annoncée à AcoustID est celle du morceau entier ; avant,
+     * l'identification sonore ne rendait jamais rien.
+     */
+    private const val CHECKED_ENGINE = 2
+
     private fun readChecked(): Set<String> = try {
-        val arr = JSONArray(checkedFile().readText())
-        val set = HashSet<String>(arr.length())
-        for (i in 0 until arr.length()) set.add(arr.getString(i))
-        set
+        val root = JSONObject(checkedFile().readText())
+        if (root.optInt("engine", 1) < CHECKED_ENGINE) {
+            emptySet()
+        } else {
+            val arr = root.optJSONArray("uris") ?: JSONArray()
+            val set = HashSet<String>(arr.length())
+            for (i in 0 until arr.length()) set.add(arr.getString(i))
+            set
+        }
     } catch (_: Exception) {
+        // Ancien format (tableau nu) : verdicts d'un moteur dépassé
         emptySet()
     }
 
     private fun writeChecked() {
         try {
-            checkedFile().writeText(JSONArray(checked.toList()).toString())
+            checkedFile().writeText(
+                JSONObject()
+                    .put("engine", CHECKED_ENGINE)
+                    .put("uris", JSONArray(checked.toList()))
+                    .toString()
+            )
         } catch (_: Exception) {
         }
     }
