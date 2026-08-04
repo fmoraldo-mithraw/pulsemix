@@ -280,6 +280,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         val logicalEndMs: Long
         private val decodeEndMs: Long
 
+        /**
+         * Part du passage déjà écoulée quand ce deck démarre. Nulle en
+         * temps normal ; après un déplacement manuel, le deck ne joue que
+         * la fin du passage et sa progression doit malgré tout se lire sur
+         * le passage entier — sinon la barre repartirait de zéro.
+         */
+        var progressFrom = 0f
+            private set
+
         var startedAtFrame = 0L
         var framesOut = 0L
             private set
@@ -503,6 +512,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 else -> anchor
             }
             logicalEndMs = end
+            progressFrom = if (seekFromMs != null && end > anchor)
+                ((startMs - anchor).toFloat() / (end - anchor))
+                    .coerceIn(0f, 0.98f)
+            else 0f
             decodeEndMs = min(logicalEndMs + 2_000, track.durationMs)
 
             thread(name = "DjDeck-${track.title.take(12)}") {
@@ -1394,7 +1407,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 blockCount++
                 if (blockCount % 16 == 0) {
                     val total = a.totalOutFrames
-                    val p = if (total > 0) a.framesOut.toFloat() / total else 0f
+                    val played = if (total > 0)
+                        a.framesOut.toFloat() / total else 0f
+                    // Lue sur le passage entier, pas seulement sur ce qu'il
+                    // reste à jouer (cf. Deck.progressFrom)
+                    val p = a.progressFrom + (1f - a.progressFrom) * played
                     ui.post { listener.onProgress(p.coerceIn(0f, 1f)) }
                 }
             }

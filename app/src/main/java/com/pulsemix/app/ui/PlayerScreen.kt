@@ -76,6 +76,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -296,14 +297,29 @@ fun PlayerScreen(
         // vraie transition vers le morceau repris à cet endroit).
         var seeking by remember { mutableStateOf(false) }
         var seekValue by remember { mutableFloatStateOf(0f) }
+        // Position demandée, gardée affichée jusqu'à ce que la lecture l'ait
+        // rejointe : la transition dure plusieurs secondes, et voir la barre
+        // revenir en arrière puis sauter donnerait le sentiment que le geste
+        // n'a pas été pris en compte.
+        var wanted by remember { mutableStateOf<Float?>(null) }
+        var wantedSince by remember { mutableLongStateOf(0L) }
+        LaunchedEffect(progress, wanted) {
+            val w = wanted ?: return@LaunchedEffect
+            // Rejointe, ou garde-fou si la lecture n'y arrive jamais
+            if (kotlin.math.abs(progress - w) < 0.02f ||
+                System.currentTimeMillis() - wantedSince > 20_000
+            ) wanted = null
+        }
         Slider(
-            value = if (seeking) seekValue else progress,
+            value = if (seeking) seekValue else wanted ?: progress,
             onValueChange = {
                 seeking = true
                 seekValue = it
             },
             onValueChangeFinished = {
                 seeking = false
+                wanted = seekValue
+                wantedSince = System.currentTimeMillis()
                 vm.seekToSmooth(seekValue)
             },
             modifier = Modifier.fillMaxWidth()
