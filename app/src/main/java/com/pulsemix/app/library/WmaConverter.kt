@@ -5,7 +5,6 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
-import com.yausername.ffmpeg.FFmpeg
 import java.io.File
 
 /**
@@ -25,9 +24,6 @@ object WmaConverter {
 
     /** Suffixe des fichiers produits : sert aussi à les reconnaître. */
     private const val SUFFIX = " (converti).m4a"
-
-    @Volatile private var ffmpegBin: String? = null
-    @Volatile private var ffmpegEnv: Map<String, String> = emptyMap()
 
     fun isWma(name: String): Boolean =
         name.substringAfterLast('.', "").lowercase() == "wma"
@@ -83,7 +79,7 @@ object WmaConverter {
         val outName = convertedName(name)
         parent.findFile(outName)?.let { if (it.length() > 0) return it }
 
-        val bin = ensureFfmpeg(context) ?: return null
+        val bin = FfmpegBin.path(context) ?: return null
         val cacheDir = File(context.cacheDir, "wma").apply { mkdirs() }
         // ffmpeg ne sait pas lire une URI SAF : on lui donne des fichiers
         val inFile = File(cacheDir, "in.wma")
@@ -100,7 +96,7 @@ object WmaConverter {
                 "-vn", "-c:a", "aac", "-b:a", "192k",
                 outFile.absolutePath
             )
-            pb.environment().putAll(ffmpegEnv)
+            pb.environment().putAll(FfmpegBin.env())
             pb.redirectErrorStream(true)
             val proc = pb.start()
             val log = proc.inputStream.bufferedReader().use { it.readText() }
@@ -124,45 +120,4 @@ object WmaConverter {
         }
     }
 
-    /**
-     * Localise le binaire ffmpeg extrait par youtubedl-android et prépare
-     * son environnement (ses bibliothèques ne sont pas dans les chemins
-     * système). Le chemin exact dépend de la version de la bibliothèque :
-     * on le cherche plutôt que de le coder en dur.
-     */
-    @Synchronized
-    private fun ensureFfmpeg(context: Context): String? {
-        ffmpegBin?.let { return it }
-        val app = context.applicationContext
-        try {
-            FFmpeg.getInstance().init(app)
-        } catch (e: Exception) {
-            android.util.Log.w("WmaConverter", "ffmpeg indisponible", e)
-            return null
-        }
-        val roots = listOfNotNull(
-            app.noBackupFilesDir, app.filesDir
-        )
-        var bin: File? = null
-        val libDirs = ArrayList<String>()
-        for (root in roots) {
-            root.walkTopDown().maxDepth(8).forEach { f ->
-                if (f.isFile && f.name == "ffmpeg" && f.canExecute()) {
-                    if (bin == null) bin = f
-                } else if (f.isDirectory && f.name == "lib") {
-                    libDirs.add(f.absolutePath)
-                }
-            }
-            if (bin != null) break
-        }
-        val found = bin ?: return null
-        ffmpegEnv = buildMap {
-            if (libDirs.isNotEmpty()) {
-                put("LD_LIBRARY_PATH", libDirs.joinToString(":"))
-            }
-            put("PATH", found.parentFile?.absolutePath + ":/system/bin")
-        }
-        ffmpegBin = found.absolutePath
-        return ffmpegBin
-    }
 }

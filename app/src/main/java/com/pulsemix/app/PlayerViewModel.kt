@@ -303,6 +303,26 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearTagApplied() = com.pulsemix.app.library.TagFixer.clearApplied()
 
+    // Option : reporter les corrections dans les fichiers audio eux-mêmes
+    val writeTagsToFiles = com.pulsemix.app.library.TagFixer.writeToFiles
+
+    fun setWriteTagsToFiles(enabled: Boolean) =
+        com.pulsemix.app.library.TagFixer.setWriteToFiles(enabled)
+
+    /** Résultat de la dernière écriture en masse (message à afficher). */
+    val tagWriteMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** Reporte dans les fichiers toutes les corrections déjà appliquées. */
+    fun writeAllTagsToFiles() {
+        viewModelScope.launch {
+            tagWriteMessage.value = "Écriture des tags en cours…"
+            val n = com.pulsemix.app.library.TagFixer.writeAllApplied()
+            tagWriteMessage.value =
+                if (n > 0) "$n fichiers mis à jour."
+                else "Aucun fichier n'a pu être mis à jour."
+        }
+    }
+
     /** Cherche les tags corrects de toute la bibliothèque (MusicBrainz). */
     fun fetchTagsAll() {
         viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixAll(store) }

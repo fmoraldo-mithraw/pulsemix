@@ -3,7 +3,10 @@ package com.pulsemix.app.library
 import android.content.Context
 import com.pulsemix.app.data.Track
 import com.pulsemix.app.data.TrackStore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
@@ -20,8 +23,9 @@ import java.net.URLEncoder
  *  - Les corrections SÛRES (même titre à la casse/ponctuation près, ou
  *    correspondance quasi certaine) sont appliquées automatiquement.
  *  - Les propositions INCERTAINES vont dans une liste à valider à la main.
- *  - Les fichiers audio ne sont JAMAIS modifiés : les tags corrigés vivent
- *    dans la bibliothèque (et sa sauvegarde), comme les types de musique.
+ *  - Les tags corrigés vivent dans la bibliothèque (et sa sauvegarde),
+ *    comme les types de musique. Les fichiers audio ne sont touchés que si
+ *    l'option « écrire les tags dans les fichiers » est activée.
  */
 object TagFixer {
 
@@ -46,6 +50,49 @@ object TagFixer {
     /** Nombre maximal d'entrées gardées dans l'historique des corrections. */
     private const val APPLIED_MAX = 300
 
+    /**
+     * Option : écrire aussi les corrections dans le fichier audio. Par
+     * défaut non — la bibliothèque de l'app suffit à bien ranger sa
+     * musique, et modifier les fichiers n'est pas anodin.
+     */
+    val writeToFiles = MutableStateFlow(false)
+
+    private val writeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun setWriteToFiles(enabled: Boolean) {
+        writeToFiles.value = enabled
+        appContext?.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            ?.edit()?.putBoolean("writeTagsToFiles", enabled)?.apply()
+    }
+
+    /**
+     * Reporte une correction dans le fichier lui-même, si l'option est
+     * active. En arrière-plan : ffmpeg recopie le fichier entier, ce qui
+     * prend un instant et ne doit jamais retarder l'affichage.
+     */
+    private fun writeTagsIfEnabled(uri: String, title: String, artist: String) {
+        if (!writeToFiles.value) return
+        val ctx = appContext ?: return
+        writeScope.launch { TagWriter.write(ctx, uri, title, artist) }
+    }
+
+    /**
+     * Écrit dans les fichiers toutes les corrections déjà appliquées :
+     * pour celles faites avant d'activer l'option.
+     * @return nombre de fichiers effectivement réécrits.
+     */
+    suspend fun writeAllApplied(): Int = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext 0
+        var n = 0
+        // Une seule écriture par morceau, la plus récente d'abord
+        val seen = HashSet<String>()
+        for (s in applied.value) {
+            if (!seen.add(s.uri)) continue
+            if (TagWriter.write(ctx, s.uri, s.newTitle, s.newArtist)) n++
+        }
+        n
+    }
+
     /** Progression du passage bibliothèque : (faits, total, appliqués auto). */
     val progress: StateFlow<Triple<Int, Int, Int>?> get() = _progress
     private val _progress = MutableStateFlow<Triple<Int, Int, Int>?>(null)
@@ -56,6 +103,9 @@ object TagFixer {
     fun init(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
+        writeToFiles.value = appContext!!
+            .getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getBoolean("writeTagsToFiles", false)
         load()
     }
 
@@ -139,6 +189,9 @@ object TagFixer {
                             artist = best.artist.ifBlank { it.artist }
                         )
                     }
+                    writeTagsIfEnabled(
+                        t.uri, best.title, best.artist.ifBlank { t.artist }
+                    )
                     applied.value = (
                         listOf(
                             Suggestion(
@@ -184,6 +237,7 @@ object TagFixer {
                 artist = s.newArtist.ifBlank { it.artist }
             )
         }
+        writeTagsIfEnabled(s.uri, s.newTitle, s.newArtist)
         applied.value = (listOf(s) + applied.value).take(APPLIED_MAX)
         pending.value = pending.value.filter { it.uri != s.uri }
         save()
@@ -249,6 +303,9 @@ object TagFixer {
                         artist = best.artist.ifBlank { it.artist }
                     )
                 }
+                writeTagsIfEnabled(
+                    t.uri, best.title, best.artist.ifBlank { t.artist }
+                )
                 applied.value = (
                     listOf(
                         Suggestion(
@@ -307,6 +364,7 @@ object TagFixer {
         store.update(t.uri) {
             it.copy(title = c.title, artist = c.artist.ifBlank { it.artist })
         }
+        writeTagsIfEnabled(t.uri, c.title, c.artist.ifBlank { t.artist })
         applied.value = (
             listOf(Suggestion(t.uri, t.title, t.artist, c.title, c.artist, c.score)) +
                 applied.value
@@ -322,6 +380,7 @@ object TagFixer {
     fun revert(store: TrackStore, s: Suggestion) {
         if (s.oldTitle.isBlank()) return
         store.update(s.uri) { it.copy(title = s.oldTitle, artist = s.oldArtist) }
+        writeTagsIfEnabled(s.uri, s.oldTitle, s.oldArtist)
         applied.value = applied.value - s
         save()
     }
@@ -337,6 +396,7 @@ object TagFixer {
         if (newTitle.isBlank()) return
         if (newTitle == t.title && newArtist == t.artist) return
         store.update(t.uri) { it.copy(title = newTitle, artist = newArtist) }
+        writeTagsIfEnabled(t.uri, newTitle, newArtist)
         applied.value = (
             listOf(Suggestion(t.uri, t.title, t.artist, newTitle, newArtist, 0)) +
                 applied.value

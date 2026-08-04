@@ -63,6 +63,33 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         )
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
+        // ------------------------------------------- tags dans les fichiers
+        val writeTags by vm.writeTagsToFiles.collectAsStateWithLifecycle()
+        val tagWriteMsg by vm.tagWriteMessage.collectAsStateWithLifecycle()
+        val applied by vm.tagApplied.collectAsStateWithLifecycle()
+        SettingSwitch(
+            title = "Écrire les tags dans les fichiers",
+            subtitle = "Par défaut, les corrections de titre et d'artiste ne " +
+                "vivent que dans PulseMix. Activé, chaque correction est aussi " +
+                "écrite dans le fichier audio — les autres lecteurs la verront. " +
+                "L'audio n'est pas réencodé, la qualité est intacte.",
+            checked = writeTags,
+            onChange = { vm.setWriteTagsToFiles(it) }
+        )
+        if (writeTags && applied.isNotEmpty()) {
+            androidx.compose.material3.OutlinedButton(
+                onClick = { vm.writeAllTagsToFiles() }
+            ) { Text("Écrire les ${applied.size} corrections déjà faites") }
+        }
+        tagWriteMsg?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+        }
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
         // ------------------------------------------------------ réveil matin
         val context = androidx.compose.ui.platform.LocalContext.current
         val alarmOn by vm.alarmEnabled.collectAsStateWithLifecycle()
