@@ -27,10 +27,12 @@ object AcoustId {
 
     /**
      * Empreinte des ~2 premières minutes du morceau.
-     * @return (empreinte base64, durée analysée en secondes), ou null si
+     *
+     * @param fullDurationMs durée réelle du morceau entier.
+     * @return (empreinte base64, durée à déclarer en secondes), ou null si
      * le fichier est indécodable ou trop court (< 10 s).
      */
-    fun fingerprint(context: Context, uri: String): Pair<String, Int>? {
+    fun fingerprint(context: Context, uri: String, fullDurationMs: Long): Pair<String, Int>? {
         val cp = Chromaprint()
         AudioDecoder().decode(
             context, Uri.parse(uri),
@@ -38,9 +40,33 @@ object AcoustId {
         ) { pcm, frames, sampleRate, channels ->
             cp.feed(pcm, frames, sampleRate, channels)
         }
-        if (cp.durationSeconds() < 10) return null
+        val analysed = cp.durationSeconds()
+        if (analysed < 10) return null
         val fp = cp.fingerprint() ?: return null
-        return fp to cp.durationSeconds()
+        return fp to declaredDuration(fullDurationMs, analysed)
+    }
+
+    /**
+     * Durée à annoncer à AcoustID, en secondes.
+     *
+     * Le service indexe les empreintes avec la durée du morceau ENTIER,
+     * alors que l'empreinte elle-même ne couvre que ses deux premières
+     * minutes — c'est exactement ce que fait fpcalc, la référence avec
+     * laquelle la base a été remplie : il n'analyse que le début et
+     * rapporte quand même la durée complète du fichier.
+     *
+     * On annonçait ici la durée du passage analysé, plafonnée à ~125 s.
+     * Tout morceau de plus de deux minutes arrivait donc avec une durée
+     * qui ne correspondait à rien dans l'index, et la recherche ne rendait
+     * jamais rien — quelle que soit la qualité de l'empreinte.
+     *
+     * Une durée de fichier absente ou aberrante ne doit pas raccourcir ce
+     * qu'on annonce : on ne descend jamais sous ce qui a été analysé.
+     */
+    internal fun declaredDuration(fullDurationMs: Long, analysedSec: Int): Int {
+        if (fullDurationMs <= 0L) return analysedSec
+        val full = ((fullDurationMs + 500L) / 1000L).toInt()
+        return maxOf(full, analysedSec)
     }
 
     /**

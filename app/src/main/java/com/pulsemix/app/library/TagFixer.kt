@@ -217,7 +217,8 @@ object TagFixer {
      */
     private fun handleBySound(store: TrackStore, t: Track): SoundOutcome {
         val ctx = appContext ?: return SoundOutcome.NOT_FOUND
-        val fp = AcoustId.fingerprint(ctx, t.uri) ?: return SoundOutcome.NOT_FOUND
+        val fp = AcoustId.fingerprint(ctx, t.uri, t.durationMs)
+            ?: return SoundOutcome.NOT_FOUND
         val cands = AcoustId.lookup(fp.first, fp.second)
         val best = pickBest(cands, t.durationMs) ?: return SoundOutcome.NOT_FOUND
         if (best.title.isBlank()) return SoundOutcome.NOT_FOUND
@@ -266,7 +267,7 @@ object TagFixer {
     /** Candidats par empreinte sonore, pour la recherche manuelle. */
     fun searchCandidatesBySound(t: Track): List<Candidate> {
         val ctx = appContext ?: return emptyList()
-        val fp = AcoustId.fingerprint(ctx, t.uri)
+        val fp = AcoustId.fingerprint(ctx, t.uri, t.durationMs)
         if (fp == null) {
             lastError.value =
                 "Impossible de décoder l'audio pour calculer l'empreinte."
