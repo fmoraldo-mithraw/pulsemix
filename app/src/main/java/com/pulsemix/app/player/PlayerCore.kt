@@ -604,29 +604,62 @@ object PlayerCore {
         }
     }
 
+    /**
+     * Exécute [go] — un changement de morceau demandé à la main — en fondu
+     * croisé, comme l'enchaînement naturel de fin de morceau. Saut direct si
+     * le réglage est coupé, s'il n'y a rien à prolonger, ou si [possible] est
+     * faux (bout de file : le fondu jouerait contre lui-même).
+     */
+    private fun crossfadeTo(possible: Boolean, go: () -> Unit) {
+        val uri = currentTrack.value?.uri
+        if (!possible || !crossfade.value || uri == null || !isPlaying.value) {
+            flushPendingSwitch()
+            stopTail()
+            go()
+            return
+        }
+        // Pas besoin de marquer le morceau comme déjà fondu : la queue reste
+        // en place pendant toute la bascule, et le déclencheur de fin exige
+        // justement qu'il n'y en ait aucune.
+        handOffTail(uri, exo.currentPosition, CROSSFADE_MS, go)
+    }
+
     fun next() {
-        stopTail()
-        when (mode.value) {
-            PlayerMode.NORMAL, PlayerMode.DOUCE -> exo.seekToNextMediaItem()
-            PlayerMode.MIX -> jumpToPhase(currentPhase.value + 1)
-            PlayerMode.DJ -> mixer.nextPhase()
+        if (mode.value == PlayerMode.DJ) {
+            stopTail()
+            mixer.nextPhase()
+            return
+        }
+        crossfadeTo(exo.hasNextMediaItem()) {
+            if (mode.value == PlayerMode.MIX) jumpToPhase(currentPhase.value + 1)
+            else exo.seekToNextMediaItem()
         }
     }
 
     fun previous() {
-        stopTail()
-        when (mode.value) {
-            PlayerMode.NORMAL, PlayerMode.DOUCE -> {
-                if (exo.currentPosition > 3000) exo.seekTo(0)
-                else exo.seekToPreviousMediaItem()
+        // On peut revenir sur un morceau dont la fin a déjà été fondue : sa
+        // fin doit pouvoir l'être à nouveau.
+        crossfadedFrom = null
+        if (mode.value == PlayerMode.DJ) {
+            stopTail()
+            mixer.prevPhase()
+            return
+        }
+        crossfadeTo(exo.currentPosition > 3000 || exo.hasPreviousMediaItem()) {
+            when (mode.value) {
+                PlayerMode.MIX -> jumpToPhase(currentPhase.value - 1)
+                else -> {
+                    if (exo.currentPosition > 3000) exo.seekTo(0)
+                    else exo.seekToPreviousMediaItem()
+                }
             }
-            PlayerMode.MIX -> jumpToPhase(currentPhase.value - 1)
-            PlayerMode.DJ -> mixer.prevPhase()
         }
     }
 
     fun seekToFraction(f: Float) {
         if (mode.value == PlayerMode.DJ) return
+        // Repositionnement explicite : le fondu de fin redevient possible
+        crossfadedFrom = null
         val d = exo.duration
         if (d > 0) exo.seekTo((d * f.coerceIn(0f, 1f)).toLong())
         persistState()
@@ -650,6 +683,19 @@ object PlayerCore {
      */
     private var exoTail: ExoPlayer? = null
     private var tailJob: Job? = null
+
+    /**
+     * Changement de morceau demandé mais pas encore appliqué : il n'a lieu
+     * qu'une fois la queue prête à prolonger le son.
+     */
+    private var pendingSwitch: (() -> Unit)? = null
+
+    /** Applique tout de suite une bascule restée en attente. */
+    private fun flushPendingSwitch() {
+        val go = pendingSwitch ?: return
+        pendingSwitch = null
+        go()
+    }
 
     /** Gain du fondu d'entrée du lecteur principal (multiplie le volume). */
     @Volatile private var fadeGain = 1f
@@ -676,6 +722,10 @@ object PlayerCore {
      * ailleurs immédiatement.
      */
     private fun handOffTail(uri: String, fromMs: Long, fadeMs: Long, onSwitch: () -> Unit) {
+        // Une bascule encore en attente appartient à un geste précédent : la
+        // congédier sans l'appliquer perdrait cet appui. Deux « suivant »
+        // rapprochés doivent bien avancer de deux morceaux.
+        flushPendingSwitch()
         stopTail()
         val player = try {
             ExoPlayer.Builder(appContext).build().apply {
@@ -702,15 +752,22 @@ object PlayerCore {
             return
         }
         exoTail = player
+        pendingSwitch = onSwitch
         var switched = false
 
         /** Bascule : les deux sources jouent, puis se croisent. */
         fun switchNow(withTail: Boolean) {
             if (switched) return
             switched = true
+            // Un geste plus récent a repris la main : cette bascule ne nous
+            // appartient plus. Ni le son ni la queue, désormais à lui, ne
+            // doivent être touchés — le garde-fou des 2,5 s passe ici quand
+            // la demande a déjà été remplacée.
+            if (pendingSwitch !== onSwitch) return
             val v0 = exo.volume
             if (!withTail) {
                 releaseTail()
+                pendingSwitch = null
                 fadeGain = 0f
                 applyVolume()
                 onSwitch()
@@ -720,26 +777,32 @@ object PlayerCore {
             autoScope.launch(Dispatchers.Main) {
                 var eff = fadeMs
                 try {
-                    // Surtout PAS de seek ici : le lecteur vient d'être mis
-                    // en tampon à cette position précise, l'en déplacer le
-                    // ferait recharger et il resterait muet le temps du
-                    // rechargement — soit exactement le silence qu'on veut
-                    // éviter.
-                    //
+                    player.volume = 0f
+                    // Recaler la queue sur le direct. Elle a été préparée à la
+                    // position qu'occupait le lecteur principal au moment de la
+                    // demande, mais l'ouverture du fichier prend un instant et
+                    // pendant ce temps le principal a continué d'avancer. La
+                    // laisser là où elle était la ferait rembobiner d'une à
+                    // deux secondes : on réentendrait le passage qu'on vient
+                    // de quitter, remonté à plein volume, avant même que le
+                    // fondu commence. Le fichier est déjà ouvert et son tampon
+                    // couvre largement ce petit saut en avant : le recalage ne
+                    // coûte pratiquement rien.
+                    val live = exo.currentPosition
+                    if (live - player.currentPosition > 120L) player.seekTo(live)
                     // « Prêt » ne veut pas dire « audible » : entre play() et
                     // la première goutte de son, la sortie audio met quelques
                     // dizaines de millisecondes à s'amorcer. Couper le lecteur
-                    // principal tout de suite ouvrait donc un petit trou. On
-                    // lance donc la queue EN MUET et on attend qu'elle avance
+                    // principal tout de suite ouvrait un petit trou. On lance
+                    // donc la queue EN MUET et on attend qu'elle avance
                     // vraiment — preuve qu'elle sort du son — avant de
                     // basculer. Pendant ce temps le morceau en cours continue
                     // normalement, et comme la queue est muette on n'entend
                     // pas les deux en même temps.
-                    player.volume = 0f
                     player.play()
                     val start = player.currentPosition
                     var waited = 0L
-                    while (waited < 500L && player.currentPosition <= start) {
+                    while (waited < 800L && player.currentPosition <= start) {
                         delay(20L)
                         waited += 20L
                         // Un geste de l'utilisateur a pu congédier la queue
@@ -756,6 +819,10 @@ object PlayerCore {
                 } catch (_: Exception) {
                     releaseTail()
                 }
+                // Un geste plus récent a repris la main pendant l'attente : il
+                // a déjà appliqué cette bascule, ne pas la rejouer.
+                if (pendingSwitch !== onSwitch) return@launch
+                pendingSwitch = null
                 // Le volume tombe AVANT le saut : sinon le morceau d'arrivée se
                 // ferait entendre à plein volume le temps d'un souffle.
                 fadeGain = 0f
@@ -839,6 +906,8 @@ object PlayerCore {
             mixer.requestSeek(frac)
             return
         }
+        // Repositionnement explicite : le fondu de fin redevient possible
+        crossfadedFrom = null
         val d = exo.duration
         if (d <= 0) return
         val target = (d * frac).toLong()
@@ -1312,6 +1381,10 @@ object PlayerCore {
      * qui le rend caduc.
      */
     fun stopTail() {
+        // Une bascule en attente devient caduque : l'appelant (nouveau mix,
+        // nouvelle lecture…) refait la file lui-même, l'appliquer sauterait
+        // dans une file qui n'existe déjà plus.
+        pendingSwitch = null
         tailJob?.cancel()
         tailJob = null
         releaseTail()
