@@ -527,6 +527,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSkipIntros(enabled: Boolean) = PlayerCore.setSkipIntros(enabled)
 
+    /** Fondu croisé entre morceaux (hors DJ). */
+    val crossfade = PlayerCore.crossfade
+
+    fun setCrossfade(enabled: Boolean) = PlayerCore.setCrossfade(enabled)
+
     /** Supprime définitivement un morceau du disque et de la bibliothèque. */
     fun deleteTrack(track: Track) {
         PlayerCore.onTrackDeleted(track.uri)

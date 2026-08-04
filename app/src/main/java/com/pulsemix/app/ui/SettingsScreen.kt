@@ -54,6 +54,18 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         )
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
+        val crossfade by vm.crossfade.collectAsStateWithLifecycle()
+        SettingSwitch(
+            title = "Fondu entre les morceaux",
+            subtitle = "Les morceaux se chevauchent vraiment sur 5 s au lieu " +
+                "de s'enchaîner sec, en lecture classique comme en mix. " +
+                "S'applique aussi aux déplacements sur la barre. Le mode DJ a " +
+                "ses propres transitions et n'est pas concerné.",
+            checked = crossfade,
+            onChange = { vm.setCrossfade(it) }
+        )
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
         SettingSwitch(
             title = "Normaliser le volume",
             subtitle = "Atténue les morceaux masterisés fort pour un niveau " +

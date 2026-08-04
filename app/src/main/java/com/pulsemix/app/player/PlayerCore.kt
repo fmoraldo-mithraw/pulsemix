@@ -58,6 +58,22 @@ object PlayerCore {
     /** Normalisation du volume entre morceaux (activée par défaut). */
     val normalizeVolume = MutableStateFlow(true)
 
+    /**
+     * Fondu croisé entre morceaux en lecture classique et en mix : les
+     * deux morceaux se chevauchent réellement, plus de blanc. Le mode DJ a
+     * son propre moteur de transitions et n'est pas concerné.
+     */
+    val crossfade = MutableStateFlow(true)
+
+    /** Morceau dont le fondu de sortie a déjà été lancé (une seule fois). */
+    private var crossfadedFrom: String? = null
+
+    fun setCrossfade(enabled: Boolean) {
+        crossfade.value = enabled
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit().putBoolean("crossfade", enabled).apply()
+    }
+
     /** Égaliseur simple : graves / médiums / aigus en dB (-6..+6). */
     val eqBands = MutableStateFlow(Triple(0f, 0f, 0f))
 
@@ -196,6 +212,7 @@ object PlayerCore {
         val prefs = appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
         skipIntros.value = prefs.getBoolean("skipIntros", false)
         normalizeVolume.value = prefs.getBoolean("normalizeVolume", true)
+        crossfade.value = prefs.getBoolean("crossfade", true)
         eqBands.value = Triple(
             prefs.getFloat("eqBass", 0f),
             prefs.getFloat("eqMid", 0f),
@@ -217,6 +234,8 @@ object PlayerCore {
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying.value = playing
+                // La queue du morceau précédent ne doit pas jouer seule
+                if (!playing) stopTail()
                 if (mode.value == PlayerMode.DJ) mixer.setPaused(!playing)
                 persistState()
                 notifyWidgets()
@@ -310,6 +329,16 @@ object PlayerCore {
                     val d = exo.duration
                     if (d > 0) progress.value =
                         (exo.currentPosition.toFloat() / d).coerceIn(0f, 1f)
+                    // Fondu croisé vers le morceau suivant : déclenché assez
+                    // tôt pour que les deux se chevauchent vraiment.
+                    if (crossfade.value && d > 0 && isPlaying.value &&
+                        exo.hasNextMediaItem() && exoTail == null &&
+                        currentTrack.value?.uri != crossfadedFrom &&
+                        d - exo.currentPosition in 1..CROSSFADE_MS
+                    ) {
+                        crossfadedFrom = currentTrack.value?.uri
+                        crossfadeToNext()
+                    }
                 }
                 // Minuterie de sommeil : fondu sur les 30 dernières secondes,
                 // puis pause (tous modes : la pause est routée vers le DJ).
@@ -375,6 +404,7 @@ object PlayerCore {
 
     fun playNormal(tracks: List<Track>, startIndex: Int = 0) {
         cancelAutoNext()
+        stopTail()
         if (tracks.isEmpty()) return
         launchMessage.value = null
         stopDjIfNeeded()
@@ -394,6 +424,7 @@ object PlayerCore {
 
     fun playDouce(all: List<Track>, softness: Float) {
         cancelAutoNext()
+        stopTail()
         val soft = MixEngine.softSelection(all, softness)
         if (soft.isEmpty()) {
             launchMessage.value = "Aucun morceau assez doux pour ce réglage."
@@ -417,6 +448,7 @@ object PlayerCore {
 
     fun startMix(mixPlan: MixEngine.MixPlan) {
         cancelAutoNext()
+        stopTail()
         if (mixPlan.phases.sumOf { it.tracks.size } == 0) {
             launchMessage.value = "Ce plan ne contient aucun morceau : rien à lancer."
             return
@@ -450,6 +482,7 @@ object PlayerCore {
 
     fun startDj(mixPlan: MixEngine.MixPlan, fromPhase: Int = 0, rehearsal: Boolean = false) {
         cancelAutoNext()
+        stopTail()
         if (mixPlan.phases.isEmpty()) return
         // Le moteur DJ ne joue que les morceaux analysés (BPM connu) : un
         // plan sans aucun morceau jouable s'arrêtait en silence, boutons
@@ -568,6 +601,7 @@ object PlayerCore {
     }
 
     fun next() {
+        stopTail()
         when (mode.value) {
             PlayerMode.NORMAL, PlayerMode.DOUCE -> exo.seekToNextMediaItem()
             PlayerMode.MIX -> jumpToPhase(currentPhase.value + 1)
@@ -576,6 +610,7 @@ object PlayerCore {
     }
 
     fun previous() {
+        stopTail()
         when (mode.value) {
             PlayerMode.NORMAL, PlayerMode.DOUCE -> {
                 if (exo.currentPosition > 3000) exo.seekTo(0)
@@ -595,10 +630,103 @@ object PlayerCore {
 
     private var seekJob: Job? = null
 
-    // Déplacement dans un morceau (hors DJ) : ~6 s au total, la sortie plus
-    // franche que l'arrivée pour que le geste reste lisible
-    private const val SEEK_FADE_OUT_MS = 2_400L
-    private const val SEEK_FADE_IN_MS = 3_600L
+    // ------------------------------------------------------- vrais fondus
+
+    /**
+     * Fondus croisés hors DJ (lecture classique et mix).
+     *
+     * Un lecteur ne peut pas se superposer à lui-même : le son en cours est
+     * donc confié à un SECOND lecteur, qui le prolonge en s'effaçant,
+     * pendant que le lecteur principal part ailleurs — au morceau suivant,
+     * ou à l'endroit visé sur la barre. Deux sources sonnent réellement
+     * ensemble, comme entre deux platines.
+     *
+     * Le second lecteur ne prend pas le focus audio et n'a ni file ni
+     * session : il ne fait que tenir la queue du son sortant.
+     */
+    private var exoTail: ExoPlayer? = null
+    private var tailJob: Job? = null
+
+    /** Gain du fondu d'entrée du lecteur principal (multiplie le volume). */
+    @Volatile private var fadeGain = 1f
+
+    /** Durée d'un fondu croisé entre deux morceaux. */
+    private const val CROSSFADE_MS = 5_000L
+
+    /** Durée du fondu croisé lors d'un déplacement sur la barre. */
+    private const val SEEK_CROSSFADE_MS = 6_000L
+
+    /** Pas des rampes de volume : 25 ms, inaudible et peu coûteux. */
+    private const val FADE_STEP_MS = 25L
+
+    /**
+     * Confie [uri] à partir de [fromMs] au second lecteur, qui le prolonge
+     * puis s'efface sur [fadeMs]. Le lecteur principal est libre de partir
+     * ailleurs immédiatement.
+     */
+    private fun handOffTail(uri: String, fromMs: Long, fadeMs: Long) {
+        tailJob?.cancel()
+        releaseTail()
+        val player = try {
+            ExoPlayer.Builder(appContext).build().apply {
+                // Surtout pas de focus audio : il est déjà tenu par le
+                // lecteur principal, le redemander couperait le son.
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                        .build(),
+                    /* handleAudioFocus = */ false
+                )
+                setMediaItem(MediaItem.fromUri(uri))
+                seekTo(fromMs)
+                volume = exo.volume
+                prepare()
+                play()
+            }
+        } catch (_: Exception) {
+            return
+        }
+        exoTail = player
+        val v0 = player.volume
+        tailJob = autoScope.launch(Dispatchers.Main) {
+            val steps = (fadeMs / FADE_STEP_MS).toInt().coerceAtLeast(1)
+            for (i in 1..steps) {
+                // Equal-power : la somme des deux sources reste d'un niveau
+                // constant, sans le creux d'un fondu linéaire
+                val x = i.toFloat() / steps
+                player.volume = v0 * kotlin.math.cos(x * (Math.PI / 2).toFloat())
+                delay(FADE_STEP_MS)
+            }
+            releaseTail()
+        }
+    }
+
+    private fun releaseTail() {
+        val p = exoTail ?: return
+        exoTail = null
+        try {
+            p.stop()
+            p.release()
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Monte le lecteur principal depuis le silence, en equal-power. */
+    private fun fadeInMain(fadeMs: Long) {
+        seekJob?.cancel()
+        seekJob = autoScope.launch(Dispatchers.Main) {
+            val steps = (fadeMs / FADE_STEP_MS).toInt().coerceAtLeast(1)
+            for (i in 1..steps) {
+                val x = i.toFloat() / steps
+                fadeGain = kotlin.math.sin(x * (Math.PI / 2).toFloat())
+                applyVolume()
+                delay(FADE_STEP_MS)
+            }
+            fadeGain = 1f
+            applyVolume()
+        }
+    }
 
     /**
      * Déplacement demandé à la barre de progression, une fois le doigt
@@ -614,33 +742,31 @@ object PlayerCore {
         }
         val d = exo.duration
         if (d <= 0) return
-        seekJob?.cancel()
-        seekJob = autoScope.launch(Dispatchers.Main) {
-            // Transition longue, à l'image d'une jonction DJ : le morceau
-            // s'éloigne, se replace, et revient. Un seul lecteur ne peut pas
-            // se superposer à lui-même — le fondu descendant/montant en est
-            // l'équivalent le plus proche (le moteur DJ, lui, fait un vrai
-            // crossfade, cf. DjMixer.requestSeek).
-            val v0 = exo.volume
-            val steps = 40
-            val outMs = SEEK_FADE_OUT_MS / steps
-            val inMs = SEEK_FADE_IN_MS / steps
-            for (i in 1..steps) {
-                // Courbe en puissance : le niveau baisse d'abord doucement,
-                // la chute est ainsi perçue comme régulière
-                val x = 1f - i.toFloat() / steps
-                exo.volume = v0 * x * x
-                delay(outMs)
-            }
-            exo.seekTo((d * frac).toLong())
-            for (i in 1..steps) {
-                val x = i.toFloat() / steps
-                exo.volume = v0 * x * x
-                delay(inMs)
-            }
-            exo.volume = v0
-            persistState()
+        // Vrai fondu croisé : le passage qu'on quitte continue sur le second
+        // lecteur pendant que le principal se replace et remonte.
+        val uri = currentTrack.value?.uri
+        if (uri != null) {
+            handOffTail(uri, exo.currentPosition, SEEK_CROSSFADE_MS)
         }
+        exo.seekTo((d * frac).toLong())
+        fadeGain = 0f
+        applyVolume()
+        fadeInMain(SEEK_CROSSFADE_MS)
+        persistState()
+    }
+
+    /**
+     * Fondu croisé vers le morceau suivant : la fin du morceau en cours est
+     * confiée au second lecteur, et le principal démarre le suivant tout de
+     * suite. Les deux se croisent réellement, il n'y a plus de blanc.
+     */
+    private fun crossfadeToNext() {
+        val uri = currentTrack.value?.uri ?: return
+        handOffTail(uri, exo.currentPosition, CROSSFADE_MS)
+        exo.seekToNextMediaItem()
+        fadeGain = 0f
+        applyVolume()
+        fadeInMain(CROSSFADE_MS)
     }
 
     // -------------------------------------------------- volume / EQ / sommeil
@@ -658,6 +784,8 @@ object PlayerCore {
         var v = normGain(currentTrack.value)
         val rem = sleepRemainingMs.value
         if (rem != null && rem < 30_000L) v *= (rem / 30_000f).coerceIn(0f, 1f)
+        // Fondu d'entrée en cours : il s'applique par-dessus tout le reste
+        v *= fadeGain
         exo.volume = v.coerceIn(0f, 1f)
     }
 
@@ -738,6 +866,7 @@ object PlayerCore {
     /** Pré-écoute du « meilleur passage » d'un morceau. */
     fun playPreview(t: Track) {
         cancelAutoNext()
+        stopTail()
         stopDjIfNeeded()
         mode.value = PlayerMode.NORMAL
         clearPlanState()
@@ -1073,6 +1202,24 @@ object PlayerCore {
     /** Mémorise de quoi enchaîner (appelé au lancement d'un mix). */
     fun setMixSpec(spec: MixSpec?) {
         mixSpec = spec
+    }
+
+    /**
+     * Coupe net la queue du morceau précédent et rétablit le volume : à
+     * utiliser dès que l'utilisateur reprend la main (nouvelle lecture,
+     * morceau suivant demandé), un fondu ne doit jamais survivre au geste
+     * qui le rend caduc.
+     */
+    fun stopTail() {
+        tailJob?.cancel()
+        tailJob = null
+        releaseTail()
+        seekJob?.cancel()
+        seekJob = null
+        if (fadeGain != 1f) {
+            fadeGain = 1f
+            if (initialized) applyVolume()
+        }
     }
 
     /** Annule un enchaînement en cours (l'utilisateur reprend la main). */
