@@ -425,8 +425,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 com.pulsemix.app.library.TagFixer.searchCandidatesBySound(track)
             manualTagResults.value = res
             if (res.isEmpty()) {
+                // Dire précisément ce qui a manqué : empreinte inconnue,
+                // clé refusée, quota, ou reconnue sans titre rattaché.
                 manualTagError.value =
                     com.pulsemix.app.library.TagFixer.lastError.value
+                        ?: com.pulsemix.app.library.AcoustId.lastFailureExplanation()
                         ?: "Aucune correspondance sonore : ce morceau n'est " +
                         "sans doute pas dans la base AcoustID."
             }

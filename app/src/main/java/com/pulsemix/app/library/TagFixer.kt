@@ -332,7 +332,7 @@ object TagFixer {
         val ctx = appContext ?: return SoundOutcome.NOT_FOUND
         val fp = AcoustId.fingerprint(ctx, t.uri, t.durationMs)
             ?: return SoundOutcome.NOT_FOUND
-        val cands = AcoustId.lookup(fp.first, fp.second)
+        val cands = AcoustId.lookup(fp)
         val best = pickBest(cands, t.durationMs) ?: return SoundOutcome.NOT_FOUND
         if (best.title.isBlank()) return SoundOutcome.NOT_FOUND
         return when {
@@ -386,7 +386,7 @@ object TagFixer {
                 "Impossible de décoder l'audio pour calculer l'empreinte."
             return emptyList()
         }
-        return AcoustId.lookup(fp.first, fp.second)
+        return AcoustId.lookup(fp)
     }
 
     /** Valide une proposition : applique à la bibliothèque (pas au fichier). */
