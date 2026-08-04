@@ -709,17 +709,44 @@ object PlayerCore {
             if (switched) return
             switched = true
             val v0 = exo.volume
-            var eff = fadeMs
-            if (withTail) {
+            if (!withTail) {
+                releaseTail()
+                fadeGain = 0f
+                applyVolume()
+                onSwitch()
+                fadeInMain(fadeMs)
+                return
+            }
+            autoScope.launch(Dispatchers.Main) {
+                var eff = fadeMs
                 try {
                     // Surtout PAS de seek ici : le lecteur vient d'être mis
                     // en tampon à cette position précise, l'en déplacer le
                     // ferait recharger et il resterait muet le temps du
                     // rechargement — soit exactement le silence qu'on veut
-                    // éviter. Le léger retard pris pendant la préparation
-                    // est bien moins gênant qu'une coupure.
-                    player.volume = v0
+                    // éviter.
+                    //
+                    // « Prêt » ne veut pas dire « audible » : entre play() et
+                    // la première goutte de son, la sortie audio met quelques
+                    // dizaines de millisecondes à s'amorcer. Couper le lecteur
+                    // principal tout de suite ouvrait donc un petit trou. On
+                    // lance donc la queue EN MUET et on attend qu'elle avance
+                    // vraiment — preuve qu'elle sort du son — avant de
+                    // basculer. Pendant ce temps le morceau en cours continue
+                    // normalement, et comme la queue est muette on n'entend
+                    // pas les deux en même temps.
+                    player.volume = 0f
                     player.play()
+                    val start = player.currentPosition
+                    var waited = 0L
+                    while (waited < 500L && player.currentPosition <= start) {
+                        delay(20L)
+                        waited += 20L
+                        // Un geste de l'utilisateur a pu congédier la queue
+                        // entre-temps : ne pas toucher un lecteur libéré.
+                        if (exoTail !== player) return@launch
+                    }
+                    player.volume = v0
                     // Le fondu ne doit pas déborder de la fin du fichier :
                     // le son s'arrêterait net avant d'avoir fini de sortir.
                     val remain = player.duration - player.currentPosition
@@ -729,16 +756,14 @@ object PlayerCore {
                 } catch (_: Exception) {
                     releaseTail()
                 }
-            } else {
-                releaseTail()
+                // Le volume tombe AVANT le saut : sinon le morceau d'arrivée se
+                // ferait entendre à plein volume le temps d'un souffle.
+                fadeGain = 0f
+                applyVolume()
+                onSwitch()
+                fadeInMain(eff)
+                if (exoTail != null) fadeOutTail(player, v0, eff)
             }
-            // Le volume tombe AVANT le saut : sinon le morceau d'arrivée se
-            // ferait entendre à plein volume le temps d'un souffle.
-            fadeGain = 0f
-            applyVolume()
-            onSwitch()
-            fadeInMain(eff)
-            if (exoTail != null) fadeOutTail(player, v0, eff)
         }
 
         player.addListener(object : Player.Listener {
