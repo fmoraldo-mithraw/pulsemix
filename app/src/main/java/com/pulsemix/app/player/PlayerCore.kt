@@ -234,8 +234,12 @@ object PlayerCore {
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying.value = playing
-                // La queue du morceau précédent ne doit pas jouer seule
-                if (!playing) stopTail()
+                // La queue du morceau précédent ne doit pas jouer seule —
+                // mais SEULEMENT si la lecture est vraiment arrêtée. Un
+                // saut met le lecteur en tampon, donc `playing` retombe à
+                // faux alors que l'intention de jouer demeure : couper là
+                // tuait le fondu à l'instant même où il commençait.
+                if (!playing && !exo.playWhenReady) stopTail()
                 if (mode.value == PlayerMode.DJ) mixer.setPaused(!playing)
                 persistState()
                 notifyWidgets()
@@ -334,7 +338,7 @@ object PlayerCore {
                     if (crossfade.value && d > 0 && isPlaying.value &&
                         exo.hasNextMediaItem() && exoTail == null &&
                         currentTrack.value?.uri != crossfadedFrom &&
-                        d - exo.currentPosition in 1..CROSSFADE_MS
+                        d - exo.currentPosition in 1..(CROSSFADE_MS + CROSSFADE_LEAD_MS)
                     ) {
                         crossfadedFrom = currentTrack.value?.uri
                         crossfadeToNext()
@@ -651,10 +655,17 @@ object PlayerCore {
     @Volatile private var fadeGain = 1f
 
     /** Durée d'un fondu croisé entre deux morceaux. */
-    private const val CROSSFADE_MS = 5_000L
+    private const val CROSSFADE_MS = 10_000L
 
     /** Durée du fondu croisé lors d'un déplacement sur la barre. */
-    private const val SEEK_CROSSFADE_MS = 6_000L
+    private const val SEEK_CROSSFADE_MS = 10_000L
+
+    /**
+     * Marge de déclenchement : ouvrir le fichier et remplir son tampon
+     * prend un instant, et le fondu ne commence qu'après. Sans cette
+     * avance, il déborderait de la fin du morceau et serait tronqué.
+     */
+    private const val CROSSFADE_LEAD_MS = 2_000L
 
     /** Pas des rampes de volume : 25 ms, inaudible et peu coûteux. */
     private const val FADE_STEP_MS = 25L
@@ -701,10 +712,12 @@ object PlayerCore {
             var eff = fadeMs
             if (withTail) {
                 try {
-                    // La lecture a avancé pendant la préparation : reprendre
-                    // là où elle en est réellement, sans quoi on réentendrait
-                    // le passage écoulé entre-temps.
-                    player.seekTo(exo.currentPosition)
+                    // Surtout PAS de seek ici : le lecteur vient d'être mis
+                    // en tampon à cette position précise, l'en déplacer le
+                    // ferait recharger et il resterait muet le temps du
+                    // rechargement — soit exactement le silence qu'on veut
+                    // éviter. Le léger retard pris pendant la préparation
+                    // est bien moins gênant qu'une coupure.
                     player.volume = v0
                     player.play()
                     // Le fondu ne doit pas déborder de la fin du fichier :
@@ -719,9 +732,11 @@ object PlayerCore {
             } else {
                 releaseTail()
             }
-            onSwitch()
+            // Le volume tombe AVANT le saut : sinon le morceau d'arrivée se
+            // ferait entendre à plein volume le temps d'un souffle.
             fadeGain = 0f
             applyVolume()
+            onSwitch()
             fadeInMain(eff)
             if (exoTail != null) fadeOutTail(player, v0, eff)
         }
