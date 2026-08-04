@@ -335,6 +335,29 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixAll(store) }
     }
 
+    /** Vrai pendant une remise à zéro de la base de tags. */
+    val tagResetting = com.pulsemix.app.library.TagFixer.resetting
+
+    /** Message affiché à la fin d'une remise à zéro. */
+    val tagResetMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    fun clearTagResetMessage() {
+        tagResetMessage.value = null
+    }
+
+    /**
+     * Efface toutes les corrections de tags, automatiques comme manuelles :
+     * chaque morceau retrouve le titre et l'artiste de son fichier.
+     */
+    fun resetAllTags() {
+        viewModelScope.launch {
+            val n = com.pulsemix.app.library.TagFixer.resetAll(store)
+            tagResetMessage.value =
+                if (n > 0) "$n morceaux remis aux tags de leurs fichiers."
+                else "Aucun tag à remettre : la bibliothèque suit déjà les fichiers."
+        }
+    }
+
     /** Reprend la vérification depuis zéro, y compris les morceaux déjà vus. */
     fun recheckAllTags() {
         viewModelScope.launch {

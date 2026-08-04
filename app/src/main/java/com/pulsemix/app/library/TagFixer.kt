@@ -195,8 +195,121 @@ object TagFixer {
     /** Nombre de morceaux déjà examinés — affiché dans l'écran Tags. */
     val checkedCount = MutableStateFlow(0)
 
+    /** Vrai pendant une remise à zéro (l'écran Tags le dit autrement). */
+    val resetting = MutableStateFlow(false)
+
     private fun markChecked(uri: String) {
         if (checked.add(uri)) checkedCount.value = checked.size
+    }
+
+    /**
+     * Remet la base de tags à zéro : plus aucune correction, ni automatique
+     * ni faite à la main. Chaque morceau retrouve le titre et l'artiste
+     * inscrits dans son fichier.
+     *
+     * Deux passes, dans cet ordre :
+     *
+     *  1. Les corrections dont on connaît l'origine sont défaites. Si
+     *     l'option « écrire les tags dans les fichiers » est active, le
+     *     fichier lui-même est réécrit avec son tag d'origine — sinon la
+     *     seconde passe le relirait et rétablirait la correction.
+     *  2. Tous les morceaux voient leur titre et leur artiste relus dans le
+     *     fichier. C'est le seul recours pour ceux dont l'historique est
+     *     perdu (il ne garde que les [APPLIED_MAX] dernières corrections),
+     *     et ça remet d'aplomb tout ce que la première passe a raté.
+     *
+     * Les données d'analyse (BPM, tonalité, meilleur passage) ne sont pas
+     * touchées : rien à réanalyser.
+     *
+     * @return le nombre de morceaux dont les tags ont changé.
+     */
+    suspend fun resetAll(store: TrackStore): Int = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext 0
+        if (_progress.value != null) return@withContext 0
+        stopRequested = false
+        resetting.value = true
+        val undo = applied.value
+        val all = store.tracks.value
+        val total = undo.size + all.size
+        var done = 0
+        var changed = 0
+        _progress.value = Triple(0, total, 0)
+        // Interrompre ne doit pas effacer l'historique de ce qui n'a pas
+        // encore été défait : ces corrections deviendraient irrattrapables.
+        var undone = 0
+        try {
+            // 1. Défaire les corrections connues, fichiers compris
+            for (s in undo) {
+                if (stopRequested) break
+                undone++
+                if (s.oldTitle.isNotBlank()) {
+                    store.update(s.uri) {
+                        it.copy(title = s.oldTitle, artist = s.oldArtist)
+                    }
+                    if (writeToFiles.value) {
+                        TagWriter.write(ctx, s.uri, s.oldTitle, s.oldArtist)
+                    }
+                }
+                _progress.value = Triple(++done, total, changed)
+            }
+            // 2. Relire les tags dans les fichiers, seule vérité restante
+            for (t in all) {
+                if (stopRequested) break
+                val meta = readFileTags(ctx, t.uri)
+                if (meta != null) {
+                    val (title, artist) = meta
+                    val current = store.get(t.uri)
+                    if (current != null &&
+                        (current.title != title || current.artist != artist)
+                    ) {
+                        store.update(t.uri) { it.copy(title = title, artist = artist) }
+                        changed++
+                    }
+                }
+                _progress.value = Triple(++done, total, changed)
+            }
+        } finally {
+            resetting.value = false
+            pending.value = emptyList()
+            applied.value = if (stopRequested) undo.drop(undone) else emptyList()
+            checked.clear()
+            checkedCount.value = 0
+            lastError.value = null
+            save()
+            store.save()
+            _progress.value = null
+        }
+        changed
+    }
+
+    /**
+     * Titre et artiste tels qu'ils sont écrits dans le fichier. Le nom du
+     * fichier sert de titre de repli, comme au scan, pour qu'un morceau
+     * sans tag ne se retrouve pas sans nom.
+     */
+    private fun readFileTags(ctx: Context, uri: String): Pair<String, String>? {
+        val mmr = android.media.MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(ctx, android.net.Uri.parse(uri))
+            val fallback = androidx.documentfile.provider.DocumentFile
+                .fromSingleUri(ctx, android.net.Uri.parse(uri))?.name
+                ?.substringBeforeLast('.')
+                .orEmpty()
+            val title = mmr.extractMetadata(
+                android.media.MediaMetadataRetriever.METADATA_KEY_TITLE
+            )?.takeIf { it.isNotBlank() } ?: fallback.takeIf { it.isNotBlank() }
+            val artist = mmr.extractMetadata(
+                android.media.MediaMetadataRetriever.METADATA_KEY_ARTIST
+            )?.takeIf { it.isNotBlank() }.orEmpty()
+            if (title == null) null else title to artist
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                mmr.release()
+            } catch (_: Exception) {
+            }
+        }
     }
 
     /** Oublie les morceaux déjà examinés : le passage suivant reprend tout. */

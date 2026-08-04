@@ -158,6 +158,57 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     // « Chercher » d'une proposition incertaine)
     var manualAuto by remember { mutableStateOf(false) }
     var pickTrack by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
+    val writeToFiles by vm.writeTagsToFiles.collectAsStateWithLifecycle()
+    val resetMessage by vm.tagResetMessage.collectAsStateWithLifecycle()
+
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Tout remettre à zéro ?") },
+            text = {
+                val surLesFichiers = if (writeToFiles) {
+                    "Comme l'option « écrire les tags dans les fichiers » est " +
+                        "active, les fichiers eux-mêmes sont réécrits avec " +
+                        "leurs tags d'origine. C'est long : un fichier est " +
+                        "recopié par correction à défaire."
+                } else {
+                    "Les fichiers audio ne sont pas touchés."
+                }
+                Text(
+                    "Toutes les corrections de tags sont effacées — celles " +
+                        "trouvées automatiquement comme celles que tu as " +
+                        "faites à la main. Chaque morceau retrouve le titre " +
+                        "et l'artiste inscrits dans son fichier.\n\n" +
+                        surLesFichiers + "\n\n" +
+                        "Les analyses (BPM, tonalité, meilleur passage) sont " +
+                        "conservées : rien à réanalyser."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmReset = false
+                    vm.resetAllTags()
+                }) {
+                    Text("Tout remettre à zéro", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReset = false }) { Text("Annuler") }
+            }
+        )
+    }
+
+    resetMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { vm.clearTagResetMessage() },
+            title = { Text("Remise à zéro terminée") },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { vm.clearTagResetMessage() }) { Text("OK") }
+            }
+        )
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         SubHeader("Tags en ligne", onBack)
@@ -202,9 +253,11 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             }
         } else {
             val (done, total, applied) = p
+            val resetting by vm.tagResetting.collectAsStateWithLifecycle()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Recherche : $done/$total — $applied corrigés auto",
+                    if (resetting) "Remise à zéro : $done/$total — $applied rétablis"
+                    else "Recherche : $done/$total — $applied corrigés auto",
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.weight(1f)
                 )
@@ -227,6 +280,18 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             onClick = { pickTrack = true },
             enabled = tracks.isNotEmpty()
         ) { Text("Corriger un morceau…") }
+
+        if (prog == null) {
+            TextButton(
+                onClick = { confirmReset = true },
+                enabled = tracks.isNotEmpty()
+            ) {
+                Text(
+                    "Tout remettre à zéro…",
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
 
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
