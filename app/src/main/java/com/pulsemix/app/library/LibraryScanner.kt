@@ -72,7 +72,7 @@ object LibraryScanner {
                 if (roots.isEmpty()) return@withContext
                 val files = ArrayList<DocumentFile>()
                 for (root in roots) walk(root, files, 0)
-                val audioFiles = files.filter { isAudio(it) }
+                val audioFiles = convertUnplayable(context, files.filter { isAudio(it) })
 
                 val uris = audioFiles.map { it.uri.toString() }.toSet()
                 store.retainOnly(uris)
@@ -348,6 +348,42 @@ object LibraryScanner {
             if (f.isDirectory) walk(f, out, depth + 1)
             else if (f.isFile) out.add(f)
         }
+    }
+
+    /**
+     * Les WMA ne sont lisibles par aucun Android standard (ni le conteneur
+     * ASF ni le codec ne sont fournis). Ceux que ce téléphone ne sait pas
+     * décoder sont convertis une fois en M4A à côté de l'original, et c'est
+     * la conversion qui entre dans la bibliothèque — sinon ils s'y
+     * ajouteraient pour rester muets.
+     */
+    private fun convertUnplayable(
+        context: Context,
+        files: List<DocumentFile>
+    ): List<DocumentFile> {
+        val wma = files.filter { WmaConverter.isWma(it.name ?: "") }
+        if (wma.isEmpty()) return files
+        val byName = files.mapNotNull { it.name }.toHashSet()
+        val out = files.toMutableList()
+        for (f in wma) {
+            if (stopRequested) break
+            val name = f.name ?: continue
+            // Converti lors d'un passage précédent : ne garder que la copie
+            if (WmaConverter.convertedName(name) in byName) {
+                out.remove(f)
+                continue
+            }
+            // Certains appareils savent lire le WMA : ne pas convertir pour rien
+            if (WmaConverter.playable(context, f.uri)) continue
+            _progress.value = Progress(0, 0, "Conversion de $name…")
+            val parent = f.parentFile ?: continue
+            val converted = WmaConverter.convert(context, f, parent)
+            if (converted != null) {
+                out.remove(f)
+                out.add(converted)
+            }
+        }
+        return out
     }
 
     private fun isAudio(doc: DocumentFile): Boolean {
