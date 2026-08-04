@@ -354,14 +354,14 @@ object TagFixer {
                 writeTagsIfEnabled(
                     t.uri, best.title, best.artist.ifBlank { t.artist }
                 )
-                applied.value = (
-                    listOf(
-                        Suggestion(
-                            t.uri, t.title, t.artist,
-                            best.title, best.artist, best.score
-                        )
-                    ) + applied.value
-                ).take(APPLIED_MAX)
+                applied.value = AppliedTags.record(
+                    applied.value,
+                    Suggestion(
+                        t.uri, t.title, t.artist,
+                        best.title, best.artist, best.score
+                    ),
+                    APPLIED_MAX
+                )
                 pending.value = pending.value.filter { it.uri != t.uri }
                 return true
             }
