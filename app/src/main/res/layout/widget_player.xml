@@ -1,114 +1,197 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Widget lecteur : pochette, titre, artiste, transport. -->
+<!--
+  Widget lecteur, dessiné pour tenir sur UNE case de haut.
+
+  Ergonomie : les commandes prennent toute la hauteur de la ligne, ce qui
+  donne des zones tactiles franches là où la hauteur disponible interdit
+  les 48 dp habituels ; le play est plus large que ses voisins (c'est le
+  geste le plus fréquent) et ils sont espacés pour éviter les fautes de
+  frappe. Les widgets n'acceptent pas de curseur que l'on glisse : la barre
+  est donc découpée en zones tactiles, chacune renvoyant à sa position.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="horizontal"
+    android:orientation="vertical"
     android:background="@drawable/widget_bg"
-    android:padding="12dp"
-    android:gravity="center_vertical">
-
-    <ImageView
-        android:id="@+id/widget_art"
-        android:layout_width="64dp"
-        android:layout_height="64dp"
-        android:background="@drawable/widget_art_bg"
-        android:scaleType="centerCrop"
-        android:src="@drawable/ic_widget_note"
-        android:contentDescription="@string/widget_artwork" />
+    android:paddingStart="8dp"
+    android:paddingEnd="6dp"
+    android:paddingTop="4dp"
+    android:paddingBottom="3dp">
 
     <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginStart="12dp"
-        android:orientation="vertical">
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:baselineAligned="false">
+
+        <ImageView
+            android:id="@+id/widget_art"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:background="@drawable/widget_art_bg"
+            android:scaleType="centerCrop"
+            android:src="@drawable/ic_widget_note"
+            android:contentDescription="@string/widget_artwork" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginStart="9dp"
+            android:layout_marginEnd="2dp"
+            android:orientation="vertical"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/widget_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#B497FF"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="@string/widget_nothing" />
+
+            <TextView
+                android:id="@+id/widget_artist"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#A9A2C4"
+                android:textSize="11sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="@string/widget_tap_to_open" />
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/widget_prev"
+            android:layout_width="38dp"
+            android:layout_height="match_parent"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_widget_prev"
+            android:contentDescription="@string/widget_prev" />
+
+        <ImageView
+            android:id="@+id/widget_toggle"
+            android:layout_width="46dp"
+            android:layout_height="match_parent"
+            android:padding="6dp"
+            android:scaleType="fitCenter"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_widget_play"
+            android:contentDescription="@string/widget_play" />
+
+        <ImageView
+            android:id="@+id/widget_next"
+            android:layout_width="38dp"
+            android:layout_height="match_parent"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_widget_next"
+            android:contentDescription="@string/widget_next" />
 
         <TextView
-            android:id="@+id/widget_title"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:id="@+id/widget_mix"
+            android:layout_width="wrap_content"
+            android:layout_height="26dp"
+            android:layout_marginStart="6dp"
+            android:gravity="center"
+            android:minWidth="38dp"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:background="@drawable/widget_chip"
             android:textColor="#B497FF"
-            android:textSize="15sp"
+            android:textSize="11sp"
             android:textStyle="bold"
-            android:maxLines="1"
-            android:ellipsize="end"
-            android:text="@string/widget_nothing" />
+            android:text="@string/widget_mix" />
 
         <TextView
-            android:id="@+id/widget_artist"
+            android:id="@+id/widget_dj"
+            android:layout_width="wrap_content"
+            android:layout_height="26dp"
+            android:layout_marginStart="4dp"
+            android:gravity="center"
+            android:minWidth="32dp"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:background="@drawable/widget_chip"
+            android:textColor="#8AE0C8"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:text="@string/widget_dj" />
+    </LinearLayout>
+
+    <!-- Progression : la barre affiche, les zones au-dessus reçoivent le
+         toucher. Elles débordent volontairement au-dessus et au-dessous du
+         trait, sans quoi viser 6 dp de haut serait un exercice de patience. -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="16dp">
+
+        <ProgressBar
+            android:id="@+id/widget_progress"
+            style="?android:attr/progressBarStyleHorizontal"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#A9A2C4"
-            android:textSize="12sp"
-            android:maxLines="1"
-            android:ellipsize="end"
-            android:text="@string/widget_tap_to_open" />
+            android:layout_height="5dp"
+            android:layout_gravity="center_vertical"
+            android:max="1000"
+            android:progress="0"
+            android:progressTint="#B497FF"
+            android:progressBackgroundTint="#3A3357" />
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
+            android:layout_height="match_parent"
+            android:orientation="horizontal"
+            android:baselineAligned="false">
 
-            <ImageView
-                android:id="@+id/widget_prev"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="36dp"
-                android:padding="6dp"
-                android:src="@drawable/ic_widget_prev"
-                android:contentDescription="@string/widget_prev" />
-
-            <ImageView
-                android:id="@+id/widget_toggle"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="36dp"
-                android:padding="6dp"
-                android:src="@drawable/ic_widget_play"
-                android:contentDescription="@string/widget_play" />
-
-            <ImageView
-                android:id="@+id/widget_next"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="36dp"
-                android:padding="6dp"
-                android:src="@drawable/ic_widget_next"
-                android:contentDescription="@string/widget_next" />
-
-            <ImageView
-                android:id="@+id/widget_open"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="36dp"
-                android:padding="6dp"
-                android:src="@drawable/ic_widget_open"
-                android:contentDescription="@string/widget_open" />
-
-            <!-- Lancer un enchaînement sans ouvrir l'appli -->
-            <TextView
-                android:id="@+id/widget_mix"
-                android:layout_width="0dp"
-                android:layout_weight="1.1"
-                android:layout_height="36dp"
-                android:gravity="center"
-                android:textColor="#B497FF"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:text="@string/widget_mix" />
-
-            <TextView
-                android:id="@+id/widget_dj"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="36dp"
-                android:gravity="center"
-                android:textColor="#8AE0C8"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:text="@string/widget_dj" />
+            <View android:id="@+id/seek0" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek1" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek2" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek3" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek4" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek5" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek6" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek7" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek8" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek9" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek10" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek11" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek12" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek13" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek14" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek15" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek16" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek17" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek18" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
+            <View android:id="@+id/seek19" android:layout_width="0dp"
+                android:layout_weight="1" android:layout_height="match_parent" />
         </LinearLayout>
-    </LinearLayout>
+    </FrameLayout>
 </LinearLayout>

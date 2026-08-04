@@ -186,6 +186,7 @@ object PlayerCore {
     private lateinit var stateStore: PlaybackStateStore
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lastSaveMs = 0L
+    private var lastWidgetTickMs = 0L
 
     fun init(context: Context) {
         if (initialized) return
@@ -356,6 +357,14 @@ object PlayerCore {
                     System.currentTimeMillis() - lastSaveMs > 5_000
                 ) {
                     persistState()
+                }
+                // Barre de progression des widgets : toutes les 3 s, assez
+                // pour qu'elle avance visiblement sans marteler le système
+                if (isPlaying.value &&
+                    System.currentTimeMillis() - lastWidgetTickMs > 3_000
+                ) {
+                    lastWidgetTickMs = System.currentTimeMillis()
+                    notifyWidgets()
                 }
                 handler.postDelayed(this, 500)
             }
@@ -586,6 +595,11 @@ object PlayerCore {
 
     private var seekJob: Job? = null
 
+    // Déplacement dans un morceau (hors DJ) : ~6 s au total, la sortie plus
+    // franche que l'arrivée pour que le geste reste lisible
+    private const val SEEK_FADE_OUT_MS = 2_400L
+    private const val SEEK_FADE_IN_MS = 3_600L
+
     /**
      * Déplacement demandé à la barre de progression, une fois le doigt
      * relâché. On n'y saute pas sèchement : le son descend, se replace, et
@@ -602,18 +616,27 @@ object PlayerCore {
         if (d <= 0) return
         seekJob?.cancel()
         seekJob = autoScope.launch(Dispatchers.Main) {
+            // Transition longue, à l'image d'une jonction DJ : le morceau
+            // s'éloigne, se replace, et revient. Un seul lecteur ne peut pas
+            // se superposer à lui-même — le fondu descendant/montant en est
+            // l'équivalent le plus proche (le moteur DJ, lui, fait un vrai
+            // crossfade, cf. DjMixer.requestSeek).
             val v0 = exo.volume
-            val steps = 10
-            // Descente rapide (le geste doit rester direct)
+            val steps = 40
+            val outMs = SEEK_FADE_OUT_MS / steps
+            val inMs = SEEK_FADE_IN_MS / steps
             for (i in 1..steps) {
-                exo.volume = v0 * (1f - i.toFloat() / steps)
-                delay(14)
+                // Courbe en puissance : le niveau baisse d'abord doucement,
+                // la chute est ainsi perçue comme régulière
+                val x = 1f - i.toFloat() / steps
+                exo.volume = v0 * x * x
+                delay(outMs)
             }
             exo.seekTo((d * frac).toLong())
-            // Remontée un peu plus lente : l'arrivée est ainsi moins abrupte
             for (i in 1..steps) {
-                exo.volume = v0 * i.toFloat() / steps
-                delay(22)
+                val x = i.toFloat() / steps
+                exo.volume = v0 * x * x
+                delay(inMs)
             }
             exo.volume = v0
             persistState()

@@ -60,10 +60,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // compatibles, coupe franche quand le calage est impossible.
         const val FADE_LOCKED_HARMONIC_S = 18.0
         const val FADE_CUT_S = 6.0
-        // Déplacement dans le morceau : transition courte vers le même
-        // morceau repris ailleurs (assez longue pour ne pas claquer, assez
-        // brève pour que le geste reste direct)
-        const val SEEK_FADE_S = 2.5
+        // Déplacement dans le morceau : vraie transition vers le même
+        // morceau repris ailleurs, de la longueur d'une jonction entre deux
+        // morceaux — on ne saute pas, on se déplace en musique.
+        const val SEEK_FADE_S = 8.0
         const val TAIL_MS = 16_000L
         // Durée minimale d'un passage en mode DJ : en dessous, on n'a pas
         // le temps d'apprécier le morceau entre deux transitions.

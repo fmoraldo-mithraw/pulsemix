@@ -27,7 +27,21 @@ object PulseWidgets {
     const val ACTION_PLAY_AT = "com.pulsemix.app.widget.PLAY_AT"
     const val ACTION_MIX = "com.pulsemix.app.widget.MIX"
     const val ACTION_DJ = "com.pulsemix.app.widget.DJ"
+    const val ACTION_SEEK = "com.pulsemix.app.widget.SEEK"
     const val EXTRA_INDEX = "index"
+    const val EXTRA_FRACTION = "fraction"
+
+    /**
+     * Zones tactiles de la barre de progression. Un widget ne peut pas
+     * contenir de curseur que l'on glisse : la barre est donc découpée en
+     * tranches, chacune renvoyant à sa position dans le morceau.
+     */
+    val SEEK_ZONES = intArrayOf(
+        R.id.seek0, R.id.seek1, R.id.seek2, R.id.seek3, R.id.seek4,
+        R.id.seek5, R.id.seek6, R.id.seek7, R.id.seek8, R.id.seek9,
+        R.id.seek10, R.id.seek11, R.id.seek12, R.id.seek13, R.id.seek14,
+        R.id.seek15, R.id.seek16, R.id.seek17, R.id.seek18, R.id.seek19
+    )
 
     /**
      * Construit puis lance un enchaînement sans passer par l'appli :
@@ -166,6 +180,31 @@ class PlayerWidget : AppWidgetProvider() {
         views.setOnClickPendingIntent(
             R.id.widget_dj, PulseWidgets.action(context, cls, PulseWidgets.ACTION_DJ)
         )
+
+        // Progression : la barre avance, et chaque tranche est tactile —
+        // toucher la barre déplace la lecture, en transition.
+        views.setProgressBar(
+            R.id.widget_progress, 1000,
+            (PlayerCore.progress.value * 1000).toInt().coerceIn(0, 1000),
+            false
+        )
+        val zones = PulseWidgets.SEEK_ZONES
+        for ((i, id) in zones.withIndex()) {
+            // Milieu de la tranche : toucher le début de la barre revient
+            // au début du morceau, la fin à sa fin
+            val frac = (i + 0.5f) / zones.size
+            views.setOnClickPendingIntent(
+                id,
+                PendingIntent.getBroadcast(
+                    context, 2000 + i,
+                    Intent(context, cls)
+                        .setAction(PulseWidgets.ACTION_SEEK)
+                        .putExtra(PulseWidgets.EXTRA_FRACTION, frac),
+                    PendingIntent.FLAG_UPDATE_CURRENT or
+                        PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+        }
         views.setOnClickPendingIntent(R.id.widget_title, PulseWidgets.openApp(context))
         views.setOnClickPendingIntent(R.id.widget_art, PulseWidgets.openApp(context))
         manager.updateAppWidget(ids, views)
@@ -203,6 +242,12 @@ class PlayerWidget : AppWidgetProvider() {
             PulseWidgets.ACTION_NEXT -> {
                 Graph.init(context)
                 PlayerCore.next()
+            }
+            PulseWidgets.ACTION_SEEK -> {
+                Graph.init(context)
+                PlayerCore.seekToFractionSmooth(
+                    intent.getFloatExtra(PulseWidgets.EXTRA_FRACTION, 0f)
+                )
             }
             PulseWidgets.ACTION_MIX, PulseWidgets.ACTION_DJ -> {
                 val dj = intent.action == PulseWidgets.ACTION_DJ
