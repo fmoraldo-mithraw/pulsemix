@@ -73,7 +73,6 @@
             android:layout_height="match_parent"
             android:padding="8dp"
             android:scaleType="fitCenter"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_widget_prev"
             android:contentDescription="@string/widget_prev" />
 
@@ -83,7 +82,6 @@
             android:layout_height="match_parent"
             android:padding="6dp"
             android:scaleType="fitCenter"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_widget_play"
             android:contentDescription="@string/widget_play" />
 
@@ -93,7 +91,6 @@
             android:layout_height="match_parent"
             android:padding="8dp"
             android:scaleType="fitCenter"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_widget_next"
             android:contentDescription="@string/widget_next" />
 
@@ -137,7 +134,7 @@
 
         <ProgressBar
             android:id="@+id/widget_progress"
-            style="?android:attr/progressBarStyleHorizontal"
+            style="@android:style/Widget.ProgressBar.Horizontal"
             android:layout_width="match_parent"
             android:layout_height="5dp"
             android:layout_gravity="center_vertical"
@@ -152,45 +149,45 @@
             android:orientation="horizontal"
             android:baselineAligned="false">
 
-            <View android:id="@+id/seek0" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek0" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek1" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek1" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek2" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek2" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek3" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek3" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek4" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek4" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek5" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek5" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek6" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek6" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek7" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek7" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek8" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek8" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek9" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek9" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek10" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek10" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek11" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek11" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek12" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek12" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek13" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek13" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek14" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek14" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek15" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek15" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek16" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek16" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek17" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek17" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek18" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek18" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
-            <View android:id="@+id/seek19" android:layout_width="0dp"
+            <FrameLayout android:id="@+id/seek19" android:layout_width="0dp"
                 android:layout_weight="1" android:layout_height="match_parent" />
         </LinearLayout>
     </FrameLayout>
