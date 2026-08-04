@@ -82,44 +82,46 @@ class TrackStore(context: Context) {
         }
     }
 
-    private suspend fun load() = mutex.withLock {
-        // Le fichier principal peut être tronqué (processus tué en pleine
-        // écriture avant que save() ne devienne atomique, disque plein…).
-        // On retombe alors sur la version précédente plutôt que de démarrer
-        // avec une bibliothèque vide et des dossiers perdus.
-        if (readInto(file)) return@withLock
-        if (readInto(bakFile)) {
-            try {
-                bakFile.copyTo(file, overwrite = true)
-            } catch (_: Exception) {
+    private suspend fun load() {
+        mutex.withLock {
+            // Le fichier principal peut être tronqué (processus tué en
+            // pleine écriture, disque plein…). On retombe alors sur la
+            // version précédente plutôt que de démarrer avec une
+            // bibliothèque vide et des dossiers perdus.
+            //
+            // Le résultat de l'analyse est retenu au passage : relire un
+            // JSON d'un mégaoctet deux fois au démarrage ne servirait à rien.
+            var parsed: Pair<List<String>, List<Track>>? = null
+            val text = SafeFile.readWithFallback(file, bakFile) { candidate ->
+                parsed = parse(candidate)
+                parsed != null
             }
+            if (text == null) return@withLock
+            val p = parsed ?: return@withLock
+            _folders.value = p.first
+            _tracks.value = SortedTracks.sorted(p.second)
         }
     }
 
-    /** @return true si le fichier a été lu et la bibliothèque remplie. */
-    private fun readInto(src: File): Boolean {
-        if (!src.exists() || src.length() == 0L) return false
-        return try {
-            val root = JSONObject(src.readText())
-            val folderList = ArrayList<String>()
-            val fArr = root.optJSONArray("folders")
-            if (fArr != null) {
-                for (i in 0 until fArr.length()) folderList.add(fArr.getString(i))
-            } else {
-                // ancien format : un seul dossier
-                root.optString("folder").takeIf { it.isNotEmpty() }?.let { folderList.add(it) }
-            }
-            val arr = root.optJSONArray("tracks") ?: JSONArray()
-            val list = ArrayList<Track>(arr.length())
-            for (i in 0 until arr.length()) {
-                list.add(trackFromJson(arr.getJSONObject(i)))
-            }
-            _folders.value = folderList
-            _tracks.value = list.sortedBy { sortKey(it) }
-            true
-        } catch (_: Exception) {
-            false
+    /** @return (dossiers, morceaux), ou null si le JSON est inexploitable. */
+    private fun parse(text: String): Pair<List<String>, List<Track>>? = try {
+        val root = JSONObject(text)
+        val folderList = ArrayList<String>()
+        val fArr = root.optJSONArray("folders")
+        if (fArr != null) {
+            for (i in 0 until fArr.length()) folderList.add(fArr.getString(i))
+        } else {
+            // ancien format : un seul dossier
+            root.optString("folder").takeIf { it.isNotEmpty() }?.let { folderList.add(it) }
         }
+        val arr = root.optJSONArray("tracks") ?: JSONArray()
+        val list = ArrayList<Track>(arr.length())
+        for (i in 0 until arr.length()) {
+            list.add(trackFromJson(arr.getJSONObject(i)))
+        }
+        folderList to list
+    } catch (_: Exception) {
+        null
     }
 
     /** Le contenu de la bibliothèque en JSON (fichier local et sauvegarde SAF). */
@@ -140,26 +142,9 @@ class TrackStore(context: Context) {
      * laissait un fichier tronqué — et la bibliothèque entière disparaissait
      * au démarrage suivant, dossiers et analyses compris.
      */
-    suspend fun save() = mutex.withLock {
-        try {
-            val bytes = exportJson().toByteArray()
-            tmpFile.writeBytes(bytes)
-            // Contrôle de taille : un disque plein tronque sans rien lever,
-            // et remplacer la bibliothèque par un fichier court serait pire
-            // que de ne pas la sauvegarder du tout.
-            if (tmpFile.length() != bytes.size.toLong()) {
-                tmpFile.delete()
-                return@withLock
-            }
-            if (file.exists()) {
-                bakFile.delete()
-                if (!file.renameTo(bakFile)) file.copyTo(bakFile, overwrite = true)
-            }
-            if (!tmpFile.renameTo(file)) {
-                tmpFile.copyTo(file, overwrite = true)
-                tmpFile.delete()
-            }
-        } catch (_: Exception) {
+    suspend fun save() {
+        mutex.withLock {
+            SafeFile.writeAtomic(file, tmpFile, bakFile, exportJson().toByteArray())
         }
     }
 
@@ -235,51 +220,14 @@ class TrackStore(context: Context) {
      * part de la lenteur du premier scan.
      */
     fun put(track: Track) = synchronized(this) {
-        val list = _tracks.value.toMutableList()
-        val idx = list.indexOfFirst { it.uri == track.uri }
-        if (idx >= 0) {
-            // Le rang ne bouge que si le titre change (correction de tag)
-            if (sortKey(list[idx]) == sortKey(track)) {
-                list[idx] = track
-                _tracks.value = list
-                return@synchronized
-            }
-            list.removeAt(idx)
-        }
-        list.add(insertionPoint(list, sortKey(track)), track)
-        _tracks.value = list
+        _tracks.value = SortedTracks.put(_tracks.value, track)
     }
 
     fun get(uri: String): Track? = _tracks.value.firstOrNull { it.uri == uri }
 
     /** Modifie un morceau en place (favori, exclusion, BPM corrigé…). */
     fun update(uri: String, transform: (Track) -> Track) = synchronized(this) {
-        val list = _tracks.value
-        val idx = list.indexOfFirst { it.uri == uri }
-        if (idx < 0) return@synchronized
-        val updated = transform(list[idx])
-        val out = list.toMutableList()
-        if (sortKey(list[idx]) == sortKey(updated)) {
-            out[idx] = updated
-        } else {
-            // Titre corrigé : le morceau change de place dans la liste
-            out.removeAt(idx)
-            out.add(insertionPoint(out, sortKey(updated)), updated)
-        }
-        _tracks.value = out
-    }
-
-    private fun sortKey(t: Track): String = t.title.lowercase()
-
-    /** Premier rang où insérer [key] pour garder la liste triée. */
-    private fun insertionPoint(list: List<Track>, key: String): Int {
-        var lo = 0
-        var hi = list.size
-        while (lo < hi) {
-            val mid = (lo + hi) ushr 1
-            if (sortKey(list[mid]) <= key) lo = mid + 1 else hi = mid
-        }
-        return lo
+        _tracks.value = SortedTracks.update(_tracks.value, uri, transform)
     }
 
     /** Retire un morceau de la bibliothèque (clé = uri). */

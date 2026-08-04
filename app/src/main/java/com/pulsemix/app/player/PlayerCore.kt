@@ -79,6 +79,9 @@ object PlayerCore {
 
     fun setCrossfadeSeconds(seconds: Int) {
         val s = seconds.coerceIn(3, 15)
+        // Le curseur rappelle à chaque image : sans ce garde-fou, on
+        // écrivait dans les préférences soixante fois par seconde.
+        if (s == crossfadeSeconds.value) return
         crossfadeSeconds.value = s
         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
             .edit().putInt("crossfadeSeconds", s).apply()
@@ -642,13 +645,21 @@ object PlayerCore {
     }
 
     fun next() {
+        // Tout changement voulu rend caduque la marque « fin déjà fondue » :
+        // si on revient plus tard sur ce morceau, sa fin doit l'être encore.
+        crossfadedFrom = null
         if (mode.value == PlayerMode.DJ) {
             stopTail()
             mixer.nextPhase()
             return
         }
+        // La phase visée est arrêtée MAINTENANT, pas au moment de la
+        // bascule : entre les deux il s'écoule le temps d'ouvrir le fichier,
+        // pendant lequel la lecture a pu changer de phase toute seule — on
+        // en aurait sauté deux.
+        val targetPhase = currentPhase.value + 1
         crossfadeTo(exo.hasNextMediaItem()) {
-            if (mode.value == PlayerMode.MIX) jumpToPhase(currentPhase.value + 1)
+            if (mode.value == PlayerMode.MIX) jumpToPhase(targetPhase)
             else exo.seekToNextMediaItem()
         }
     }
@@ -662,13 +673,13 @@ object PlayerCore {
             mixer.prevPhase()
             return
         }
-        crossfadeTo(exo.currentPosition > 3000 || exo.hasPreviousMediaItem()) {
+        // Décidé au moment du geste, pour la même raison que dans next()
+        val targetPhase = currentPhase.value - 1
+        val restart = exo.currentPosition > 3000
+        crossfadeTo(restart || exo.hasPreviousMediaItem()) {
             when (mode.value) {
-                PlayerMode.MIX -> jumpToPhase(currentPhase.value - 1)
-                else -> {
-                    if (exo.currentPosition > 3000) exo.seekTo(0)
-                    else exo.seekToPreviousMediaItem()
-                }
+                PlayerMode.MIX -> jumpToPhase(targetPhase)
+                else -> if (restart) exo.seekTo(0) else exo.seekToPreviousMediaItem()
             }
         }
     }

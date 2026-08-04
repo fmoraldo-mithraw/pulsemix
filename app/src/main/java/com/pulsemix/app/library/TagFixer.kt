@@ -118,11 +118,13 @@ object TagFixer {
     /** Cherche les tags d'un seul morceau (proposition ou application sûre). */
     suspend fun fixOne(store: TrackStore, track: Track): Unit =
         withContext(Dispatchers.IO) {
+            lastError.value = null
             when (handleBySound(store, track)) {
                 SoundOutcome.APPLIED, SoundOutcome.DONE -> {}
                 SoundOutcome.NOT_FOUND -> handle(store, track)
             }
-            markChecked(track.uri)
+            // Réseau tombé : ne pas classer le morceau comme examiné
+            if (lastError.value == null) markChecked(track.uri)
             save()
             store.save()
         }
@@ -161,12 +163,17 @@ object TagFixer {
             try {
                 for ((i, t) in list.withIndex()) {
                     if (stopRequested) break
+                    lastError.value = null
                     when (handleBySound(store, t)) {
                         SoundOutcome.APPLIED -> applied++
                         SoundOutcome.DONE -> {}
                         SoundOutcome.NOT_FOUND -> if (handle(store, t)) applied++
                     }
-                    markChecked(t.uri)
+                    // Un morceau n'est « examiné » que s'il a vraiment pu
+                    // l'être. Sans ce garde-fou, une coupure réseau marquait
+                    // toute la bibliothèque comme faite en quelques secondes,
+                    // et il fallait tout revérifier à la main.
+                    if (lastError.value == null) markChecked(t.uri)
                     _progress.value = Triple(i + 1, list.size, applied)
                     // Sauvegarde régulière : un passage interrompu (appli
                     // tuée, batterie) ne doit pas être entièrement à refaire

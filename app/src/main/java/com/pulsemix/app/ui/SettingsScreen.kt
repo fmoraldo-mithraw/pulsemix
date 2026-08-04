@@ -74,7 +74,7 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
             )
             Slider(
                 value = seconds.toFloat(),
-                onValueChange = { vm.setCrossfadeSeconds(it.toInt()) },
+                onValueChange = { vm.setCrossfadeSeconds(kotlin.math.round(it).toInt()) },
                 valueRange = 3f..15f,
                 steps = 11
             )
