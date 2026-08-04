@@ -238,14 +238,14 @@ object TagFixer {
                     writeTagsIfEnabled(
                         t.uri, best.title, best.artist.ifBlank { t.artist }
                     )
-                    applied.value = (
-                        listOf(
-                            Suggestion(
-                                t.uri, t.title, t.artist,
-                                best.title, best.artist, best.score
-                            )
-                        ) + applied.value
-                        ).take(APPLIED_MAX)
+                    applied.value = AppliedTags.record(
+                        applied.value,
+                        Suggestion(
+                            t.uri, t.title, t.artist,
+                            best.title, best.artist, best.score
+                        ),
+                        APPLIED_MAX
+                    )
                     pending.value = pending.value.filter { it.uri != t.uri }
                     SoundOutcome.APPLIED
                 }
@@ -284,7 +284,7 @@ object TagFixer {
             )
         }
         writeTagsIfEnabled(s.uri, s.newTitle, s.newArtist)
-        applied.value = (listOf(s) + applied.value).take(APPLIED_MAX)
+        applied.value = AppliedTags.record(applied.value, s, APPLIED_MAX)
         pending.value = pending.value.filter { it.uri != s.uri }
         markChecked(s.uri)
         save()
@@ -413,10 +413,11 @@ object TagFixer {
             it.copy(title = c.title, artist = c.artist.ifBlank { it.artist })
         }
         writeTagsIfEnabled(t.uri, c.title, c.artist.ifBlank { t.artist })
-        applied.value = (
-            listOf(Suggestion(t.uri, t.title, t.artist, c.title, c.artist, c.score)) +
-                applied.value
-            ).take(APPLIED_MAX)
+        applied.value = AppliedTags.record(
+            applied.value,
+            Suggestion(t.uri, t.title, t.artist, c.title, c.artist, c.score),
+            APPLIED_MAX
+        )
         pending.value = pending.value.filter { it.uri != t.uri }
         markChecked(t.uri)
         save()
@@ -430,7 +431,7 @@ object TagFixer {
         if (s.oldTitle.isBlank()) return
         store.update(s.uri) { it.copy(title = s.oldTitle, artist = s.oldArtist) }
         writeTagsIfEnabled(s.uri, s.oldTitle, s.oldArtist)
-        applied.value = applied.value - s
+        applied.value = AppliedTags.remove(applied.value, s.uri)
         // Correction annulée : le morceau redevient à examiner
         checked.remove(s.uri)
         checkedCount.value = checked.size
@@ -449,11 +450,15 @@ object TagFixer {
         if (newTitle == t.title && newArtist == t.artist) return
         store.update(t.uri) { it.copy(title = newTitle, artist = newArtist) }
         writeTagsIfEnabled(t.uri, newTitle, newArtist)
-        applied.value = (
-            listOf(Suggestion(t.uri, t.title, t.artist, newTitle, newArtist, 0)) +
-                applied.value
-            ).take(APPLIED_MAX)
+        applied.value = AppliedTags.record(
+            applied.value,
+            Suggestion(t.uri, t.title, t.artist, newTitle, newArtist, 0),
+            APPLIED_MAX
+        )
         pending.value = pending.value.filter { it.uri != t.uri }
+        // Tags saisis à la main : le morceau est réglé, un balayage
+        // ultérieur n'a pas à revenir dessus.
+        markChecked(t.uri)
         save()
     }
 
@@ -652,7 +657,7 @@ object TagFixer {
 
     private fun load() {
         pending.value = readList(file())
-        applied.value = readList(appliedFile())
+        applied.value = AppliedTags.collapse(readList(appliedFile()))
         checked.clear()
         checked.addAll(readChecked())
         checkedCount.value = checked.size
