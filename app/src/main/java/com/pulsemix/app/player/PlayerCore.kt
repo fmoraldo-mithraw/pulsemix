@@ -664,9 +664,8 @@ object PlayerCore {
      * puis s'efface sur [fadeMs]. Le lecteur principal est libre de partir
      * ailleurs immédiatement.
      */
-    private fun handOffTail(uri: String, fromMs: Long, fadeMs: Long) {
-        tailJob?.cancel()
-        releaseTail()
+    private fun handOffTail(uri: String, fromMs: Long, fadeMs: Long, onSwitch: () -> Unit) {
+        stopTail()
         val player = try {
             ExoPlayer.Builder(appContext).build().apply {
                 // Surtout pas de focus audio : il est déjà tenu par le
@@ -680,20 +679,78 @@ object PlayerCore {
                 )
                 setMediaItem(MediaItem.fromUri(uri))
                 seekTo(fromMs)
-                volume = exo.volume
+                // Muet et à l'arrêt tant qu'il n'a pas de quoi jouer :
+                // ouvrir le fichier et remplir son tampon prend un instant,
+                // et c'est précisément ce délai qui coupait le son.
+                volume = 0f
+                playWhenReady = false
                 prepare()
-                play()
             }
         } catch (_: Exception) {
+            onSwitch()
             return
         }
         exoTail = player
-        val v0 = player.volume
+        var switched = false
+
+        /** Bascule : les deux sources jouent, puis se croisent. */
+        fun switchNow(withTail: Boolean) {
+            if (switched) return
+            switched = true
+            val v0 = exo.volume
+            var eff = fadeMs
+            if (withTail) {
+                try {
+                    // La lecture a avancé pendant la préparation : reprendre
+                    // là où elle en est réellement, sans quoi on réentendrait
+                    // le passage écoulé entre-temps.
+                    player.seekTo(exo.currentPosition)
+                    player.volume = v0
+                    player.play()
+                    // Le fondu ne doit pas déborder de la fin du fichier :
+                    // le son s'arrêterait net avant d'avoir fini de sortir.
+                    val remain = player.duration - player.currentPosition
+                    if (remain > 0) eff = min(fadeMs, max(600L, remain - 250L))
+                } catch (_: Exception) {
+                    releaseTail()
+                }
+            } else {
+                releaseTail()
+            }
+            onSwitch()
+            fadeGain = 0f
+            applyVolume()
+            fadeInMain(eff)
+            if (exoTail != null) fadeOutTail(player, v0, eff)
+        }
+
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY) switchNow(withTail = true)
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                // Pas de fondu possible : basculer quand même, sèchement
+                switchNow(withTail = false)
+            }
+        })
+
+        // Garde-fou : un fichier qui met trop longtemps à s'ouvrir ne doit
+        // pas retarder indéfiniment le geste de l'utilisateur.
+        autoScope.launch(Dispatchers.Main) {
+            delay(2_500)
+            switchNow(withTail = false)
+        }
+    }
+
+    /** Éteint progressivement la source sortante (equal-power). */
+    private fun fadeOutTail(player: ExoPlayer, v0: Float, fadeMs: Long) {
+        tailJob?.cancel()
         tailJob = autoScope.launch(Dispatchers.Main) {
             val steps = (fadeMs / FADE_STEP_MS).toInt().coerceAtLeast(1)
             for (i in 1..steps) {
-                // Equal-power : la somme des deux sources reste d'un niveau
-                // constant, sans le creux d'un fondu linéaire
+                // La somme des deux sources garde un niveau constant, là où
+                // un fondu linéaire creuse au milieu
                 val x = i.toFloat() / steps
                 player.volume = v0 * kotlin.math.cos(x * (Math.PI / 2).toFloat())
                 delay(FADE_STEP_MS)
@@ -742,31 +799,33 @@ object PlayerCore {
         }
         val d = exo.duration
         if (d <= 0) return
+        val target = (d * frac).toLong()
         // Vrai fondu croisé : le passage qu'on quitte continue sur le second
-        // lecteur pendant que le principal se replace et remonte.
+        // lecteur pendant que le principal se replace et remonte. Le
+        // déplacement lui-même n'a lieu qu'une fois ce second lecteur prêt à
+        // prendre le relais, sinon il y aurait un blanc.
         val uri = currentTrack.value?.uri
-        if (uri != null) {
-            handOffTail(uri, exo.currentPosition, SEEK_CROSSFADE_MS)
+        if (uri == null || !crossfade.value) {
+            exo.seekTo(target)
+            persistState()
+            return
         }
-        exo.seekTo((d * frac).toLong())
-        fadeGain = 0f
-        applyVolume()
-        fadeInMain(SEEK_CROSSFADE_MS)
-        persistState()
+        handOffTail(uri, exo.currentPosition, SEEK_CROSSFADE_MS) {
+            exo.seekTo(target)
+            persistState()
+        }
     }
 
     /**
      * Fondu croisé vers le morceau suivant : la fin du morceau en cours est
-     * confiée au second lecteur, et le principal démarre le suivant tout de
-     * suite. Les deux se croisent réellement, il n'y a plus de blanc.
+     * confiée au second lecteur, et le principal démarre le suivant dès que
+     * ce relais est en place. Les deux se croisent réellement.
      */
     private fun crossfadeToNext() {
         val uri = currentTrack.value?.uri ?: return
-        handOffTail(uri, exo.currentPosition, CROSSFADE_MS)
-        exo.seekToNextMediaItem()
-        fadeGain = 0f
-        applyVolume()
-        fadeInMain(CROSSFADE_MS)
+        handOffTail(uri, exo.currentPosition, CROSSFADE_MS) {
+            exo.seekToNextMediaItem()
+        }
     }
 
     // -------------------------------------------------- volume / EQ / sommeil
