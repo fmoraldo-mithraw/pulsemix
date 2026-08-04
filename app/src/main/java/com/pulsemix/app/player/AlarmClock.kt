@@ -153,7 +153,7 @@ object AlarmClock {
      * [minutes] minutes (sans toucher à l'alarme quotidienne).
      */
     fun snooze(context: Context, minutes: Int) {
-        stopRinging()
+        stopRinging(context)
         val at = System.currentTimeMillis() + minutes * 60_000L
         val am = context.getSystemService(AlarmManager::class.java)
         if (am != null) {
@@ -176,20 +176,81 @@ object AlarmClock {
 
     /** Arrêter le réveil : musique coupée, notification retirée. */
     fun dismiss(context: Context) {
-        stopRinging()
+        stopRinging(context)
         context.getSystemService(AlarmManager::class.java)
             ?.cancel(snoozePending(context))
         AlarmService.stop(context)
     }
 
-    /** Coupe la musique et la montée du volume en cours. */
-    private fun stopRinging() {
+    /** Coupe la musique, la sonnerie de secours et la montée du volume. */
+    private fun stopRinging(context: Context) {
         rampJob?.cancel()
         rampJob = null
+        stopFallbackRingtone()
         try {
             PlayerCore.stopPlayback()
         } catch (_: Exception) {
         }
+        restoreVolume(context)
+    }
+
+    // ------------------------------------------------- volume média rendu
+
+    /** Volume média d'avant le réveil, à rendre une fois celui-ci coupé. */
+    private var volumeBeforeAlarm: Int? = null
+
+    /**
+     * Le réveil pousse le volume média jusqu'au maximum du téléphone. Sans
+     * cette remise en état, la première vidéo ou le premier morceau joué
+     * après l'avoir coupé partait à fond.
+     */
+    private fun restoreVolume(context: Context) {
+        val v = volumeBeforeAlarm ?: return
+        volumeBeforeAlarm = null
+        try {
+            context.getSystemService(AudioManager::class.java)
+                ?.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+        } catch (_: Exception) {
+        }
+    }
+
+    // ------------------------------------------------ sonnerie de secours
+
+    private var fallback: android.media.Ringtone? = null
+
+    /**
+     * Bibliothèque vide, dossier devenu illisible, fichiers introuvables :
+     * le réveil restait muet, précisément dans le cas où l'on compte le
+     * plus dessus. On sonne alors avec l'alarme du système.
+     */
+    private fun startFallbackRingtone(context: Context) {
+        try {
+            val uri = android.media.RingtoneManager.getActualDefaultRingtoneUri(
+                context, android.media.RingtoneManager.TYPE_ALARM
+            ) ?: android.media.RingtoneManager.getActualDefaultRingtoneUri(
+                context, android.media.RingtoneManager.TYPE_RINGTONE
+            ) ?: return
+            val r = android.media.RingtoneManager.getRingtone(context, uri) ?: return
+            // Sur le canal « alarme » et non « média » : cette sonnerie de
+            // secours ne doit dépendre ni de la montée progressive ni du
+            // volume média, qui peut être au minimum.
+            r.audioAttributes = android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            if (android.os.Build.VERSION.SDK_INT >= 28) r.isLooping = true
+            r.play()
+            fallback = r
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun stopFallbackRingtone() {
+        try {
+            fallback?.stop()
+        } catch (_: Exception) {
+        }
+        fallback = null
     }
 
     /**
@@ -237,8 +298,11 @@ object AlarmClock {
                 val store = com.pulsemix.app.Graph.store
                 store.loaded.first { it }
                 val all = store.tracks.value.filter { !it.excluded }
-                if (all.isEmpty()) return@launch
                 startRamp(context)
+                if (all.isEmpty()) {
+                    startFallbackRingtone(context)
+                    return@launch
+                }
                 when (val id = mixId.value) {
                     "douce" -> {
                         PlayerCore.playDouce(all, 0.35f)
@@ -287,6 +351,10 @@ object AlarmClock {
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val start = (max / 8).coerceAtLeast(1)
         try {
+            // Mémorisé avant d'y toucher : le réveil rendra ce volume
+            if (volumeBeforeAlarm == null) {
+                volumeBeforeAlarm = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            }
             am.setStreamVolume(AudioManager.STREAM_MUSIC, start, 0)
         } catch (_: Exception) {
             return

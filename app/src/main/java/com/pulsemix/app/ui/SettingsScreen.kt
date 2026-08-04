@@ -57,13 +57,28 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         val crossfade by vm.crossfade.collectAsStateWithLifecycle()
         SettingSwitch(
             title = "Fondu entre les morceaux",
-            subtitle = "Les morceaux se chevauchent vraiment sur 5 s au lieu " +
-                "de s'enchaîner sec, en lecture classique comme en mix. " +
-                "S'applique aussi aux déplacements sur la barre. Le mode DJ a " +
-                "ses propres transitions et n'est pas concerné.",
+            subtitle = "Les morceaux se chevauchent vraiment au lieu de " +
+                "s'enchaîner sec, en lecture classique comme en mix. " +
+                "S'applique au bouton « suivant » et aux déplacements sur la " +
+                "barre. Le mode DJ a ses propres transitions et n'est pas " +
+                "concerné.",
             checked = crossfade,
             onChange = { vm.setCrossfade(it) }
         )
+        if (crossfade) {
+            val seconds by vm.crossfadeSeconds.collectAsStateWithLifecycle()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Durée du fondu : $seconds s",
+                style = MaterialTheme.typography.labelMedium
+            )
+            Slider(
+                value = seconds.toFloat(),
+                onValueChange = { vm.setCrossfadeSeconds(it.toInt()) },
+                valueRange = 3f..15f,
+                steps = 11
+            )
+        }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         SettingSwitch(

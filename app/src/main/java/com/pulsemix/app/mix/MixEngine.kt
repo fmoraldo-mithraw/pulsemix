@@ -451,7 +451,7 @@ object MixEngine {
      * Bien Qui Fait Mal (Official Video).mp3 » et « le bien qui fait
      * mal.flac » donnent la même chose.
      */
-    private fun normTitle(raw: String): String {
+    internal fun normTitle(raw: String): String {
         var s = raw.lowercase().trim()
         s = s.replace(
             Regex("\\.(mp3|m4a|aac|flac|ogg|oga|opus|wav|wma|mp4)$"), ""
@@ -479,7 +479,7 @@ object MixEngine {
      * son titre réduit, seul ou avec l'artiste, et par sa durée — deux
      * copies du même enregistrement durent la même chose.
      */
-    private fun dupKeys(t: Track): List<String> {
+    internal fun dupKeys(t: Track): List<String> {
         val title = normTitle(t.title)
         if (title.isEmpty() || title == "?") return listOf(t.uri)
         val keys = ArrayList<String>(3)

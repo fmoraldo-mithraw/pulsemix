@@ -43,6 +43,21 @@ class PulseMixApp : Application() {
      */
     private fun logLastExitReasons() {
         if (android.os.Build.VERSION.SDK_INT < 30) return
+        // Hors du thread principal : cette lecture ramène jusqu'à trois
+        // traces d'ANR de 20 Ko et écrit deux fichiers, à chaque lancement.
+        // La faire dans onCreate retardait l'affichage du premier écran.
+        Thread {
+            try {
+                android.os.Process.setThreadPriority(
+                    android.os.Process.THREAD_PRIORITY_BACKGROUND
+                )
+            } catch (_: Exception) {
+            }
+            collectExitReasons()
+        }.start()
+    }
+
+    private fun collectExitReasons() {
         try {
             val am = getSystemService(android.app.ActivityManager::class.java) ?: return
             val exits = am.getHistoricalProcessExitReasons(packageName, 0, 3)

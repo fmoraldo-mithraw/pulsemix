@@ -79,6 +79,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.core:core-ktx:1.13.1")
 
+    // Tests unitaires (JVM) des fonctions pures : moteur de mix, empreintes
+    testImplementation("junit:junit:4.13.2")
+
     // Import depuis YouTube / SoundCloud / Bandcamp… : yt-dlp embarqué
     // (fork maintenu par le dev de Seal, publié sur Maven Central).
     // ffmpeg est nécessaire pour l'extraction/conversion audio (-x).

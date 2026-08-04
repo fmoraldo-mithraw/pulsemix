@@ -176,16 +176,30 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
 
         val p = prog
         if (p == null) {
+            val done by vm.tagChecked.collectAsStateWithLifecycle()
+            val remaining = (tracks.size - done).coerceAtLeast(0)
             Button(
                 onClick = { vm.fetchTagsAll() },
-                enabled = tracks.isNotEmpty()
-            ) { Text("Vérifier toute la bibliothèque (${tracks.size})") }
+                enabled = remaining > 0
+            ) {
+                Text(
+                    if (done > 0) "Vérifier les $remaining restants"
+                    else "Vérifier toute la bibliothèque (${tracks.size})"
+                )
+            }
             Text(
-                "~1 morceau par seconde (limite du service). Tu peux aussi " +
-                    "vérifier un seul morceau depuis son menu ⋮.",
+                "~1 morceau par seconde (limite du service). Les morceaux " +
+                    "déjà examinés sont sautés : une relance ne refait que " +
+                    "les nouveaux. Tu peux aussi vérifier un seul morceau " +
+                    "depuis son menu ⋮.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
             )
+            if (done > 0) {
+                TextButton(onClick = { vm.recheckAllTags() }) {
+                    Text("Tout revérifier depuis zéro ($done déjà examinés)")
+                }
+            }
         } else {
             val (done, total, applied) = p
             Row(verticalAlignment = Alignment.CenterVertically) {

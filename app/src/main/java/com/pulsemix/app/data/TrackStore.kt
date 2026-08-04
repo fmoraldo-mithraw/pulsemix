@@ -69,6 +69,12 @@ class TrackStore(context: Context) {
     private val _loaded = MutableStateFlow(false)
     val loaded: StateFlow<Boolean> = _loaded
 
+    // Déclarés AVANT le bloc init : load() y accède depuis la coroutine
+    // qu'il lance, et des propriétés encore non initialisées à cet instant
+    // seraient nulles.
+    private val tmpFile = File(appContext.filesDir, "library.json.tmp")
+    private val bakFile = File(appContext.filesDir, "library.json.bak")
+
     init {
         scope.launch {
             load()
@@ -77,9 +83,24 @@ class TrackStore(context: Context) {
     }
 
     private suspend fun load() = mutex.withLock {
-        if (!file.exists()) return@withLock
-        try {
-            val root = JSONObject(file.readText())
+        // Le fichier principal peut être tronqué (processus tué en pleine
+        // écriture avant que save() ne devienne atomique, disque plein…).
+        // On retombe alors sur la version précédente plutôt que de démarrer
+        // avec une bibliothèque vide et des dossiers perdus.
+        if (readInto(file)) return@withLock
+        if (readInto(bakFile)) {
+            try {
+                bakFile.copyTo(file, overwrite = true)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** @return true si le fichier a été lu et la bibliothèque remplie. */
+    private fun readInto(src: File): Boolean {
+        if (!src.exists() || src.length() == 0L) return false
+        return try {
+            val root = JSONObject(src.readText())
             val folderList = ArrayList<String>()
             val fArr = root.optJSONArray("folders")
             if (fArr != null) {
@@ -88,14 +109,16 @@ class TrackStore(context: Context) {
                 // ancien format : un seul dossier
                 root.optString("folder").takeIf { it.isNotEmpty() }?.let { folderList.add(it) }
             }
-            _folders.value = folderList
             val arr = root.optJSONArray("tracks") ?: JSONArray()
             val list = ArrayList<Track>(arr.length())
             for (i in 0 until arr.length()) {
                 list.add(trackFromJson(arr.getJSONObject(i)))
             }
-            _tracks.value = list.sortedBy { it.title.lowercase() }
+            _folders.value = folderList
+            _tracks.value = list.sortedBy { sortKey(it) }
+            true
         } catch (_: Exception) {
+            false
         }
     }
 
@@ -110,9 +133,32 @@ class TrackStore(context: Context) {
         return root.toString()
     }
 
+    /**
+     * Écriture atomique : le JSON part d'abord dans un fichier temporaire,
+     * et ne remplace la bibliothèque que complet. La version précédente est
+     * conservée en filet. Sans ça, un processus tué en pleine écriture
+     * laissait un fichier tronqué — et la bibliothèque entière disparaissait
+     * au démarrage suivant, dossiers et analyses compris.
+     */
     suspend fun save() = mutex.withLock {
         try {
-            file.writeText(exportJson())
+            val bytes = exportJson().toByteArray()
+            tmpFile.writeBytes(bytes)
+            // Contrôle de taille : un disque plein tronque sans rien lever,
+            // et remplacer la bibliothèque par un fichier court serait pire
+            // que de ne pas la sauvegarder du tout.
+            if (tmpFile.length() != bytes.size.toLong()) {
+                tmpFile.delete()
+                return@withLock
+            }
+            if (file.exists()) {
+                bakFile.delete()
+                if (!file.renameTo(bakFile)) file.copyTo(bakFile, overwrite = true)
+            }
+            if (!tmpFile.renameTo(file)) {
+                tmpFile.copyTo(file, overwrite = true)
+                tmpFile.delete()
+            }
         } catch (_: Exception) {
         }
     }
@@ -179,19 +225,61 @@ class TrackStore(context: Context) {
         _folders.value = _folders.value.filter { it != uri }
     }
 
-    /** Ajoute ou remplace un morceau (clé = uri). Thread-safe (analyse parallèle). */
+    /**
+     * Ajoute ou remplace un morceau (clé = uri). Thread-safe (analyse
+     * parallèle).
+     *
+     * La liste est tenue triée par insertion plutôt que re-triée en entier :
+     * un scan de 800 morceaux faisait 800 tris de 800 éléments, chacun
+     * rallouant un titre en minuscules par comparaison. C'était une bonne
+     * part de la lenteur du premier scan.
+     */
     fun put(track: Track) = synchronized(this) {
         val list = _tracks.value.toMutableList()
         val idx = list.indexOfFirst { it.uri == track.uri }
-        if (idx >= 0) list[idx] = track else list.add(track)
-        _tracks.value = list.sortedBy { it.title.lowercase() }
+        if (idx >= 0) {
+            // Le rang ne bouge que si le titre change (correction de tag)
+            if (sortKey(list[idx]) == sortKey(track)) {
+                list[idx] = track
+                _tracks.value = list
+                return@synchronized
+            }
+            list.removeAt(idx)
+        }
+        list.add(insertionPoint(list, sortKey(track)), track)
+        _tracks.value = list
     }
 
     fun get(uri: String): Track? = _tracks.value.firstOrNull { it.uri == uri }
 
     /** Modifie un morceau en place (favori, exclusion, BPM corrigé…). */
     fun update(uri: String, transform: (Track) -> Track) = synchronized(this) {
-        _tracks.value = _tracks.value.map { if (it.uri == uri) transform(it) else it }
+        val list = _tracks.value
+        val idx = list.indexOfFirst { it.uri == uri }
+        if (idx < 0) return@synchronized
+        val updated = transform(list[idx])
+        val out = list.toMutableList()
+        if (sortKey(list[idx]) == sortKey(updated)) {
+            out[idx] = updated
+        } else {
+            // Titre corrigé : le morceau change de place dans la liste
+            out.removeAt(idx)
+            out.add(insertionPoint(out, sortKey(updated)), updated)
+        }
+        _tracks.value = out
+    }
+
+    private fun sortKey(t: Track): String = t.title.lowercase()
+
+    /** Premier rang où insérer [key] pour garder la liste triée. */
+    private fun insertionPoint(list: List<Track>, key: String): Int {
+        var lo = 0
+        var hi = list.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (sortKey(list[mid]) <= key) lo = mid + 1 else hi = mid
+        }
+        return lo
     }
 
     /** Retire un morceau de la bibliothèque (clé = uri). */

@@ -122,6 +122,7 @@ object TagFixer {
                 SoundOutcome.APPLIED, SoundOutcome.DONE -> {}
                 SoundOutcome.NOT_FOUND -> handle(store, track)
             }
+            markChecked(track.uri)
             save()
             store.save()
         }
@@ -131,33 +132,71 @@ object TagFixer {
      * d'abord (AcoustID), recherche texte MusicBrainz en repli. Les
      * morceaux les plus cassés — titre commençant par un chiffre et
      * artiste poubelle type « Downloads » — passent en premier.
+     *
+     * @param force true pour tout revérifier, y compris les morceaux déjà
+     * examinés lors d'un passage précédent.
      */
-    suspend fun fixAll(store: TrackStore): Unit = withContext(Dispatchers.IO) {
-        if (_progress.value != null) return@withContext
-        stopRequested = false
-        lastError.value = null
-        val list = store.tracks.value.sortedByDescending {
-            if (it.title.trim().firstOrNull()?.isDigit() == true &&
-                it.artist.isNotBlank() && cleanArtist(it.artist).isBlank()
-            ) 1 else 0
-        }
-        var applied = 0
-        _progress.value = Triple(0, list.size, 0)
-        try {
-            for ((i, t) in list.withIndex()) {
-                if (stopRequested) break
-                when (handleBySound(store, t)) {
-                    SoundOutcome.APPLIED -> applied++
-                    SoundOutcome.DONE -> {}
-                    SoundOutcome.NOT_FOUND -> if (handle(store, t)) applied++
-                }
-                _progress.value = Triple(i + 1, list.size, applied)
+    suspend fun fixAll(store: TrackStore, force: Boolean = false): Unit =
+        withContext(Dispatchers.IO) {
+            if (_progress.value != null) return@withContext
+            stopRequested = false
+            lastError.value = null
+            if (force) {
+                checked.clear()
+                checkedCount.value = 0
             }
-        } finally {
-            save()
-            store.save()
-            _progress.value = null
+            // Déjà examinés lors d'un passage précédent : inutile de
+            // redécoder l'audio et de réinterroger AcoustID pour eux. Sur
+            // une grosse bibliothèque, ça faisait des heures de travail
+            // refait à l'identique à chaque relance.
+            val list = store.tracks.value
+                .filter { it.uri !in checked }
+                .sortedByDescending {
+                    if (it.title.trim().firstOrNull()?.isDigit() == true &&
+                        it.artist.isNotBlank() && cleanArtist(it.artist).isBlank()
+                    ) 1 else 0
+                }
+            var applied = 0
+            _progress.value = Triple(0, list.size, 0)
+            try {
+                for ((i, t) in list.withIndex()) {
+                    if (stopRequested) break
+                    when (handleBySound(store, t)) {
+                        SoundOutcome.APPLIED -> applied++
+                        SoundOutcome.DONE -> {}
+                        SoundOutcome.NOT_FOUND -> if (handle(store, t)) applied++
+                    }
+                    markChecked(t.uri)
+                    _progress.value = Triple(i + 1, list.size, applied)
+                    // Sauvegarde régulière : un passage interrompu (appli
+                    // tuée, batterie) ne doit pas être entièrement à refaire
+                    if ((i + 1) % 20 == 0) {
+                        save()
+                        store.save()
+                    }
+                }
+            } finally {
+                save()
+                store.save()
+                _progress.value = null
+            }
         }
+
+    /** Morceaux déjà examinés (empreinte + recherche), pour ne pas y revenir. */
+    private val checked = HashSet<String>()
+
+    /** Nombre de morceaux déjà examinés — affiché dans l'écran Tags. */
+    val checkedCount = MutableStateFlow(0)
+
+    private fun markChecked(uri: String) {
+        if (checked.add(uri)) checkedCount.value = checked.size
+    }
+
+    /** Oublie les morceaux déjà examinés : le passage suivant reprend tout. */
+    fun resetChecked() {
+        checked.clear()
+        checkedCount.value = 0
+        writeChecked()
     }
 
     // ---------------------------------------------- identification sonore
@@ -240,6 +279,7 @@ object TagFixer {
         writeTagsIfEnabled(s.uri, s.newTitle, s.newArtist)
         applied.value = (listOf(s) + applied.value).take(APPLIED_MAX)
         pending.value = pending.value.filter { it.uri != s.uri }
+        markChecked(s.uri)
         save()
     }
 
@@ -250,6 +290,7 @@ object TagFixer {
 
     fun reject(s: Suggestion) {
         pending.value = pending.value.filter { it.uri != s.uri }
+        markChecked(s.uri)
         save()
     }
 
@@ -370,6 +411,7 @@ object TagFixer {
                 applied.value
             ).take(APPLIED_MAX)
         pending.value = pending.value.filter { it.uri != t.uri }
+        markChecked(t.uri)
         save()
     }
 
@@ -382,6 +424,9 @@ object TagFixer {
         store.update(s.uri) { it.copy(title = s.oldTitle, artist = s.oldArtist) }
         writeTagsIfEnabled(s.uri, s.oldTitle, s.oldArtist)
         applied.value = applied.value - s
+        // Correction annulée : le morceau redevient à examiner
+        checked.remove(s.uri)
+        checkedCount.value = checked.size
         save()
     }
 
@@ -540,6 +585,23 @@ object TagFixer {
 
     private fun file() = java.io.File(appContext!!.filesDir, "tag_suggestions.json")
     private fun appliedFile() = java.io.File(appContext!!.filesDir, "tag_applied.json")
+    private fun checkedFile() = java.io.File(appContext!!.filesDir, "tag_checked.json")
+
+    private fun readChecked(): Set<String> = try {
+        val arr = JSONArray(checkedFile().readText())
+        val set = HashSet<String>(arr.length())
+        for (i in 0 until arr.length()) set.add(arr.getString(i))
+        set
+    } catch (_: Exception) {
+        emptySet()
+    }
+
+    private fun writeChecked() {
+        try {
+            checkedFile().writeText(JSONArray(checked.toList()).toString())
+        } catch (_: Exception) {
+        }
+    }
 
     private fun readList(f: java.io.File): List<Suggestion> = try {
         val arr = JSONArray(f.readText())
@@ -584,10 +646,14 @@ object TagFixer {
     private fun load() {
         pending.value = readList(file())
         applied.value = readList(appliedFile())
+        checked.clear()
+        checked.addAll(readChecked())
+        checkedCount.value = checked.size
     }
 
     private fun save() {
         writeList(file(), pending.value)
         writeList(appliedFile(), applied.value)
+        writeChecked()
     }
 }

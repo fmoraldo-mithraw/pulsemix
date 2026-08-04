@@ -490,7 +490,10 @@ fun PlayerScreen(
     if (showDouceDialog) {
         // Défaut très doux : le quart le plus calme de la bibliothèque
         var softness by remember { mutableFloatStateOf(0.25f) }
-        val matching = vm.softCount(softness)
+        // Mémorisé : ce décompte trie quatre fois toute la bibliothèque, et
+        // il repartait à chaque image tant que le doigt glissait sur le
+        // curseur — sur le thread principal.
+        val matching = remember(softness, tracks) { vm.softCount(softness) }
         val label = when {
             softness <= 0.20f -> "très doux"
             softness <= 0.35f -> "doux"

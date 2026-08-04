@@ -16,10 +16,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Build debug APK
+      - name: Tests unitaires
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Rapport de tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-tests
+          path: app/build/reports/tests/
+
+      - name: Build debug APK
+        run: ./gradlew --no-daemon assembleDebug
 
       - name: Publier l'APK en artefact
         uses: actions/upload-artifact@v4

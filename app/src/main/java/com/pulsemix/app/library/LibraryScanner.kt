@@ -33,8 +33,12 @@ object LibraryScanner {
     private val _progress = MutableStateFlow<Progress?>(null)
     val progress: StateFlow<Progress?> = _progress
 
-    @Volatile
-    private var scanning = false
+    /**
+     * Un seul scan à la fois. Atomique : le drapeau était testé puis posé en
+     * deux temps, et deux lancements rapprochés (ouverture de l'appli +
+     * dossier ajouté) pouvaient passer tous les deux.
+     */
+    private val scanning = java.util.concurrent.atomic.AtomicBoolean(false)
 
     @Volatile
     private var stopRequested = false
@@ -61,8 +65,7 @@ object LibraryScanner {
         restoreBackup: Boolean = true
     ) =
         withContext(Dispatchers.Default) {
-            if (scanning) return@withContext
-            scanning = true
+            if (!scanning.compareAndSet(false, true)) return@withContext
             stopRequested = false
             try {
                 // Affichage immédiat : le parcours des dossiers (SAF) peut
@@ -187,28 +190,39 @@ object LibraryScanner {
                                 // Stop pendant le décodage : ne pas marquer le
                                 // morceau en échec, la reprise le refera.
                                 if (stopRequested && features == null) return@withPermit
+                                // Réglages faits à la main : ils survivent à
+                                // l'analyse. Sans ça, un BPM corrigé ou un
+                                // meilleur passage choisi sur un morceau pas
+                                // encore analysé était écrasé au scan suivant.
+                                val lockedBpm = existing?.takeIf { it.bpmLocked }
+                                val lockedSeg = existing?.takeIf { it.segmentLocked }
                                 val track = if (features != null) {
                                     Track(
                                         uri = uriStr,
                                         title = meta.first,
                                         artist = meta.second,
                                         durationMs = if (features.durationMs > 0) features.durationMs else meta.third,
-                                        bpm = features.bpm,
+                                        bpm = lockedBpm?.bpm ?: features.bpm,
                                         keyName = features.keyName,
                                         camelot = features.camelot,
                                         energyMean = features.energyMean,
                                         energyPeak = features.energyPeak,
                                         centroid = features.centroid,
                                         onsetRate = features.onsetRate,
-                                        bestStartMs = features.bestStartMs,
-                                        segmentMs = features.segmentMs,
-                                        firstBeatMs = features.firstBeatMs,
+                                        bestStartMs =
+                                            lockedSeg?.bestStartMs ?: features.bestStartMs,
+                                        segmentMs =
+                                            lockedSeg?.segmentMs ?: features.segmentMs,
+                                        firstBeatMs =
+                                            lockedSeg?.firstBeatMs ?: features.firstBeatMs,
                                         musicStartMs = features.musicStartMs,
-                                        analyzed = features.bpm > 0f,
+                                        analyzed = lockedBpm != null || features.bpm > 0f,
                                         genre = genre,
                                         genreLocked = existing?.genreLocked == true,
                                         favorite = existing?.favorite == true,
-                                        excluded = existing?.excluded == true
+                                        excluded = existing?.excluded == true,
+                                        bpmLocked = lockedBpm != null,
+                                        segmentLocked = lockedSeg != null
                                     )
                                 } else {
                                     Track(
@@ -216,11 +230,17 @@ object LibraryScanner {
                                         title = meta.first,
                                         artist = meta.second,
                                         durationMs = meta.third,
-                                        analyzed = false,
+                                        bpm = lockedBpm?.bpm ?: 0f,
+                                        bestStartMs = lockedSeg?.bestStartMs ?: 0L,
+                                        segmentMs = lockedSeg?.segmentMs ?: 60_000L,
+                                        firstBeatMs = lockedSeg?.firstBeatMs ?: 0L,
+                                        analyzed = lockedBpm != null,
                                         genre = genre,
                                         genreLocked = existing?.genreLocked == true,
                                         favorite = existing?.favorite == true,
-                                        excluded = existing?.excluded == true
+                                        excluded = existing?.excluded == true,
+                                        bpmLocked = lockedBpm != null,
+                                        segmentLocked = lockedSeg != null
                                     )
                                 }
                                 // Pas de tag genre : déduire du titre ou de la
@@ -243,7 +263,7 @@ object LibraryScanner {
                 for (root in roots) writeFolderBackup(context, root, store)
             } finally {
                 _progress.value = null
-                scanning = false
+                scanning.set(false)
             }
         }
 

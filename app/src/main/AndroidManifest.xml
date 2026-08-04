@@ -106,9 +106,17 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
-        <!-- Réveil matin : sonnerie à l'heure dite + ré-armement au boot -->
+        <!-- Réveil matin : sonnerie à l'heure dite. Non exporté — l'alarme
+             arrive par PendingIntent, délivré au nom de l'application ;
+             l'exporter laisserait une autre appli déclencher le réveil. -->
         <receiver
             android:name=".player.AlarmReceiver"
+            android:exported="false" />
+
+        <!-- Ré-armement après redémarrage : celui-ci doit être exporté pour
+             que le système puisse lui livrer BOOT_COMPLETED. -->
+        <receiver
+            android:name=".player.AlarmBootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

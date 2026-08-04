@@ -126,8 +126,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun playTrack(track: Track) {
         val list = tracks.value
-        val idx = list.indexOfFirst { it.uri == track.uri }.coerceAtLeast(0)
-        PlayerCore.playNormal(list, idx)
+        val idx = list.indexOfFirst { it.uri == track.uri }
+        // Absent de la bibliothèque (fichier externe, morceau supprimé,
+        // liste filtrée) : le jouer seul. Retomber sur l'index 0 lançait
+        // le premier morceau de la bibliothèque à la place du bon.
+        if (idx < 0) PlayerCore.playNormal(listOf(track), 0)
+        else PlayerCore.playNormal(list, idx)
     }
 
     fun playAll() {
@@ -323,9 +327,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Nombre de morceaux déjà examinés par la recherche de tags. */
+    val tagChecked = com.pulsemix.app.library.TagFixer.checkedCount
+
     /** Cherche les tags corrects de toute la bibliothèque (MusicBrainz). */
     fun fetchTagsAll() {
         viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixAll(store) }
+    }
+
+    /** Reprend la vérification depuis zéro, y compris les morceaux déjà vus. */
+    fun recheckAllTags() {
+        viewModelScope.launch {
+            com.pulsemix.app.library.TagFixer.fixAll(store, force = true)
+        }
     }
 
     fun fetchTagsFor(track: Track) {
@@ -531,6 +545,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val crossfade = PlayerCore.crossfade
 
     fun setCrossfade(enabled: Boolean) = PlayerCore.setCrossfade(enabled)
+
+    /** Durée du fondu croisé, en secondes. */
+    val crossfadeSeconds = PlayerCore.crossfadeSeconds
+
+    fun setCrossfadeSeconds(seconds: Int) = PlayerCore.setCrossfadeSeconds(seconds)
 
     /** Supprime définitivement un morceau du disque et de la bibliothèque. */
     fun deleteTrack(track: Track) {

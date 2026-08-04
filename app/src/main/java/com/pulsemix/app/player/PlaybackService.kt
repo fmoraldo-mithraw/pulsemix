@@ -14,6 +14,8 @@ import androidx.media3.session.MediaSessionService
 import androidx.media3.session.MediaStyleNotificationHelper
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import com.pulsemix.app.MainActivity
 import com.pulsemix.app.R
 
@@ -38,6 +40,11 @@ class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
     private var sessionIntent: PendingIntent? = null
+
+    /** Fil d'écriture du journal, à l'écart du thread de lecture. */
+    private val logScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
 
     // Notification média maison : sur certains appareils Media3 ne poste
     // jamais la sienne (onUpdateNotification jamais appelé, cf. service_log).
@@ -116,16 +123,25 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** Journal du service média : service_log.txt (interne + externe,
-     *  comme crash_log.txt — visible dans Android/data/.../files). */
+    /**
+     * Journal du service média : service_log.txt (interne + externe, comme
+     * crash_log.txt — visible dans Android/data/.../files).
+     *
+     * Écrit hors du thread principal : cette trace part à chaque play/pause
+     * et à chaque changement de morceau, et deux écritures disque au beau
+     * milieu du service de lecture faisaient saccader l'interface.
+     */
     private fun svcLog(message: String) {
-        try {
-            for (dir in listOfNotNull(filesDir, getExternalFilesDir(null))) {
-                val f = java.io.File(dir, "service_log.txt")
-                if (f.length() > 64_000) f.delete()
-                f.appendText("${java.util.Date()}: $message\n")
+        val line = "${java.util.Date()}: $message\n"
+        logScope.launch {
+            try {
+                for (dir in listOfNotNull(filesDir, getExternalFilesDir(null))) {
+                    val f = java.io.File(dir, "service_log.txt")
+                    if (f.length() > 64_000) f.delete()
+                    f.appendText(line)
+                }
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
         }
     }
 
@@ -307,6 +323,7 @@ class PlaybackService : MediaSessionService() {
         }
         mediaSession?.release()
         mediaSession = null
+        logScope.cancel()
         super.onDestroy()
     }
 }

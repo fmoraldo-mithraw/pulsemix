@@ -74,6 +74,16 @@ object PlayerCore {
             .edit().putBoolean("crossfade", enabled).apply()
     }
 
+    /** Durée du fondu croisé, en secondes (3 à 15). */
+    val crossfadeSeconds = MutableStateFlow(10)
+
+    fun setCrossfadeSeconds(seconds: Int) {
+        val s = seconds.coerceIn(3, 15)
+        crossfadeSeconds.value = s
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit().putInt("crossfadeSeconds", s).apply()
+    }
+
     /** Égaliseur simple : graves / médiums / aigus en dB (-6..+6). */
     val eqBands = MutableStateFlow(Triple(0f, 0f, 0f))
 
@@ -213,6 +223,7 @@ object PlayerCore {
         skipIntros.value = prefs.getBoolean("skipIntros", false)
         normalizeVolume.value = prefs.getBoolean("normalizeVolume", true)
         crossfade.value = prefs.getBoolean("crossfade", true)
+        crossfadeSeconds.value = prefs.getInt("crossfadeSeconds", 10).coerceIn(3, 15)
         eqBands.value = Triple(
             prefs.getFloat("eqBass", 0f),
             prefs.getFloat("eqMid", 0f),
@@ -563,6 +574,8 @@ object PlayerCore {
         o.put("eqBass", eqBands.value.first.toDouble())
         o.put("eqMid", eqBands.value.second.toDouble())
         o.put("eqTreble", eqBands.value.third.toDouble())
+        o.put("crossfade", crossfade.value)
+        o.put("crossfadeSeconds", crossfadeSeconds.value)
         return o
     }
 
@@ -575,6 +588,10 @@ object PlayerCore {
                 o.optDouble("eqBass", 0.0).toFloat(),
                 o.optDouble("eqMid", 0.0).toFloat(),
                 o.optDouble("eqTreble", 0.0).toFloat()
+            )
+            setCrossfade(o.optBoolean("crossfade", crossfade.value))
+            setCrossfadeSeconds(
+                o.optInt("crossfadeSeconds", crossfadeSeconds.value)
             )
         }
     }
@@ -700,11 +717,11 @@ object PlayerCore {
     /** Gain du fondu d'entrée du lecteur principal (multiplie le volume). */
     @Volatile private var fadeGain = 1f
 
-    /** Durée d'un fondu croisé entre deux morceaux. */
-    private const val CROSSFADE_MS = 10_000L
+    /** Durée d'un fondu croisé entre deux morceaux (réglage utilisateur). */
+    private val CROSSFADE_MS: Long get() = crossfadeSeconds.value * 1_000L
 
     /** Durée du fondu croisé lors d'un déplacement sur la barre. */
-    private const val SEEK_CROSSFADE_MS = 10_000L
+    private val SEEK_CROSSFADE_MS: Long get() = crossfadeSeconds.value * 1_000L
 
     /**
      * Marge de déclenchement : ouvrir le fichier et remplir son tampon

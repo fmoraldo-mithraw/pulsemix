@@ -89,6 +89,15 @@ object PulseWidgets {
         }
     }
 
+    /**
+     * Signature de la file affichée. La barre de progression se rafraîchit
+     * toutes les 3 s ; recharger la liste entière à chaque fois faisait
+     * reconstruire tous ses éléments par le RemoteViewsFactory alors que
+     * seule la barre avait bougé. On ne l'invalide donc que si la file (ou
+     * la place qu'on y occupe) a réellement changé.
+     */
+    private var queueSignature: Int? = null
+
     /** Redessine tous les widgets posés (appelé quand l'état change). */
     fun refresh(context: Context) {
         val app = context.applicationContext
@@ -104,12 +113,27 @@ object PulseWidgets {
                 ComponentName(app, QueueWidget::class.java)
             )
             if (queueIds.isNotEmpty()) {
-                // Invalide les données de la liste puis l'en-tête
-                mgr.notifyAppWidgetViewDataChanged(queueIds, R.id.queue_list)
+                val sig = currentQueueSignature()
+                if (sig != queueSignature) {
+                    queueSignature = sig
+                    mgr.notifyAppWidgetViewDataChanged(queueIds, R.id.queue_list)
+                }
                 QueueWidget().onUpdate(app, mgr, queueIds)
             }
         } catch (_: Exception) {
         }
+    }
+
+    private fun currentQueueSignature(): Int {
+        val core = com.pulsemix.app.player.PlayerCore
+        var h = core.currentTrack.value?.uri.hashCode()
+        for (t in core.queue.value) h = h * 31 + t.uri.hashCode()
+        return h
+    }
+
+    /** Force le rechargement de la liste au prochain [refresh]. */
+    fun invalidateQueue() {
+        queueSignature = null
     }
 
     /** PendingIntent d'une action de transport vers le provider donné. */
