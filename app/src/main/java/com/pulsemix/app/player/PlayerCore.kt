@@ -897,20 +897,26 @@ object PlayerCore {
         get() = 4_000L.coerceAtMost(CROSSFADE_MS + CROSSFADE_LEAD_MS - 3_000L)
 
     /**
-     * Retard de la queue sur le direct au-delà duquel le fondu croisé est
-     * abandonné. La queue reprend le morceau là où il était quand on l'a
-     * préparée ; si sa sortie audio a mis longtemps à s'amorcer, le direct
-     * a continué pendant ce temps, et basculer ferait ré-entendre tout ce
-     * retard.
-     *
-     * Abaissé de 400 à 150 ms : entre les deux, le retour en arrière
-     * s'entendait comme un bégaiement au moment précis où la barre saute
-     * au morceau suivant — la « saccade avant la transition » rapportée en
-     * mix. Sous 150 ms, le chevauchement se fond dans le croisement ;
-     * au-delà, l'arrivée franche d'un quart de seconde est moins voyante
-     * qu'un bout de morceau rejoué.
+     * Écart résiduel (rejoue ou élision) au-delà duquel le fondu croisé est
+     * abandonné au profit d'une arrivée franche. Grâce à la compensation
+     * d'amorçage ([tailStartupLagMs]), le résidu typique est de quelques
+     * dizaines de millisecondes — sous le seuil de fusion de l'oreille ;
+     * ce garde-fou ne joue plus que si l'appareil se comporte bizarrement.
      */
     private const val MAX_TAIL_DRIFT_MS = 150L
+
+    /**
+     * Latence d'amorçage de la sortie audio du second lecteur, mesurée sur
+     * CET appareil : le temps entre play() et la première goutte de son.
+     * La queue est recalée en avance d'autant, pour que son raccord avec le
+     * direct tombe à quelques millisecondes près — c'est ce qui rend la
+     * bascule imperceptible, là où tolérer le retard laissait un bégaiement
+     * et où l'interdire aurait coupé sec.
+     *
+     * Affinée à chaque fondu par moyenne glissante ; la valeur de départ
+     * est l'amorçage typique d'un AudioTrack Android.
+     */
+    @Volatile private var tailStartupLagMs = 120L
 
     /**
      * Confie [uri] à partir de [fromMs] au second lecteur, qui le prolonge
@@ -1012,27 +1018,23 @@ object PlayerCore {
                 var tailAudible = false
                 try {
                     player.volume = 0f
-                    // Recaler la queue sur le direct. Elle a été préparée à la
-                    // position qu'occupait le lecteur principal au moment de la
-                    // demande, mais l'ouverture du fichier prend un instant et
-                    // pendant ce temps le principal a continué d'avancer. La
-                    // laisser là où elle était la ferait rembobiner d'une à
-                    // deux secondes : on réentendrait le passage qu'on vient
-                    // de quitter, remonté à plein volume, avant même que le
-                    // fondu commence. Le fichier est déjà ouvert et son tampon
-                    // couvre largement ce petit saut en avant : le recalage ne
-                    // coûte pratiquement rien.
+                    // Recaler la queue sur le direct — EN AVANCE de la
+                    // latence d'amorçage mesurée sur cet appareil. Elle a été
+                    // préparée à la position qu'occupait le lecteur principal
+                    // au moment de la demande ; entre le seek et la première
+                    // goutte de son, la sortie audio met quelques dizaines de
+                    // millisecondes à s'amorcer, pendant lesquelles le direct
+                    // continue. Sans cette avance, la queue reprenait avec ce
+                    // retard tout entier : un bout déjà entendu rejouait à la
+                    // bascule. Le tampon couvre largement le saut en avant.
                     val live = exo.currentPosition
-                    if (live - player.currentPosition > 120L) player.seekTo(live)
-                    // « Prêt » ne veut pas dire « audible » : entre play() et
-                    // la première goutte de son, la sortie audio met quelques
-                    // dizaines de millisecondes à s'amorcer. Couper le lecteur
-                    // principal tout de suite ouvrait un petit trou. On lance
-                    // donc la queue EN MUET et on attend qu'elle avance
-                    // vraiment — preuve qu'elle sort du son — avant de
-                    // basculer. Pendant ce temps le morceau en cours continue
-                    // normalement, et comme la queue est muette on n'entend
-                    // pas les deux en même temps.
+                    val target = live + tailStartupLagMs
+                    val compensated = target - player.currentPosition > 40L
+                    if (compensated) player.seekTo(target)
+                    // « Prêt » ne veut pas dire « audible » : on lance la
+                    // queue EN MUET et on attend qu'elle avance vraiment —
+                    // preuve qu'elle sort du son — avant de basculer. Pendant
+                    // ce temps le morceau en cours continue normalement.
                     player.play()
                     val start = player.currentPosition
                     var waited = 0L
@@ -1046,15 +1048,21 @@ object PlayerCore {
                         if (exoTail !== player) return@launch
                     }
                     tailAudible = player.currentPosition > start
-                    // Le direct a continué pendant que la queue s'amorçait.
-                    // Si elle a pris trop de retard, basculer ferait
-                    // ré-entendre tout ce qu'il a joué entre-temps — le
-                    // « ça rejoue » entendu à l'usage. On renonce alors au
-                    // fondu croisé : l'arrivée franche est moins bonne, mais
-                    // elle ne revient pas en arrière.
-                    if (tailAudible &&
-                        exo.currentPosition - player.currentPosition > MAX_TAIL_DRIFT_MS
-                    ) {
+                    // Écart résiduel entre le direct et la queue à l'instant
+                    // de la bascule. Positif : un bout rejoue ; négatif : un
+                    // bout est élidé. Compensé, il tombe à quelques dizaines
+                    // de millisecondes — sous le seuil où l'oreille fusionne
+                    // les deux en un seul son.
+                    val residual = exo.currentPosition - player.currentPosition
+                    if (compensated) {
+                        // La latence réelle de CE fondu affine l'estimation
+                        // pour les suivants (moyenne glissante, bornée).
+                        val actual = (residual + tailStartupLagMs).coerceIn(0L, 400L)
+                        tailStartupLagMs = (tailStartupLagMs * 7 + actual * 3) / 10
+                    }
+                    // Résidu trop grand malgré tout — rejoue comme élision
+                    // s'entendraient : arrivée franche plutôt que raccord sale.
+                    if (tailAudible && kotlin.math.abs(residual) > MAX_TAIL_DRIFT_MS) {
                         tailAudible = false
                     }
                     if (tailAudible) {
