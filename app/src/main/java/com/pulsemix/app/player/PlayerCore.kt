@@ -267,17 +267,25 @@ object PlayerCore {
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 // Le lecteur a enchaîné TOUT SEUL (fin de morceau atteinte)
-                // alors qu'une bascule de fondu attendait encore que sa queue
-                // soit prête : cette bascule n'a plus d'objet. L'exécuter
-                // quand même rejouait la fin du morceau terminé et sautait un
-                // morceau (son onSwitch fait seekToNextMediaItem sur une file
-                // qui a déjà avancé). Nos propres bascules passent par un
-                // seek : elles arrivent ici avec REASON_SEEK, jamais AUTO.
-                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO &&
-                    pendingSwitch != null
-                ) {
-                    pendingSwitch = null
-                    releaseTail()
+                // alors qu'une bascule attendait encore que sa queue soit
+                // prête. La queue, qui porte le morceau tout juste terminé,
+                // n'a plus rien à prolonger : on s'en sépare. Le sort de la
+                // bascule dépend de son origine : automatique, l'enchaînement
+                // qui vient d'avoir lieu EST son intention — on la jette (la
+                // rejouer faisait rejouer la fin du morceau et sauter un
+                // morceau). De geste, ses cibles sont absolues, arrêtées à
+                // l'appui : l'enchaînement ne la périme pas, on l'applique
+                // tout de suite — sans elle, un « précédent » ou un saut de
+                // phase pressé juste avant la fin était silencieusement
+                // avalé. Nos propres bascules passent par un seek : elles
+                // arrivent ici avec REASON_SEEK, jamais AUTO.
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                    val pending = pendingSwitch
+                    if (pending != null) {
+                        pendingSwitch = null
+                        releaseTail()
+                        if (pending.fromGesture) quickSwitch(pending.go)
+                    }
                 }
                 if (mode.value != PlayerMode.DJ) updateFromExo()
                 persistState()
@@ -671,8 +679,8 @@ object PlayerCore {
      * faux (bout de file : le fondu jouerait contre lui-même).
      */
     private fun crossfadeTo(possible: Boolean, go: () -> Unit) {
-        val uri = currentTrack.value?.uri
-        if (!possible || !crossfade.value || uri == null || !isPlaying.value) {
+        val track = currentTrack.value
+        if (!possible || !crossfade.value || track == null || !isPlaying.value) {
             consumePendingBeforeGesture()
             go()
             return
@@ -681,7 +689,7 @@ object PlayerCore {
         // en place pendant toute la bascule, et le déclencheur de fin exige
         // justement qu'il n'y en ait aucune.
         handOffTail(
-            uri, exo.currentPosition, CROSSFADE_MS, GESTURE_WATCHDOG_MS,
+            track, exo.currentPosition, CROSSFADE_MS, GESTURE_WATCHDOG_MS,
             fromGesture = true, go
         )
     }
@@ -695,14 +703,23 @@ object PlayerCore {
             mixer.nextPhase()
             return
         }
-        // La phase visée est arrêtée MAINTENANT, pas au moment de la
-        // bascule : entre les deux il s'écoule le temps d'ouvrir le fichier,
-        // pendant lequel la lecture a pu changer de phase toute seule — on
-        // en aurait sauté deux.
+        // Un geste précédent encore en attente est appliqué d'abord : les
+        // cibles du nouveau s'arrêtent sur l'état qui en résulte — deux
+        // « suivant » rapprochés avancent bien de deux morceaux.
+        consumePendingBeforeGesture()
+        // Cibles ABSOLUES, arrêtées au moment de l'appui : la bascule ne
+        // s'applique qu'une fois la queue prête, et la file a pu enchaîner
+        // toute seule entre-temps. Une cible relative (seekToNextMediaItem)
+        // avancerait alors d'un morceau de trop ; l'index, lui, reste juste
+        // — shuffle compris, nextMediaItemIndex suit l'ordre de lecture.
         val targetPhase = currentPhase.value + 1
+        val target = exo.nextMediaItemIndex
         crossfadeTo(exo.hasNextMediaItem()) {
-            if (mode.value == PlayerMode.MIX) jumpToPhase(targetPhase)
-            else exo.seekToNextMediaItem()
+            when {
+                mode.value == PlayerMode.MIX -> jumpToPhase(targetPhase)
+                target != C.INDEX_UNSET -> exo.seekTo(target, 0)
+                else -> exo.seekToNextMediaItem()
+            }
         }
     }
 
@@ -715,21 +732,32 @@ object PlayerCore {
             mixer.prevPhase()
             return
         }
-        // Décidé au moment du geste, pour la même raison que dans next()
+        // Un geste précédent encore en attente est appliqué d'abord, puis
+        // les cibles sont arrêtées en ABSOLU — mêmes raisons que next().
+        // « Reviens au début de CE morceau » doit rester ce morceau-là,
+        // même si la file enchaîne toute seule pendant la préparation.
+        consumePendingBeforeGesture()
         val targetPhase = currentPhase.value - 1
         val restart = exo.currentPosition > 3000
+        val restartIndex = exo.currentMediaItemIndex
+        val prevIndex = exo.previousMediaItemIndex
         crossfadeTo(restart || exo.hasPreviousMediaItem()) {
-            when (mode.value) {
-                PlayerMode.MIX -> jumpToPhase(targetPhase)
-                else -> if (restart) exo.seekTo(0) else exo.seekToPreviousMediaItem()
+            when {
+                mode.value == PlayerMode.MIX -> jumpToPhase(targetPhase)
+                restart -> exo.seekTo(restartIndex, 0)
+                prevIndex != C.INDEX_UNSET -> exo.seekTo(prevIndex, 0)
+                else -> exo.seekToPreviousMediaItem()
             }
         }
     }
 
     fun seekToFraction(f: Float) {
         if (mode.value == PlayerMode.DJ) return
-        // Repositionnement explicite : le fondu de fin redevient possible
+        // Repositionnement explicite : le fondu de fin redevient possible,
+        // et tout ce qui attendait est réglé d'abord (même règle que les
+        // autres gestes).
         crossfadedFrom = null
+        consumePendingBeforeGesture()
         val d = exo.duration
         if (d > 0) exo.seekTo((d * f.coerceIn(0f, 1f)).toLong())
         persistState()
@@ -876,7 +904,7 @@ object PlayerCore {
      * ailleurs immédiatement.
      */
     private fun handOffTail(
-        uri: String,
+        track: Track,
         fromMs: Long,
         fadeMs: Long,
         watchdogMs: Long,
@@ -898,7 +926,14 @@ object PlayerCore {
                         .build(),
                     /* handleAudioFocus = */ false
                 )
-                setMediaItem(MediaItem.fromUri(uri))
+                // Le MÊME item que le lecteur principal, rognage d'intro
+                // compris. Avec « sauter les intros », le principal joue une
+                // version rognée et ses positions sont relatives au point de
+                // rognage : une queue construite sur le fichier entier
+                // prenait toutes ses positions avec l'intro en trop, et
+                // rejouait systématiquement un passage déjà entendu — décalé
+                // de toute la durée de l'intro sautée.
+                setMediaItem(mediaItem(track))
                 seekTo(fromMs)
                 // Muet et à l'arrêt tant qu'il n'a pas de quoi jouer :
                 // ouvrir le fichier et remplir son tampon prend un instant,
@@ -934,7 +969,12 @@ object PlayerCore {
             // doivent être touchés — le garde-fou des 2,5 s passe ici quand
             // la demande a déjà été remplacée.
             if (pendingSwitch !== token) return
-            if (exo.currentMediaItemIndex != expectedIndex) {
+            // Ceinture pour les bascules AUTOMATIQUES seulement : si la file
+            // a avancé toute seule, le fondu de fin n'a plus d'objet. Les
+            // bascules de geste, elles, visent des cibles absolues qui
+            // restent justes même si la file a bougé — les abandonner ici
+            // avalerait l'appui.
+            if (!fromGesture && exo.currentMediaItemIndex != expectedIndex) {
                 pendingSwitch = null
                 releaseTail()
                 return
@@ -1008,10 +1048,13 @@ object PlayerCore {
                         // Le fondu ne doit pas déborder de la fin du fichier :
                         // le son s'arrêterait net au milieu du croisement.
                         // La durée annoncée par le lecteur n'est pas toujours
-                        // connue juste après un déplacement — on retombe alors
-                        // sur celle de la bibliothèque, qui l'est toujours.
+                        // connue juste après un déplacement — repli sur celle
+                        // de la bibliothèque, intro rognée déduite pour rester
+                        // dans le même repère que les positions du lecteur.
+                        val clipped = if (skipIntros.value && track.musicStartMs > 1_500L)
+                            track.musicStartMs else 0L
                         val known = player.duration.takeIf { it > 0 }
-                            ?: currentTrack.value?.durationMs?.takeIf { it > 0 }
+                            ?: (track.durationMs - clipped).takeIf { it > 0 }
                         if (known != null) {
                             val remain = known - player.currentPosition
                             if (remain > 0) {
@@ -1126,24 +1169,29 @@ object PlayerCore {
         }
         // Repositionnement explicite : le fondu de fin redevient possible
         crossfadedFrom = null
+        // Geste : tout ce qui attendait est réglé d'abord, puis la cible est
+        // arrêtée en absolu (morceau + position) — la barre visait CE
+        // morceau, pas celui où la file serait rendue au moment de basculer.
+        consumePendingBeforeGesture()
         val d = exo.duration
         if (d <= 0) return
         val target = (d * frac).toLong()
+        val targetIndex = exo.currentMediaItemIndex
         // Vrai fondu croisé : le passage qu'on quitte continue sur le second
         // lecteur pendant que le principal se replace et remonte. Le
         // déplacement lui-même n'a lieu qu'une fois ce second lecteur prêt à
         // prendre le relais, sinon il y aurait un blanc.
-        val uri = currentTrack.value?.uri
-        if (uri == null || !crossfade.value) {
-            exo.seekTo(target)
+        val track = currentTrack.value
+        if (track == null || !crossfade.value) {
+            exo.seekTo(targetIndex, target)
             persistState()
             return
         }
         handOffTail(
-            uri, exo.currentPosition, SEEK_CROSSFADE_MS, GESTURE_WATCHDOG_MS,
+            track, exo.currentPosition, SEEK_CROSSFADE_MS, GESTURE_WATCHDOG_MS,
             fromGesture = true
         ) {
-            exo.seekTo(target)
+            exo.seekTo(targetIndex, target)
             persistState()
         }
     }
@@ -1154,9 +1202,9 @@ object PlayerCore {
      * ce relais est en place. Les deux se croisent réellement.
      */
     private fun crossfadeToNext() {
-        val uri = currentTrack.value?.uri ?: return
+        val track = currentTrack.value ?: return
         handOffTail(
-            uri, exo.currentPosition, CROSSFADE_MS, AUTO_WATCHDOG_MS,
+            track, exo.currentPosition, CROSSFADE_MS, AUTO_WATCHDOG_MS,
             fromGesture = false
         ) {
             exo.seekToNextMediaItem()
@@ -1321,6 +1369,13 @@ object PlayerCore {
     fun playQueueItem(index: Int) {
         if (mode.value == PlayerMode.DJ) return
         if (index < 0 || index >= exo.mediaItemCount) return
+        // Choisir un morceau dans la file rend caduc tout ce qui attendait :
+        // sans cette purge, un fondu déjà en préparation s'appliquait
+        // PAR-DESSUS ce choix quelques dixièmes de seconde plus tard, et la
+        // lecture repartait ailleurs.
+        pendingSwitch = null
+        stopTail()
+        crossfadedFrom = null
         exo.seekTo(index, 0)
         exo.play()
     }
