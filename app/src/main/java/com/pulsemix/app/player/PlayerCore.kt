@@ -651,15 +651,19 @@ object PlayerCore {
     private fun crossfadeTo(possible: Boolean, go: () -> Unit) {
         val uri = currentTrack.value?.uri
         if (!possible || !crossfade.value || uri == null || !isPlaying.value) {
-            flushPendingSwitch()
+            // Même ordre qu'en fondu : retirer la bascule en attente avant
+            // stopTail, qui l'oublierait, et l'appliquer après.
+            val pending = pendingSwitch
+            pendingSwitch = null
             stopTail()
+            pending?.invoke()
             go()
             return
         }
         // Pas besoin de marquer le morceau comme déjà fondu : la queue reste
         // en place pendant toute la bascule, et le déclencheur de fin exige
         // justement qu'il n'y en ait aucune.
-        handOffTail(uri, exo.currentPosition, CROSSFADE_MS, go)
+        handOffTail(uri, exo.currentPosition, CROSSFADE_MS, GESTURE_WATCHDOG_MS, go)
     }
 
     fun next() {
@@ -736,11 +740,17 @@ object PlayerCore {
      */
     private var pendingSwitch: (() -> Unit)? = null
 
-    /** Applique tout de suite une bascule restée en attente. */
-    private fun flushPendingSwitch() {
-        val go = pendingSwitch ?: return
-        pendingSwitch = null
+    /**
+     * Saut immédiat, sans queue pour prolonger le son : on remonte du
+     * silence en un quart de seconde. Assez court pour rester vif, assez
+     * long pour couvrir la mise en tampon du morceau d'arrivée — à plein
+     * volume, elle s'entendait comme un claquement suivi d'un blanc.
+     */
+    private fun quickSwitch(go: () -> Unit) {
+        fadeGain = 0f
+        applyVolume()
         go()
+        fadeInMain(NO_TAIL_FADE_MS)
     }
 
     /** Gain du fondu d'entrée du lecteur principal (multiplie le volume). */
@@ -763,16 +773,57 @@ object PlayerCore {
     private const val FADE_STEP_MS = 25L
 
     /**
+     * Fondu d'entrée quand il n'y a PAS de queue pour prolonger le son.
+     *
+     * Un fondu croisé n'a de sens que si les deux sources sonnent ensemble.
+     * Sans queue — fichier trop lent à ouvrir, erreur de lecture — remonter
+     * depuis le silence sur dix secondes laisse un vrai trou : le morceau
+     * sortant s'arrête net et le suivant reste inaudible plusieurs
+     * secondes. Mieux vaut alors arriver franchement.
+     */
+    private const val NO_TAIL_FADE_MS = 250L
+
+    /**
+     * Temps laissé à la queue pour sortir sa première goutte de son. Un
+     * fichier froid, ouvert par l'explorateur de documents et déplacé d'un
+     * cran, peut demander plus que quelques dizaines de millisecondes.
+     */
+    private const val TAIL_START_TIMEOUT_MS = 1_500L
+
+    /** Attente maximale sur un geste : l'utilisateur ne doit pas patienter. */
+    private const val GESTURE_WATCHDOG_MS = 2_500L
+
+    /**
+     * Attente maximale sur l'enchaînement automatique de fin de morceau.
+     * Personne n'attend, et le fondu est déclenché douze secondes avant la
+     * fin : mieux vaut laisser au fichier le temps de s'ouvrir que de
+     * renoncer au fondu et couper le son.
+     */
+    private const val AUTO_WATCHDOG_MS = 6_000L
+
+    /**
      * Confie [uri] à partir de [fromMs] au second lecteur, qui le prolonge
      * puis s'efface sur [fadeMs]. Le lecteur principal est libre de partir
      * ailleurs immédiatement.
      */
-    private fun handOffTail(uri: String, fromMs: Long, fadeMs: Long, onSwitch: () -> Unit) {
+    private fun handOffTail(
+        uri: String,
+        fromMs: Long,
+        fadeMs: Long,
+        watchdogMs: Long,
+        onSwitch: () -> Unit
+    ) {
         // Une bascule encore en attente appartient à un geste précédent : la
         // congédier sans l'appliquer perdrait cet appui. Deux « suivant »
         // rapprochés doivent bien avancer de deux morceaux.
-        flushPendingSwitch()
+        //
+        // L'ordre compte : on la retire de l'attente AVANT stopTail, qui
+        // l'oublierait, et on ne l'applique qu'APRÈS, car stopTail remet
+        // les fondus à plat et annulerait le sien.
+        val pending = pendingSwitch
+        pendingSwitch = null
         stopTail()
+        pending?.let { quickSwitch(it) }
         val player = try {
             ExoPlayer.Builder(appContext).build().apply {
                 // Surtout pas de focus audio : il est déjà tenu par le
@@ -794,7 +845,9 @@ object PlayerCore {
                 prepare()
             }
         } catch (_: Exception) {
-            onSwitch()
+            // Pas de second lecteur : basculer sans fondu croisé, mais sans
+            // claquer non plus.
+            quickSwitch(onSwitch)
             return
         }
         exoTail = player
@@ -817,11 +870,16 @@ object PlayerCore {
                 fadeGain = 0f
                 applyVolume()
                 onSwitch()
-                fadeInMain(fadeMs)
+                // Pas de queue pour tenir le son : un fondu de dix secondes
+                // depuis le silence serait un trou, pas une transition.
+                fadeInMain(NO_TAIL_FADE_MS)
                 return
             }
             autoScope.launch(Dispatchers.Main) {
                 var eff = fadeMs
+                // La queue a-t-elle vraiment sorti du son ? Tant qu'on n'en
+                // est pas sûr, couper le lecteur principal ouvrirait un blanc.
+                var tailAudible = false
                 try {
                     player.volume = 0f
                     // Recaler la queue sur le direct. Elle a été préparée à la
@@ -848,19 +906,33 @@ object PlayerCore {
                     player.play()
                     val start = player.currentPosition
                     var waited = 0L
-                    while (waited < 800L && player.currentPosition <= start) {
+                    while (waited < TAIL_START_TIMEOUT_MS &&
+                        player.currentPosition <= start
+                    ) {
                         delay(20L)
                         waited += 20L
                         // Un geste de l'utilisateur a pu congédier la queue
                         // entre-temps : ne pas toucher un lecteur libéré.
                         if (exoTail !== player) return@launch
                     }
-                    player.volume = v0
-                    // Le fondu ne doit pas déborder de la fin du fichier :
-                    // le son s'arrêterait net avant d'avoir fini de sortir.
-                    val remain = player.duration - player.currentPosition
-                    if (remain > 0) {
-                        eff = fadeMs.coerceAtMost((remain - 250L).coerceAtLeast(600L))
+                    tailAudible = player.currentPosition > start
+                    if (tailAudible) {
+                        player.volume = v0
+                        // Le fondu ne doit pas déborder de la fin du fichier :
+                        // le son s'arrêterait net au milieu du croisement.
+                        // La durée annoncée par le lecteur n'est pas toujours
+                        // connue juste après un déplacement — on retombe alors
+                        // sur celle de la bibliothèque, qui l'est toujours.
+                        val known = player.duration.takeIf { it > 0 }
+                            ?: currentTrack.value?.durationMs?.takeIf { it > 0 }
+                        if (known != null) {
+                            val remain = known - player.currentPosition
+                            if (remain > 0) {
+                                eff = fadeMs.coerceAtMost(
+                                    (remain - 250L).coerceAtLeast(600L)
+                                )
+                            }
+                        }
                     }
                 } catch (_: Exception) {
                     releaseTail()
@@ -869,6 +941,15 @@ object PlayerCore {
                 // a déjà appliqué cette bascule, ne pas la rejouer.
                 if (pendingSwitch !== onSwitch) return@launch
                 pendingSwitch = null
+                // La queue n'a jamais sorti de son — fichier trop lent à
+                // ouvrir, position introuvable. Basculer quand même en la
+                // gardant reviendrait à couper le morceau en cours pour du
+                // silence : c'est exactement la microcoupure qu'on chasse.
+                // On s'en sépare et on arrive franchement.
+                if (!tailAudible) {
+                    releaseTail()
+                    eff = NO_TAIL_FADE_MS
+                }
                 // Le volume tombe AVANT le saut : sinon le morceau d'arrivée se
                 // ferait entendre à plein volume le temps d'un souffle.
                 fadeGain = 0f
@@ -891,9 +972,12 @@ object PlayerCore {
         })
 
         // Garde-fou : un fichier qui met trop longtemps à s'ouvrir ne doit
-        // pas retarder indéfiniment le geste de l'utilisateur.
+        // pas retarder indéfiniment le geste de l'utilisateur. Il est plus
+        // large pour l'enchaînement automatique de fin de morceau, qui n'a
+        // personne à faire attendre et dispose de douze secondes d'avance :
+        // renoncer trop vite à la queue, c'était renoncer au fondu.
         autoScope.launch(Dispatchers.Main) {
-            delay(2_500)
+            delay(watchdogMs)
             switchNow(withTail = false)
         }
     }
@@ -967,7 +1051,7 @@ object PlayerCore {
             persistState()
             return
         }
-        handOffTail(uri, exo.currentPosition, SEEK_CROSSFADE_MS) {
+        handOffTail(uri, exo.currentPosition, SEEK_CROSSFADE_MS, GESTURE_WATCHDOG_MS) {
             exo.seekTo(target)
             persistState()
         }
@@ -980,7 +1064,7 @@ object PlayerCore {
      */
     private fun crossfadeToNext() {
         val uri = currentTrack.value?.uri ?: return
-        handOffTail(uri, exo.currentPosition, CROSSFADE_MS) {
+        handOffTail(uri, exo.currentPosition, CROSSFADE_MS, AUTO_WATCHDOG_MS) {
             exo.seekToNextMediaItem()
         }
     }
