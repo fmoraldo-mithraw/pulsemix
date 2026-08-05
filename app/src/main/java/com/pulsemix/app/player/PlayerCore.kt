@@ -190,6 +190,12 @@ object PlayerCore {
 
     /** Morceau qui suivra (file ou plan DJ) — pour la vue waveform. */
     val nextTrack = MutableStateFlow<Track?>(null)
+
+    /**
+     * Rang du morceau en cours dans la file affichée, -1 si inconnu. Le
+     * chercher par URI se trompe quand la même chanson y figure deux fois.
+     */
+    val currentIndex = MutableStateFlow(-1)
     val isPlaying = MutableStateFlow(false)
     val progress = MutableStateFlow(0f)
     val shuffle = MutableStateFlow(false)
@@ -277,6 +283,9 @@ object PlayerCore {
                 prevDjUri = currentTrack.value?.uri
                 currentTrack.value = track
                 currentPhase.value = phaseIndex
+                // Le plan ne contient jamais deux fois la même chanson
+                // (dedupePlan) : l'URI suffit à situer le morceau.
+                currentIndex.value = queue.value.indexOfFirst { it.uri == track.uri }
                 nextTrack.value = djNextAfter(track.uri)
                 recordHistory(track.uri)
                 notifyWidgets()
@@ -520,7 +529,16 @@ object PlayerCore {
         planName.value = mixPlan.name + " (DJ)"
         phaseNames.value = mixPlan.phases.map { it.name }
         currentPhase.value = fromPhase.coerceIn(0, mixPlan.phases.size - 1)
-        queueTracks = emptyList()
+        // Le déroulé du set, dans l'ordre : ce qui a été joué et ce qui
+        // reste. La file n'est pas éditable en DJ — les fonctions qui la
+        // modifient s'en gardent déjà — mais elle a tout lieu d'être
+        // consultable, comme dans les autres modes.
+        queueTracks = mixPlan.phases.flatMap { it.tracks }
+        // Le moteur annoncera le morceau exact dans un instant ; en attendant,
+        // se placer au début de la phase demandée plutôt qu'en tête du set.
+        currentIndex.value = mixPlan.phases.take(currentPhase.value)
+            .sumOf { it.tracks.size }
+            .takeIf { it < queueTracks.size } ?: -1
 
         // Piste silencieuse en boucle : garde le focus audio et la session
         // active pour que les commandes Bluetooth restent routées vers l'app.
@@ -1293,6 +1311,10 @@ object PlayerCore {
                 currentPhase.value = phase
                 currentTrack.value = restored.phases[phase].tracks.firstOrNull()
                 nextTrack.value = currentTrack.value?.let { djNextAfter(it.uri) }
+                queueTracks = restored.phases.flatMap { it.tracks }
+                currentIndex.value = currentTrack.value?.let { cur ->
+                    queueTracks.indexOfFirst { it.uri == cur.uri }
+                } ?: -1
                 // Le moteur DJ repartira au début de cette phase au prochain play
                 // (voir togglePlayPause) : pas de lecture surprise au démarrage.
             }
@@ -1331,6 +1353,7 @@ object PlayerCore {
 
     private fun updateFromExo() {
         val idx = exo.currentMediaItemIndex
+        currentIndex.value = if (idx in queueTracks.indices) idx else -1
         currentTrack.value = queueTracks.getOrNull(idx)
         // Suivant selon l'ordre réel de lecture (shuffle compris)
         nextTrack.value = queueTracks.getOrNull(exo.nextMediaItemIndex)

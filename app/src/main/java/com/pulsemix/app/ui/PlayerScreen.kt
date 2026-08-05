@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -602,7 +603,8 @@ fun PlayerScreen(
                 }
                 if (mode == PlayerMode.DJ) {
                     Text(
-                        "En mode DJ, la file n'est pas éditable.",
+                        "Le déroulé du set : ce qui est passé et ce qui vient. " +
+                            "En mode DJ, la file n'est pas éditable.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -612,9 +614,38 @@ fun PlayerScreen(
                     Text("Rien en cours de lecture.")
                     Spacer(Modifier.height(24.dp))
                 } else {
-                    LazyColumn(Modifier.heightIn(max = 480.dp)) {
+                    // Le rang réel du lecteur, pas une recherche par URI :
+                    // une même chanson présente deux fois désignerait la
+                    // mauvaise ligne. Repli sur l'URI si le rang manque.
+                    val playing by vm.currentIndex.collectAsStateWithLifecycle()
+                    val currentIndex =
+                        if (playing in queue.indices) playing
+                        else queue.indexOfFirst { it.uri == track?.uri }
+                    val listState = rememberLazyListState()
+                    // Ouvrir la file sur le morceau en cours plutôt qu'en tête :
+                    // au bout d'une heure de set, il était à cinquante lignes
+                    // de là et il fallait le chercher à la main. Un cran plus
+                    // haut, pour qu'on voie d'où l'on vient.
+                    //
+                    // Une seule fois, dès que le rang est connu : recentrer à
+                    // chaque changement de morceau arracherait la liste sous
+                    // le doigt de qui la parcourt.
+                    var positioned by remember { mutableStateOf(false) }
+                    LaunchedEffect(currentIndex) {
+                        if (!positioned && currentIndex >= 0) {
+                            positioned = true
+                            listState.scrollToItem((currentIndex - 1).coerceAtLeast(0))
+                        }
+                    }
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.heightIn(max = 480.dp)
+                    ) {
                         itemsIndexed(queue) { i, t ->
-                            val isCurrent = t.uri == track?.uri
+                            val isCurrent = i == currentIndex
+                            // Déjà passé : estompé, pour que l'œil trouve tout
+                            // de suite où en est la lecture.
+                            val played = currentIndex >= 0 && i < currentIndex
                             Row(
                                 Modifier
                                     .fillMaxWidth()
@@ -635,13 +666,19 @@ fun PlayerScreen(
                                         t.title,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
-                                        color = if (isCurrent) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurface
+                                        fontWeight = if (isCurrent) FontWeight.Bold else null,
+                                        color = when {
+                                            isCurrent -> MaterialTheme.colorScheme.primary
+                                            played -> MaterialTheme.colorScheme.onSurface
+                                                .copy(alpha = 0.45f)
+                                            else -> MaterialTheme.colorScheme.onSurface
+                                        }
                                     )
                                     Text(
                                         "${t.bpm} BPM · ${t.camelot}",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        color = MaterialTheme.colorScheme.onSurface
+                                            .copy(alpha = if (played) 0.35f else 0.6f)
                                     )
                                 }
                                 if (mode != PlayerMode.DJ) {

@@ -38,6 +38,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val sleepRemainingMs = PlayerCore.sleepRemainingMs
     val queue = PlayerCore.queue
 
+    /** Rang du morceau en cours dans la file (-1 si inconnu). */
+    val currentIndex = PlayerCore.currentIndex
+
     // ------------------------------------------------------- réveil matin
     val alarmEnabled = com.pulsemix.app.player.AlarmClock.enabled
     val alarmHour = com.pulsemix.app.player.AlarmClock.hour
