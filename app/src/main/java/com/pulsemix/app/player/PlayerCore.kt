@@ -112,18 +112,22 @@ object PlayerCore {
 
     fun toggleBassBoost() {
         bassLevel.value = if (bassLevel.value == 0) 2 else 0
+        ensureTicker()
     }
 
     fun toggleSpeedBoost() {
         speedLevel.value = if (speedLevel.value == 0) 2 else 0
+        ensureTicker()
     }
 
     fun setBassLevel(level: Int) {
         bassLevel.value = level.coerceIn(-3, 3)
+        ensureTicker()
     }
 
     fun setSpeedLevel(level: Int) {
         speedLevel.value = level.coerceIn(-3, 3)
+        ensureTicker()
     }
 
     /**
@@ -147,6 +151,7 @@ object PlayerCore {
 
     fun setTrebleLevel(level: Int) {
         trebleLevel.value = level.coerceIn(-3, 3)
+        ensureTicker()
     }
 
     fun setFilterLevel(level: Int) {
@@ -233,6 +238,10 @@ object PlayerCore {
         normalizeVolume.value = prefs.getBoolean("normalizeVolume", true)
         crossfade.value = prefs.getBoolean("crossfade", true)
         crossfadeSeconds.value = prefs.getInt("crossfadeSeconds", 10).coerceIn(3, 15)
+        // La latence d'amorçage est propre à l'appareil : la retenir entre
+        // les sessions rend le PREMIER fondu aussi propre que les suivants,
+        // au lieu de repartir d'une valeur typique à recalibrer.
+        tailStartupLagMs = prefs.getLong("tailStartupLag", 120L).coerceIn(0L, 400L)
         eqBands.value = Triple(
             prefs.getFloat("eqBass", 0f),
             prefs.getFloat("eqMid", 0f),
@@ -254,6 +263,9 @@ object PlayerCore {
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying.value = playing
+                // La boucle d'entretien s'endort à l'arrêt : tout retour de
+                // la lecture doit la réveiller.
+                if (playing) ensureTicker()
                 // La queue du morceau précédent ne doit pas jouer seule —
                 // mais SEULEMENT si la lecture est vraiment arrêtée. Un
                 // saut met le lecteur en tampon, donc `playing` retombe à
@@ -371,7 +383,7 @@ object PlayerCore {
         }
 
         // Ticker de progression pour les modes ExoPlayer
-        handler.post(object : Runnable {
+        ticker = object : Runnable {
             override fun run() {
                 if (mode.value != PlayerMode.DJ) {
                     val d = exo.duration
@@ -452,9 +464,39 @@ object PlayerCore {
                     lastWidgetTickMs = System.currentTimeMillis()
                     notifyWidgets()
                 }
-                handler.postDelayed(this, 500)
+                // À l'arrêt complet — rien ne joue, aucune rampe ni minuterie
+                // en cours — ce réveil deux fois par seconde ne servait plus
+                // qu'à user la batterie. Il s'interrompt et repart au premier
+                // signe de vie (lecture, minuterie, réglage d'effet).
+                if (exo.playWhenReady || sleepDeadline > 0 || fadeGain != 1f ||
+                    trebleExtraDb != 5f * trebleLevel.value ||
+                    bassBoostExtraDb != 5f * bassLevel.value ||
+                    exoSpeed != 1f + 0.08f * speedLevel.value ||
+                    mode.value == PlayerMode.DJ
+                ) {
+                    handler.postDelayed(this, 500)
+                } else {
+                    tickerRunning = false
+                }
             }
-        })
+        }
+        tickerRunning = true
+        handler.post(ticker)
+    }
+
+    /** Boucle d'entretien (progression, fondu de fin, minuteries). */
+    private lateinit var ticker: Runnable
+    private var tickerRunning = false
+
+    /**
+     * Relance la boucle d'entretien si elle s'était endormie. À appeler à
+     * chaque événement qui redonne du travail au tick : lecture,
+     * minuterie de sommeil, changement d'effet.
+     */
+    private fun ensureTicker() {
+        if (!initialized || tickerRunning) return
+        tickerRunning = true
+        handler.post(ticker)
     }
 
     // ------------------------------------------------------------ lancements
@@ -649,6 +691,9 @@ object PlayerCore {
 
     // ------------------------------------------------------------ transport
 
+    /** Micro-fondu de pause/reprise en cours (annulé par le geste suivant). */
+    private var pauseFadeJob: Job? = null
+
     fun togglePlayPause() {
         // Mode DJ restauré (ou terminé) : le moteur n'est pas lancé, on
         // redémarre au début de la phase courante.
@@ -657,7 +702,26 @@ object PlayerCore {
             startDj(p, currentPhase.value.coerceAtLeast(0))
             return
         }
-        if (exo.isPlaying) exo.pause() else {
+        // En DJ, la pause est routée vers le moteur (via le listener) : les
+        // micro-fondus ci-dessous ne concernent que le lecteur ExoPlayer.
+        if (mode.value == PlayerMode.DJ) {
+            if (exo.isPlaying) exo.pause() else exo.play()
+            return
+        }
+        pauseFadeJob?.cancel()
+        if (exo.isPlaying) {
+            // Couper net fait un clic : le son tombe en ~120 ms d'abord.
+            pauseFadeJob = autoScope.launch(Dispatchers.Main) {
+                for (i in 5 downTo 0) {
+                    fadeGain = i / 5f
+                    applyVolume()
+                    if (i > 0) delay(20L)
+                }
+                exo.pause()
+                // Prêt pour la reprise : plein volume dès que voulu
+                fadeGain = 1f
+            }
+        } else {
             if (exo.mediaItemCount == 0) {
                 // File perdue mais connue : la reconstruire au lieu d'un
                 // bouton play muet.
@@ -667,8 +731,12 @@ object PlayerCore {
             // Après une erreur de lecture, ExoPlayer reste inerte tant qu'on
             // ne re-prépare pas : play/next semblaient morts.
             if (exo.playbackState == Player.STATE_IDLE) exo.prepare()
+            // Reprise en douceur, symétrique de la pause
+            fadeGain = 0f
+            applyVolume()
             exo.play()
             startService()
+            fadeInMain(150L)
         }
     }
 
@@ -1056,9 +1124,12 @@ object PlayerCore {
                     val residual = exo.currentPosition - player.currentPosition
                     if (compensated) {
                         // La latence réelle de CE fondu affine l'estimation
-                        // pour les suivants (moyenne glissante, bornée).
+                        // pour les suivants (moyenne glissante, bornée), et
+                        // la valeur suit l'appareil d'une session à l'autre.
                         val actual = (residual + tailStartupLagMs).coerceIn(0L, 400L)
                         tailStartupLagMs = (tailStartupLagMs * 7 + actual * 3) / 10
+                        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                            .edit().putLong("tailStartupLag", tailStartupLagMs).apply()
                     }
                     // Résidu trop grand malgré tout — rejoue comme élision
                     // s'entendraient : arrivée franche plutôt que raccord sale.
@@ -1286,6 +1357,7 @@ object PlayerCore {
             sleepRemainingMs.value = minutes * 60_000L
         }
         if (mode.value != PlayerMode.DJ) applyVolume()
+        ensureTicker()
     }
 
     fun setEq(bass: Float, mid: Float, treble: Float) {

@@ -116,7 +116,7 @@ object LibraryScanner {
                             )
                         )
                         added++
-                        if (added % 25 == 0) store.save()
+                        if (added % 25 == 0) store.saveSoon()
                     }
                     if (added > 0) store.save()
                 }
@@ -266,7 +266,7 @@ object LibraryScanner {
                                 store.put(finalTrack)
                                 val d = done.incrementAndGet()
                                 _progress.value = Progress(d, total, meta.first)
-                                if (d % 5 == 0) store.save()
+                                if (d % 5 == 0) store.saveSoon()
                             }
                         }
                     }
@@ -287,6 +287,9 @@ object LibraryScanner {
 
     private fun findBackup(root: DocumentFile): DocumentFile? =
         root.findFile("$BACKUP_BASENAME.json") ?: root.findFile(BACKUP_BASENAME)
+        // Mort entre l'écartement de l'ancienne et la promotion de la
+        // nouvelle : le filet est la seule version complète restante
+        ?: root.findFile("$BACKUP_BASENAME.bak")
 
     /**
      * Importe les analyses depuis le fichier de sauvegarde présent dans le
@@ -353,13 +356,19 @@ object LibraryScanner {
         }
     }
 
-    /** Écrit (ou remplace) la sauvegarde de la bibliothèque dans le dossier. */
+    /**
+     * Écrit (ou remplace) la sauvegarde de la bibliothèque dans le dossier.
+     *
+     * Atomique, comme le fichier interne : le contenu part dans un fichier
+     * temporaire, vérifié complet, qui ne prend le nom définitif qu'ensuite.
+     * Écrite d'un bloc, cette sauvegarde — celle qui survit à la
+     * désinstallation — pouvait rester tronquée si le processus mourait en
+     * pleine écriture, et une restauration silencieusement partielle est
+     * pire qu'aucune.
+     */
     private fun writeFolderBackup(context: Context, root: DocumentFile, store: TrackStore) {
         try {
             if (store.tracks.value.none { it.analyzed }) return
-            val doc = findBackup(root)
-                ?: root.createFile("application/json", BACKUP_BASENAME)
-                ?: return
             // Bibliothèque + réglages + historique anti-répétition
             val payload = JSONObject(store.exportJson())
             payload.put("settings", PlayerCore.exportSettings())
@@ -369,8 +378,50 @@ object LibraryScanner {
             val plays = JSONObject()
             for ((k, v) in PlayHistory.exportCounts()) plays.put(k, v)
             payload.put("playCounts", plays)
-            context.contentResolver.openOutputStream(doc.uri, "wt")?.use {
-                it.write(payload.toString().toByteArray())
+            val bytes = payload.toString().toByteArray()
+
+            val tmpName = "$BACKUP_BASENAME.tmp"
+            // Reliquat d'une écriture interrompue : à nettoyer d'abord
+            root.findFile(tmpName)?.delete()
+            val tmp = root.createFile("application/json", tmpName)
+            if (tmp == null) {
+                // Dossier sans création possible : écriture directe, comme
+                // avant — moins sûre mais mieux que pas de sauvegarde.
+                val doc = findBackup(root) ?: return
+                context.contentResolver.openOutputStream(doc.uri, "wt")?.use {
+                    it.write(bytes)
+                }
+                return
+            }
+            context.contentResolver.openOutputStream(tmp.uri, "wt")?.use {
+                it.write(bytes)
+            } ?: run { tmp.delete(); return }
+            // Un disque plein tronque sans lever : vérifier avant de promouvoir
+            if (tmp.length() != bytes.size.toLong()) {
+                tmp.delete()
+                return
+            }
+            // L'ancienne n'est jamais supprimée avant que la nouvelle soit en
+            // place : elle devient un filet, effacé seulement à la fin. À
+            // aucun instant le dossier n'est sans version complète.
+            val bakName = "$BACKUP_BASENAME.bak"
+            root.findFile(bakName)?.delete()
+            val previous = findBackup(root)
+            if (previous != null && !previous.renameTo(bakName)) {
+                // Impossible d'écarter l'ancienne : garder le comportement
+                // d'avant (écriture directe) plutôt que deux fichiers en vrac
+                tmp.delete()
+                context.contentResolver.openOutputStream(previous.uri, "wt")?.use {
+                    it.write(bytes)
+                }
+                return
+            }
+            if (tmp.renameTo("$BACKUP_BASENAME.json")) {
+                root.findFile(bakName)?.delete()
+            } else {
+                // Promotion refusée : remettre le filet en place
+                root.findFile(bakName)?.renameTo("$BACKUP_BASENAME.json")
+                tmp.delete()
             }
         } catch (_: Exception) {
         }

@@ -176,10 +176,11 @@ object TagFixer {
                     if (lastError.value == null) markChecked(t.uri)
                     _progress.value = Triple(i + 1, list.size, applied)
                     // Sauvegarde régulière : un passage interrompu (appli
-                    // tuée, batterie) ne doit pas être entièrement à refaire
+                    // tuée, batterie) ne doit pas être entièrement à refaire.
+                    // Différée : au plus une écriture toutes les dix secondes.
                     if ((i + 1) % 20 == 0) {
                         save()
-                        store.save()
+                        store.saveSoon()
                     }
                 }
             } finally {

@@ -162,8 +162,30 @@ class TrackStore(context: Context) {
      * au démarrage suivant, dossiers et analyses compris.
      */
     suspend fun save() {
+        saveSoonJob?.cancel()
         mutex.withLock {
             SafeFile.writeAtomic(file, tmpFile, bakFile, exportJson().toByteArray())
+        }
+    }
+
+    private var saveSoonJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Sauvegarde différée et regroupée : au plus une écriture toutes les
+     * dix secondes, quelle que soit la cadence des demandes. Pour les
+     * points de passage fréquents — un scan sauvegardait la bibliothèque
+     * ENTIÈRE tous les cinq morceaux analysés, la correction de tags tous
+     * les vingt : autant d'I/O répétées pour réécrire presque la même
+     * chose. Les moments critiques (fin de scan, action utilisateur)
+     * gardent [save], immédiat.
+     */
+    fun saveSoon() {
+        if (saveSoonJob?.isActive == true) return
+        saveSoonJob = scope.launch {
+            kotlinx.coroutines.delay(10_000)
+            mutex.withLock {
+                SafeFile.writeAtomic(file, tmpFile, bakFile, exportJson().toByteArray())
+            }
         }
     }
 

@@ -28,11 +28,15 @@ jobs:
           name: rapport-tests
           path: app/build/reports/tests/
 
-      - name: Build debug APK
-        run: ./gradlew --no-daemon assembleDebug
+      # Release et non debug : un APK debug tourne avec les vérifications de
+      # débogage d'ART et sans optimisation complète — un surcoût CPU réel,
+      # sensible quand deux lecteurs décodent pendant un fondu. La clé de
+      # signature partagée signe les deux : la release s'installe par-dessus.
+      - name: Build release APK
+        run: ./gradlew --no-daemon assembleRelease
 
       - name: Publier l'APK en artefact
         uses: actions/upload-artifact@v4
         with:
-          name: PulseMix-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: PulseMix
+          path: app/build/outputs/apk/release/app-release.apk
