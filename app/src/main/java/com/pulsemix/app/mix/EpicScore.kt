@@ -64,31 +64,38 @@ object EpicScore {
      */
     fun of(t: Track): Float {
         val named = if (namedEpic(t)) 1f else 0f
-        if (!t.analyzed) return named * 0.6f
+        if (!t.analyzed) return named * 0.5f
 
         // Timbre : voix massées et cuivres, tenus
-        val choirBrass = ramp(t.lowMidRatio, 0.30f, 0.60f)
-        val sustained = ramp(t.sustainRatio, 0.55f, 0.85f)
+        val choirBrass = ramp(t.lowMidRatio, 0.34f, 0.62f)
+        val sustained = ramp(t.sustainRatio, 0.60f, 0.88f)
         // Forme : ça monte, et ça respire
-        val build = ramp(t.energySlope, 1.15f, 2.20f)
-        val breathe = ramp(t.dynamicSpread, 2.2f, 5.5f)
+        val build = ramp(t.energySlope, 1.25f, 2.40f)
+        val breathe = ramp(t.dynamicSpread, 2.6f, 6.0f)
         // Le sommet tape
-        val punch = ramp(t.energyPeak, 0.12f, 0.32f)
+        val punch = ramp(t.energyPeak, 0.14f, 0.34f)
         // Peu d'attaques : la percussion est rare mais énorme
-        val sparse = 1f - ramp(t.onsetRate, 1.6f, 3.4f)
+        val sparse = 1f - ramp(t.onsetRate, 1.5f, 3.2f)
 
         val acoustic =
-            0.26f * choirBrass +
-                0.22f * sustained +
-                0.20f * build +
-                0.16f * breathe +
-                0.10f * punch +
+            0.30f * choirBrass +
+                0.24f * sustained +
+                0.18f * build +
+                0.14f * breathe +
+                0.08f * punch +
                 0.06f * sparse
 
-        // Un nom qui annonce la couleur vaut beaucoup, sans effacer le son :
-        // un morceau nommé « epic » mais qui sonne comme une pop plate ne
-        // doit pas devancer un vrai crescendo orchestral.
-        return (acoustic + named * 0.45f).coerceIn(0f, 1f)
+        // Verrou de timbre : sans chœurs ni cuivres TENUS, pas d'épique.
+        // Une somme pondérée seule laissait un morceau compenser par sa
+        // forme (montée, respiration) ce qui lui manque en matière — c'est
+        // par là que passaient les faux positifs. Le score est plafonné par
+        // le plus faible des deux signaux de timbre.
+        val gate = 0.5f + 0.5f * minOf(choirBrass, sustained)
+
+        // Un nom qui annonce la couleur aide, sans jamais suffire : un
+        // morceau nommé « epic » mais qui sonne comme une pop plate reste
+        // sous le plancher.
+        return (acoustic * gate + named * 0.30f).coerceIn(0f, 1f)
     }
 
     /**
@@ -96,8 +103,13 @@ object EpicScore {
      * proposer un mix épique à une bibliothèque qui n'en contient pas :
      * sans lui, un classement relatif finirait toujours par désigner un
      * « moins pire », aussi plat soit-il.
+     *
+     * Relevé (0,42 → 0,55) avec le verrou de timbre : seuls les morceaux
+     * qui ont À LA FOIS la matière (chœurs/cuivres tenus) et l'intensité
+     * passent. Un chant choral calme, une ballade qui monte, un nom
+     * évocateur sur un son plat : tous restent dehors.
      */
-    const val FLOOR = 0.42f
+    const val FLOOR = 0.55f
 
     /**
      * Les morceaux épiques d'une bibliothèque, du plus au moins marqué.

@@ -111,6 +111,40 @@ class EpicScoreTest {
     }
 
     @Test
+    fun `un nom evocateur seul reste sous le plancher`() {
+        // Avant le resserrage, « Epic Party Anthem » sur un son de club
+        // plat passait quand même : le nom pesait trop lourd.
+        val platMaisNomme = club().copy(title = "Epic Party Anthem")
+        assertTrue(EpicScore.of(platMaisNomme) < EpicScore.FLOOR)
+    }
+
+    @Test
+    fun `un chant choral calme ne passe pas sans intensite`() {
+        // La matière y est (chœurs tenus, bas-médium) mais rien ne monte
+        // et rien ne tape : c'est du choral, pas de l'épique.
+        val hymne = epique(title = "Hymn").copy(
+            uri = "u:hymne",
+            lowMidRatio = 0.55f, sustainRatio = 0.92f,
+            energySlope = 1.1f, dynamicSpread = 2.4f,
+            energyPeak = 0.12f, onsetRate = 0.6f
+        )
+        assertTrue(EpicScore.of(hymne) < EpicScore.FLOOR)
+    }
+
+    @Test
+    fun `la forme seule ne compense plus le timbre absent`() {
+        // Monte fort, respire fort, tape fort — mais sans chœurs ni
+        // cuivres : le verrou de timbre doit le tenir sous le plancher.
+        val formeSansMatiere = epique(title = "Rise").copy(
+            uri = "u:forme",
+            lowMidRatio = 0.20f, sustainRatio = 0.40f,
+            energySlope = 3.0f, dynamicSpread = 6.5f,
+            energyPeak = 0.34f, onsetRate = 1.0f
+        )
+        assertTrue(EpicScore.of(formeSansMatiere) < EpicScore.FLOOR)
+    }
+
+    @Test
     fun `un morceau non analyse ne compte que sur son nom`() {
         val brut = Track(
             uri = "u:brut", title = "Epic Trailer", artist = "?", durationMs = 0
