@@ -70,6 +70,7 @@ object PlayerCore {
 
     fun setCrossfade(enabled: Boolean) {
         crossfade.value = enabled
+        if (!enabled) releasePrepared()
         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
             .edit().putBoolean("crossfade", enabled).apply()
     }
@@ -299,6 +300,11 @@ object PlayerCore {
                         if (pending.fromGesture) quickSwitch(pending.go)
                     }
                 }
+                // La queue pré-armée visait le morceau qui vient de sortir
+                // (une bascule qui la consomme l'a déjà retirée avant d'en
+                // arriver ici) : celle du morceau suivant se ré-armera au
+                // prochain passage du tick.
+                releasePrepared()
                 if (mode.value != PlayerMode.DJ) updateFromExo()
                 persistState()
             }
@@ -407,6 +413,21 @@ object PlayerCore {
                     ) {
                         crossfadedFrom = currentTrack.value?.uri
                         crossfadeToNext()
+                    }
+                    // Pré-armement : la queue s'ouvre et se met en tampon
+                    // dès que la fin approche, une douzaine de secondes
+                    // avant le déclenchement du fondu. La bascule devient
+                    // immédiate — c'est l'attente d'ouverture qui laissait
+                    // la fenêtre aux fins naturelles et aux garde-fous.
+                    if (crossfade.value && d > 0 && isPlaying.value &&
+                        exo.hasNextMediaItem() && exoTail == null &&
+                        preparedTail == null &&
+                        currentTrack.value?.uri != crossfadedFrom &&
+                        d - exo.currentPosition in
+                        (CROSSFADE_MS + CROSSFADE_LEAD_MS + 1)..
+                        (CROSSFADE_MS + CROSSFADE_LEAD_MS + PREARM_AHEAD_MS)
+                    ) {
+                        prepareTailAhead()
                     }
                 }
                 // Minuterie de sommeil : fondu sur les 30 dernières secondes,
@@ -948,6 +969,13 @@ object PlayerCore {
     private const val AUTO_WATCHDOG_MS = 6_000L
 
     /**
+     * Avance du pré-armement de la queue sur le déclenchement du fondu :
+     * l'ouverture du fichier se fait pendant cette marge, et la bascule
+     * n'a plus rien à attendre.
+     */
+    private const val PREARM_AHEAD_MS = 13_000L
+
+    /**
      * En deçà de ce reste, on ne lance plus de fondu de fin : le temps de
      * préparer la queue, le morceau serait déjà fini. L'enchaînement direct
      * d'ExoPlayer, quasi sans blanc, vaut mieux qu'une bascule après la
@@ -987,7 +1015,63 @@ object PlayerCore {
     @Volatile private var tailStartupLagMs = 120L
 
     /**
-     * Confie [uri] à partir de [fromMs] au second lecteur, qui le prolonge
+     * Second lecteur muet et sans focus audio, préparé sur le même item que
+     * le principal (rognage d'intro compris : avec « sauter les intros »,
+     * les positions du principal sont relatives au point de rognage — une
+     * queue construite sur le fichier entier rejouait un passage décalé de
+     * toute l'intro).
+     */
+    private fun newTailPlayer(track: Track): ExoPlayer =
+        ExoPlayer.Builder(appContext).build().apply {
+            // Surtout pas de focus audio : il est déjà tenu par le
+            // lecteur principal, le redemander couperait le son.
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build(),
+                /* handleAudioFocus = */ false
+            )
+            setMediaItem(mediaItem(track))
+            seekTo(exo.currentPosition)
+            // Muet et à l'arrêt tant qu'il n'a pas de quoi jouer : ouvrir le
+            // fichier et remplir son tampon prend un instant, et c'est
+            // précisément ce délai qui coupait le son.
+            volume = 0f
+            playWhenReady = false
+            prepare()
+        }
+
+    /**
+     * Queue pré-armée : ouverte et mise en tampon ~25 s avant la fin du
+     * morceau, pour que la bascule du fondu soit immédiate le moment venu.
+     */
+    private var preparedTail: ExoPlayer? = null
+    private var preparedUri: String? = null
+
+    /** Ouvre la queue d'avance pour le morceau en cours (fin approchante). */
+    private fun prepareTailAhead() {
+        val track = currentTrack.value ?: return
+        preparedTail = try {
+            newTailPlayer(track)
+        } catch (_: Exception) {
+            null
+        }
+        preparedUri = if (preparedTail != null) track.uri else null
+    }
+
+    private fun releasePrepared() {
+        val p = preparedTail ?: return
+        preparedTail = null
+        preparedUri = null
+        try {
+            p.release()
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Confie [track] à partir de [fromMs] au second lecteur, qui le prolonge
      * puis s'efface sur [fadeMs]. Le lecteur principal est libre de partir
      * ailleurs immédiatement.
      */
@@ -1003,33 +1087,19 @@ object PlayerCore {
         // « suivant » rapprochés avancent de deux morceaux) ; une bascule
         // automatique est jetée (voir PendingSwitch).
         consumePendingBeforeGesture()
-        val player = try {
-            ExoPlayer.Builder(appContext).build().apply {
-                // Surtout pas de focus audio : il est déjà tenu par le
-                // lecteur principal, le redemander couperait le son.
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(C.USAGE_MEDIA)
-                        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                        .build(),
-                    /* handleAudioFocus = */ false
-                )
-                // Le MÊME item que le lecteur principal, rognage d'intro
-                // compris. Avec « sauter les intros », le principal joue une
-                // version rognée et ses positions sont relatives au point de
-                // rognage : une queue construite sur le fichier entier
-                // prenait toutes ses positions avec l'intro en trop, et
-                // rejouait systématiquement un passage déjà entendu — décalé
-                // de toute la durée de l'intro sautée.
-                setMediaItem(mediaItem(track))
-                seekTo(fromMs)
-                // Muet et à l'arrêt tant qu'il n'a pas de quoi jouer :
-                // ouvrir le fichier et remplir son tampon prend un instant,
-                // et c'est précisément ce délai qui coupait le son.
-                volume = 0f
-                playWhenReady = false
-                prepare()
-            }
+        // Une queue pré-armée pour ce morceau (voir prepareTailAhead) est
+        // déjà ouverte, mise en tampon et prête : la bascule est immédiate
+        // au lieu d'attendre l'ouverture du fichier — c'est cette attente
+        // qui laissait la fenêtre aux fins naturelles et aux garde-fous.
+        val reused = preparedTail?.takeIf { preparedUri == track.uri }
+        if (reused != null) {
+            preparedTail = null
+            preparedUri = null
+        } else {
+            releasePrepared()
+        }
+        val player = reused ?: try {
+            newTailPlayer(track).apply { seekTo(fromMs) }
         } catch (_: Exception) {
             // Pas de second lecteur : basculer sans fondu croisé, mais sans
             // claquer non plus.
@@ -1205,6 +1275,13 @@ object PlayerCore {
                 switchNow(withTail = false)
             }
         })
+
+        // Une queue pré-armée est DÉJÀ prête : le listener ci-dessus ne
+        // verra jamais son passage à READY, il a eu lieu avant lui. La
+        // bascule part tout de suite — c'est tout l'intérêt du pré-armement.
+        if (player.playbackState == Player.STATE_READY) {
+            switchNow(withTail = true)
+        }
 
         // Garde-fou : un fichier qui met trop longtemps à s'ouvrir ne doit
         // pas retarder indéfiniment le geste de l'utilisateur. Il est plus
@@ -1777,8 +1854,10 @@ object PlayerCore {
     fun stopTail() {
         // Une bascule en attente devient caduque : l'appelant (nouveau mix,
         // nouvelle lecture…) refait la file lui-même, l'appliquer sauterait
-        // dans une file qui n'existe déjà plus.
+        // dans une file qui n'existe déjà plus. La queue pré-armée visait le
+        // morceau en cours : caduque aussi.
         pendingSwitch = null
+        releasePrepared()
         tailJob?.cancel()
         tailJob = null
         releaseTail()

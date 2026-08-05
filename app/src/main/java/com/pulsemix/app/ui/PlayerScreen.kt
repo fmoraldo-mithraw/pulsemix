@@ -24,6 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -43,8 +44,7 @@ import androidx.compose.material.icons.rounded.ThumbDown
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.QueueMusic
@@ -641,7 +641,10 @@ fun PlayerScreen(
                         state = listState,
                         modifier = Modifier.heightIn(max = 480.dp)
                     ) {
-                        itemsIndexed(queue) { i, t ->
+                        // key : pendant un glisser, la ligne déménage dans la
+                        // liste — le nœud (et le doigt posé dessus) doit
+                        // suivre l'ÉLÉMENT, pas rester à la position.
+                        itemsIndexed(queue, key = { _, t -> t.uri }) { i, t ->
                             val isCurrent = i == currentIndex
                             // Déjà passé : estompé, pour que l'œil trouve tout
                             // de suite où en est la lecture.
@@ -682,26 +685,50 @@ fun PlayerScreen(
                                     )
                                 }
                                 if (mode != PlayerMode.DJ) {
-                                    IconButton(
-                                        onClick = { vm.moveQueueItem(i, i - 1) },
-                                        enabled = i > 0,
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Rounded.KeyboardArrowUp, "Monter",
-                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { vm.moveQueueItem(i, i + 1) },
-                                        enabled = i < queue.size - 1,
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Rounded.KeyboardArrowDown, "Descendre",
-                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                        )
-                                    }
+                                    // Poignée de réordonnancement : on la
+                                    // tient et on glisse, la ligne échange sa
+                                    // place à chaque rangée franchie. La
+                                    // liste bouge sous le doigt, d'où
+                                    // l'accumulateur remis à zéro à chaque
+                                    // échange plutôt qu'un vrai survol.
+                                    var dragAccum by remember { mutableFloatStateOf(0f) }
+                                    var rowIndex by remember { mutableStateOf(i) }
+                                    rowIndex = i
+                                    Icon(
+                                        Icons.Rounded.DragHandle, "Réordonner",
+                                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .pointerInput(Unit) {
+                                                detectDragGestures(
+                                                    onDragStart = { dragAccum = 0f },
+                                                    onDrag = { change, amount ->
+                                                        change.consume()
+                                                        dragAccum += amount.y
+                                                        val step = 56.dp.toPx()
+                                                        // Taille lue au moment
+                                                        // du geste : la lambda
+                                                        // est figée à la 1re
+                                                        // composition
+                                                        val n = vm.queue.value.size
+                                                        while (dragAccum > step / 2 &&
+                                                            rowIndex < n - 1
+                                                        ) {
+                                                            vm.moveQueueItem(rowIndex, rowIndex + 1)
+                                                            rowIndex++
+                                                            dragAccum -= step
+                                                        }
+                                                        while (dragAccum < -step / 2 &&
+                                                            rowIndex > 0
+                                                        ) {
+                                                            vm.moveQueueItem(rowIndex, rowIndex - 1)
+                                                            rowIndex--
+                                                            dragAccum += step
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                    )
                                     IconButton(
                                         onClick = { vm.removeFromQueue(i) },
                                         modifier = Modifier.size(32.dp)

@@ -1502,7 +1502,31 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         val eOut = current.track.energyMean
         val eIn = next.energyMean
         val bright = current.track.centroid
+        // Caractère des deux morceaux, quand l'analyse récente l'a mesuré :
+        // un morceau TENU (nappes, chœurs, cuivres) supporte mal une coupe
+        // sèche — le son s'interrompt en pleine tenue — et se marie aux
+        // longues transitions ; un morceau PERCUSSIF fait l'inverse. Les
+        // anciennes analyses laissent ces champs à zéro : les règles
+        // historiques s'appliquent alors, inchangées.
+        val sustained = current.track.sustainRatio > 0.65f &&
+            next.sustainRatio > 0.55f
+        val percussive = current.track.sustainRatio in 0.01f..0.45f &&
+            next.sustainRatio in 0.01f..0.45f
         val pool: List<Pair<Double, Int>> = when {
+            // Deux morceaux tenus : fondus longs et filtres doux, jamais
+            // de coupe — c'est ici que les CUT écorchaient l'oreille
+            sustained -> listOf(
+                FADE_LOCKED_HARMONIC_S to KIND_HARMONIC,
+                20.0 to KIND_DARK,
+                FADE_NORMAL_S to KIND_NORMAL
+            )
+            // Deux morceaux percussifs : gestes francs, la coupe écho
+            // tombe sur des attaques et sonne voulue
+            percussive && eOut > 0.14f && eIn > 0.14f -> listOf(
+                7.0 to KIND_CUT,
+                FADE_NORMAL_S to KIND_NORMAL,
+                11.0 to KIND_EQ
+            )
             // Entrant calme : arrivée en douceur, sortant qui s'étouffe
             eIn > 0f && eIn < 0.10f -> listOf(
                 20.0 to KIND_DARK,
