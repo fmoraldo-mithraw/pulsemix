@@ -106,23 +106,45 @@ class EpicScoreTest {
         )
     }
 
-    // -------------------------------------------------- voie par rangs
+    // ------------------------------------------------- sans référence
 
     @Test
-    fun `sans ancres une minorite epique est trouvee par les rangs`() {
+    fun `sans ancres rien n est jamais propose`() {
+        // Même une minorité au profil orchestral marqué : sans référence
+        // désignée, deviner c'est se tromper — plutôt rien que n'importe
+        // quoi. Marquer un morceau « epic » en genre fait naître le mix.
         val lib = List(10) { epique("e:$it", title = "Voyage $it") } +
             List(30) { club("c:$it") }
-        val sel = EpicScore.select(lib)
-        assertTrue("la minorité épique doit ressortir", sel.isNotEmpty())
-        assertTrue(sel.all { it.uri.startsWith("e:") })
+        assertTrue(EpicScore.select(lib).isEmpty())
     }
 
     @Test
     fun `une bibliotheque uniforme n en propose aucun`() {
-        // Tout le monde à égalité : personne n'est « plus épique », et le
-        // plancher refuse de désigner un moins pire.
         val lib = List(40) { club("c:$it") }
         assertTrue(EpicScore.select(lib).isEmpty())
+    }
+
+    // ------------------------------------------------- rayon d'admission
+
+    @Test
+    fun `un profil a mi chemin des ancres reste dehors`() {
+        // Ni club ni épique : une ballade à mi-chemin sur toutes les
+        // mesures. La distance quadratique la tient à l'écart.
+        val miChemin = epique("mi").copy(
+            title = "Slow Burn",
+            energyMean = 0.17f, energyPeak = 0.30f, centroid = 2550f,
+            onsetRate = 2.5f, sustainRatio = 0.55f, lowMidRatio = 0.37f,
+            dynamicSpread = 3.2f, energySlope = 1.5f
+        )
+        val lib = anchors(4) + miChemin + List(30) { club("c:$it") }
+        assertTrue(EpicScore.select(lib).none { it.uri == "mi" })
+    }
+
+    @Test
+    fun `un leger ecart sur une mesure est admis`() {
+        val proche = epique("proche").copy(title = "Voyage", sustainRatio = 0.78f)
+        val lib = anchors(4) + proche + List(30) { club("c:$it") }
+        assertTrue(EpicScore.select(lib).any { it.uri == "proche" })
     }
 
     // ------------------------------------------------------- « pas épique »
