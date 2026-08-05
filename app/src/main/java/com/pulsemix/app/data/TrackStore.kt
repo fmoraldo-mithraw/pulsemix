@@ -58,7 +58,12 @@ data class Track(
      * [com.pulsemix.app.analysis.AudioAnalyzer.FEATURES_VERSION], le
      * morceau est réanalysé au prochain scan.
      */
-    val featuresVersion: Int = 0
+    val featuresVersion: Int = 0,
+    /**
+     * Jamais dans le mix Épique, quoi qu'en disent son nom ou son profil
+     * sonore — et jamais comme référence de ce que l'épique sonne.
+     */
+    val notEpic: Boolean = false
 )
 
 /**
@@ -192,6 +197,7 @@ class TrackStore(context: Context) {
             o.put("sustainRatio", t.sustainRatio.toDouble())
             o.put("lowMidRatio", t.lowMidRatio.toDouble())
             o.put("featuresVersion", t.featuresVersion)
+            o.put("notEpic", t.notEpic)
             return o
         }
 
@@ -222,7 +228,8 @@ class TrackStore(context: Context) {
             dynamicSpread = o.optDouble("dynamicSpread", 0.0).toFloat(),
             sustainRatio = o.optDouble("sustainRatio", 0.0).toFloat(),
             lowMidRatio = o.optDouble("lowMidRatio", 0.0).toFloat(),
-            featuresVersion = o.optInt("featuresVersion", 0)
+            featuresVersion = o.optInt("featuresVersion", 0),
+            notEpic = o.optBoolean("notEpic", false)
         )
     }
 

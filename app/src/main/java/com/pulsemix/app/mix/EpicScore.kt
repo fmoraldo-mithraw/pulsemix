@@ -82,7 +82,10 @@ object EpicScore {
      * Liste vide si rien n'y ressemble : le mix n'est alors pas proposé.
      */
     fun select(all: List<Track>, max: Int = 24): List<Track> {
-        val pool = all.filter { it.analyzed && !it.excluded }
+        // Le marquage « pas épique » l'emporte sur tout — nom compris. Un
+        // morceau écarté ne sert pas non plus de référence : sinon un faux
+        // « epic » continuerait de déformer le profil des ancres.
+        val pool = all.filter { it.analyzed && !it.excluded && !it.notEpic }
         if (pool.size < 4) return emptyList()
         // Les ancres n'ont un profil exploitable qu'analysées avec le jeu
         // de mesures courant : les anciennes analyses n'ont ni son tenu ni

@@ -85,6 +85,12 @@ fun TrackOptionsDialogs(
                             else "Exclure des mix"
                         )
                     }
+                    TextButton(onClick = { vm.toggleNotEpic(track); onClose() }) {
+                        Text(
+                            if (track.notEpic) "Réautoriser dans le mix Épique"
+                            else "Pas épique (jamais dans ce mix)"
+                        )
+                    }
                     TextButton(onClick = { bpmEdit = true; menuOpen = false }) {
                         Text("Corriger le BPM (${track.bpm})")
                     }

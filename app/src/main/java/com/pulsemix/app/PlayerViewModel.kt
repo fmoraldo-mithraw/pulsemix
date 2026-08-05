@@ -226,6 +226,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         it.copy(excluded = !it.excluded)
     }
 
+    /** Écarte (ou réautorise) ce morceau du mix Épique et de sa référence. */
+    fun toggleNotEpic(track: Track) = updateTrack(track.uri) {
+        it.copy(notEpic = !it.notEpic)
+    }
+
     /** Corrige le BPM à la main (verrouillé contre la réanalyse). */
     fun setManualBpm(track: Track, bpm: Float) = updateTrack(track.uri) {
         it.copy(bpm = bpm, bpmLocked = true, analyzed = true)

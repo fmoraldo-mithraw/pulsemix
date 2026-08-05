@@ -125,6 +125,41 @@ class EpicScoreTest {
         assertTrue(EpicScore.select(lib).isEmpty())
     }
 
+    // ------------------------------------------------------- « pas épique »
+
+    @Test
+    fun `un morceau marque pas epique n est jamais retenu meme nomme`() {
+        val banni = epique("banni", title = "Epic Party", artist = "Two Steps From Hell")
+            .copy(notEpic = true)
+        val lib = anchors(4) + banni + List(20) { club("c:$it") }
+        assertTrue(EpicScore.select(lib).none { it.uri == "banni" })
+    }
+
+    @Test
+    fun `un morceau ecarte ne sert plus de reference`() {
+        // Trois ancres dont une écartée : il n'en reste que deux de
+        // confiance — pas assez pour un profil, seuls les nommés restants
+        // sont sélectionnés. L'écartée ne réapparaît nulle part.
+        val lib = anchors(2) +
+            anchors(1).map { it.copy(uri = "banni", notEpic = true) } +
+            List(6) { epique("jumeau:$it", title = "Voyage $it") } +
+            List(20) { club("c:$it") }
+        val sel = EpicScore.select(lib)
+        assertEquals(2, sel.size)
+        assertTrue(sel.none { it.uri == "banni" })
+    }
+
+    @Test
+    fun `un jumeau acoustique ecarte ne suit pas les ancres`() {
+        val lib = anchors(4) +
+            epique("jumeau:ok") +
+            epique("jumeau:non").copy(notEpic = true) +
+            List(20) { club("c:$it") }
+        val sel = EpicScore.select(lib)
+        assertTrue(sel.any { it.uri == "jumeau:ok" })
+        assertTrue(sel.none { it.uri == "jumeau:non" })
+    }
+
     // ---------------------------------------------------------- bornes
 
     @Test
