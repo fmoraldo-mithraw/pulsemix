@@ -7,15 +7,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Reconnaissance des morceaux épiques. Le piège est de confondre l'épique
- * avec « fort », avec « calme » ou avec « qui monte » : chacun de ces
- * signaux se retrouve ailleurs, c'est leur réunion qui signe.
+ * Sélection des morceaux épiques. Le contrat : les morceaux nommés épiques
+ * définissent la référence de la bibliothèque et leurs semblables les
+ * rejoignent ; sans référence, un classement relatif strict ; et une
+ * bibliothèque sans épique n'en propose jamais.
  */
 class EpicScoreTest {
 
-    /** Un orchestral cinématique : chœurs tenus, crescendo, grande dynamique. */
-    private fun epique(title: String = "Sun of Pearl", artist: String = "X") = Track(
-        uri = "u:$title", title = title, artist = artist, durationMs = 240_000,
+    /** Un orchestral cinématique analysé avec le jeu de mesures courant. */
+    private fun epique(
+        uri: String,
+        title: String = "Sun of Pearl",
+        artist: String = "Inconnu"
+    ) = Track(
+        uri = uri, title = title, artist = artist, durationMs = 240_000,
         bpm = 92f, energyMean = 0.11f, energyPeak = 0.30f, centroid = 1900f,
         onsetRate = 1.2f, analyzed = true,
         lowMidRatio = 0.52f, sustainRatio = 0.80f,
@@ -23,187 +28,136 @@ class EpicScoreTest {
     )
 
     /** Électro de club : plate, dense en attaques, sans montée. */
-    private fun club() = Track(
-        uri = "u:club", title = "Pump It", artist = "DJ Y", durationMs = 200_000,
+    private fun club(uri: String) = Track(
+        uri = uri, title = "Pump It", artist = "DJ Y", durationMs = 200_000,
         bpm = 128f, energyMean = 0.24f, energyPeak = 0.30f, centroid = 3200f,
         onsetRate = 3.8f, analyzed = true,
         lowMidRatio = 0.22f, sustainRatio = 0.30f,
         energySlope = 1.05f, dynamicSpread = 1.5f, featuresVersion = 2
     )
 
-    /** Ambient : tenu et calme, mais ne monte pas et ne tape jamais. */
-    private fun ambient() = Track(
-        uri = "u:amb", title = "Drifting", artist = "Z", durationMs = 300_000,
-        bpm = 70f, energyMean = 0.04f, energyPeak = 0.06f, centroid = 1400f,
-        onsetRate = 0.5f, analyzed = true,
-        lowMidRatio = 0.42f, sustainRatio = 0.90f,
-        energySlope = 1.0f, dynamicSpread = 2.0f, featuresVersion = 2
-    )
-
-    /** Ballade rock : respire et monte, mais peu de tenu et peu de bas-médium. */
-    private fun ballade() = Track(
-        uri = "u:bal", title = "Slow Burn", artist = "W", durationMs = 260_000,
-        bpm = 76f, energyMean = 0.10f, energyPeak = 0.26f, centroid = 2900f,
-        onsetRate = 2.4f, analyzed = true,
-        lowMidRatio = 0.24f, sustainRatio = 0.45f,
-        energySlope = 1.9f, dynamicSpread = 4.2f, featuresVersion = 2
-    )
-
-    // ------------------------------------------------------------ le tri
-
-    @Test
-    fun `l orchestral cinematique est reconnu`() {
-        assertTrue("score = ${EpicScore.of(epique())}", EpicScore.of(epique()) >= EpicScore.FLOOR)
-    }
-
-    @Test
-    fun `l electro de club ne l est pas`() {
-        assertTrue(EpicScore.of(club()) < EpicScore.FLOOR)
-    }
-
-    @Test
-    fun `l ambient ne l est pas malgre son son tenu`() {
-        assertTrue(
-            "le tenu seul ne fait pas l'épique : il faut une montée et un sommet",
-            EpicScore.of(ambient()) < EpicScore.FLOOR
-        )
-    }
-
-    @Test
-    fun `la ballade rock ne l est pas malgre sa montee`() {
-        assertTrue(
-            "monter et respirer ne suffit pas sans chœurs ni cuivres",
-            EpicScore.of(ballade()) < EpicScore.of(epique())
-        )
-    }
-
-    @Test
-    fun `l epique devance tous les autres`() {
-        val e = EpicScore.of(epique())
-        assertTrue(e > EpicScore.of(club()))
-        assertTrue(e > EpicScore.of(ambient()))
-        assertTrue(e > EpicScore.of(ballade()))
+    private fun anchors(n: Int) = List(n) {
+        epique("a:$it", title = "Rise $it", artist = "Two Steps From Hell")
     }
 
     // ------------------------------------------------------------- noms
 
     @Test
     fun `les editeurs connus sont reconnus au nom`() {
-        assertTrue(EpicScore.namedEpic(epique(artist = "Two Steps From Hell")))
-        assertTrue(EpicScore.namedEpic(epique(artist = "Audiomachine")))
-        assertTrue(EpicScore.namedEpic(epique(title = "Epic Trailer Music")))
-        assertTrue(EpicScore.namedEpic(epique(title = "Cinematic Rise")))
+        assertTrue(EpicScore.namedEpic(epique("x", artist = "Two Steps From Hell")))
+        assertTrue(EpicScore.namedEpic(epique("x", artist = "Audiomachine")))
+        assertTrue(EpicScore.namedEpic(epique("x", title = "Epic Trailer Music")))
+        assertTrue(EpicScore.namedEpic(epique("x", title = "Cinematic Rise")))
     }
 
     @Test
     fun `un morceau ordinaire n est pas reconnu au nom`() {
-        assertFalse(EpicScore.namedEpic(club()))
-        assertFalse(EpicScore.namedEpic(ballade()))
+        assertFalse(EpicScore.namedEpic(club("x")))
+        assertFalse(EpicScore.namedEpic(epique("x", title = "Slow Burn")))
     }
 
-    @Test
-    fun `un nom evocateur ne rachete pas un son plat`() {
-        val platMaisNomme = club().copy(title = "Epic Party Anthem")
-        assertTrue(
-            "le son doit garder le dernier mot",
-            EpicScore.of(platMaisNomme) < EpicScore.of(epique())
-        )
-    }
+    // ------------------------------------------------- voie par ancres
 
     @Test
-    fun `un nom evocateur seul reste sous le plancher`() {
-        // Avant le resserrage, « Epic Party Anthem » sur un son de club
-        // plat passait quand même : le nom pesait trop lourd.
-        val platMaisNomme = club().copy(title = "Epic Party Anthem")
-        assertTrue(EpicScore.of(platMaisNomme) < EpicScore.FLOOR)
-    }
-
-    @Test
-    fun `un chant choral calme ne passe pas sans intensite`() {
-        // La matière y est (chœurs tenus, bas-médium) mais rien ne monte
-        // et rien ne tape : c'est du choral, pas de l'épique.
-        val hymne = epique(title = "Hymn").copy(
-            uri = "u:hymne",
-            lowMidRatio = 0.55f, sustainRatio = 0.92f,
-            energySlope = 1.1f, dynamicSpread = 2.4f,
-            energyPeak = 0.12f, onsetRate = 0.6f
-        )
-        assertTrue(EpicScore.of(hymne) < EpicScore.FLOOR)
-    }
-
-    @Test
-    fun `la forme seule ne compense plus le timbre absent`() {
-        // Monte fort, respire fort, tape fort — mais sans chœurs ni
-        // cuivres : le verrou de timbre doit le tenir sous le plancher.
-        val formeSansMatiere = epique(title = "Rise").copy(
-            uri = "u:forme",
-            lowMidRatio = 0.20f, sustainRatio = 0.40f,
-            energySlope = 3.0f, dynamicSpread = 6.5f,
-            energyPeak = 0.34f, onsetRate = 1.0f
-        )
-        assertTrue(EpicScore.of(formeSansMatiere) < EpicScore.FLOOR)
-    }
-
-    @Test
-    fun `un morceau non analyse ne compte que sur son nom`() {
-        val brut = Track(
-            uri = "u:brut", title = "Epic Trailer", artist = "?", durationMs = 0
-        )
-        assertTrue(EpicScore.of(brut) > 0f)
-        assertTrue("sans analyse, jamais la certitude", EpicScore.of(brut) < 0.7f)
-    }
-
-    @Test
-    fun `un morceau analyse avec l ancien jeu de mesures ne passe pas seul`() {
-        // featuresVersion 0 : ni montée ni son tenu enregistrés
-        val ancien = epique().copy(
-            lowMidRatio = 0f, sustainRatio = 0f,
-            energySlope = 0f, dynamicSpread = 0f, featuresVersion = 0
-        )
-        assertTrue(EpicScore.of(ancien) < EpicScore.FLOOR)
-    }
-
-    // --------------------------------------------------------- sélection
-
-    @Test
-    fun `une bibliotheque sans epique n en propose aucun`() {
-        val ordinaire = List(40) { club().copy(uri = "u:$it") }
-        assertTrue(
-            "être le moins plat d'une discothèque plate ne rend pas épique",
-            EpicScore.select(ordinaire).isEmpty()
-        )
-    }
-
-    @Test
-    fun `la selection garde les plus marques`() {
-        val lib = List(12) { epique(title = "E$it").copy(uri = "e:$it") } +
-            List(30) { club().copy(uri = "c:$it") }
+    fun `les semblables des ancres rejoignent la selection`() {
+        val lib = anchors(4) +
+            List(6) { epique("jumeau:$it", title = "Voyage $it") } +
+            List(30) { club("c:$it") }
         val sel = EpicScore.select(lib)
-        assertTrue(sel.isNotEmpty())
+        assertTrue("les ancres entrent de droit", sel.any { it.uri.startsWith("a:") })
         assertTrue(
-            "aucun morceau de club ne doit entrer",
+            "les jumeaux acoustiques doivent suivre les ancres",
+            List(6) { "jumeau:$it" }.all { u -> sel.any { it.uri == u } }
+        )
+        assertTrue(
+            "aucun morceau de club ne ressemble aux ancres",
             sel.none { it.uri.startsWith("c:") }
         )
     }
 
     @Test
-    fun `la selection ne depasse pas le plafond demande`() {
-        val lib = List(60) { epique(title = "E$it").copy(uri = "e:$it") }
+    fun `un profil eloigne des ancres reste dehors meme nombreux`() {
+        val lib = anchors(3) + List(60) { club("c:$it") }
+        val sel = EpicScore.select(lib)
+        assertEquals(
+            "seules les ancres : la masse de club ne force pas l'entrée",
+            3, sel.size
+        )
+    }
+
+    @Test
+    fun `des ancres pas encore reanalysees restent seules selectionnees`() {
+        // featuresVersion 0 : le profil de référence serait fait de zéros.
+        // Les ancres nommées restent sûres, la ressemblance attend.
+        val vieilles = anchors(4).map {
+            it.copy(
+                lowMidRatio = 0f, sustainRatio = 0f,
+                energySlope = 0f, dynamicSpread = 0f, featuresVersion = 0
+            )
+        }
+        val lib = vieilles +
+            List(6) { epique("libre:$it", title = "Voyage $it") } +
+            List(20) { club("c:$it") }
+        val sel = EpicScore.select(lib)
+        assertTrue(sel.isNotEmpty())
+        assertTrue(
+            "sans profil mesuré, seuls les noms font foi",
+            sel.all { EpicScore.namedEpic(it) }
+        )
+    }
+
+    // -------------------------------------------------- voie par rangs
+
+    @Test
+    fun `sans ancres une minorite epique est trouvee par les rangs`() {
+        val lib = List(10) { epique("e:$it", title = "Voyage $it") } +
+            List(30) { club("c:$it") }
+        val sel = EpicScore.select(lib)
+        assertTrue("la minorité épique doit ressortir", sel.isNotEmpty())
+        assertTrue(sel.all { it.uri.startsWith("e:") })
+    }
+
+    @Test
+    fun `une bibliotheque uniforme n en propose aucun`() {
+        // Tout le monde à égalité : personne n'est « plus épique », et le
+        // plancher refuse de désigner un moins pire.
+        val lib = List(40) { club("c:$it") }
+        assertTrue(EpicScore.select(lib).isEmpty())
+    }
+
+    // ---------------------------------------------------------- bornes
+
+    @Test
+    fun `les morceaux exclus ne sont jamais retenus`() {
+        val lib = anchors(4).map { it.copy(excluded = true) } +
+            List(10) { club("c:$it") }
+        assertTrue(EpicScore.select(lib).isEmpty())
+    }
+
+    @Test
+    fun `le plafond demande est respecte`() {
+        val lib = anchors(4) + List(40) { epique("jumeau:$it", title = "V $it") }
         assertEquals(10, EpicScore.select(lib, max = 10).size)
     }
 
     @Test
-    fun `les morceaux exclus ne sont jamais retenus`() {
-        val lib = List(12) { epique(title = "E$it").copy(uri = "e:$it", excluded = true) }
-        assertTrue(EpicScore.select(lib).isEmpty())
+    fun `une bibliotheque trop petite ne propose rien`() {
+        assertTrue(EpicScore.select(anchors(2)).isEmpty())
     }
 
     // --------------------------------------------------------- intensité
 
     @Test
     fun `l intensite range du plus retenu au plus ecrasant`() {
-        val doux = epique(title = "Doux").copy(uri = "d", energyPeak = 0.14f)
-        val fort = epique(title = "Fort").copy(uri = "f", energyPeak = 0.34f)
+        val doux = epique("d").copy(energyPeak = 0.14f)
+        val fort = epique("f").copy(energyPeak = 0.34f)
         assertTrue(EpicScore.intensity(doux) < EpicScore.intensity(fort))
+    }
+
+    @Test
+    fun `a sommet egal la masse tenue l emporte sur le coup sec`() {
+        val tenu = epique("t").copy(energyPeak = 0.30f, sustainRatio = 0.85f)
+        val sec = epique("s").copy(energyPeak = 0.30f, sustainRatio = 0.25f)
+        assertTrue(EpicScore.intensity(sec) < EpicScore.intensity(tenu))
     }
 }
