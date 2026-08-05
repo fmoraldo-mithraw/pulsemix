@@ -266,6 +266,19 @@ object PlayerCore {
             }
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                // Le lecteur a enchaîné TOUT SEUL (fin de morceau atteinte)
+                // alors qu'une bascule de fondu attendait encore que sa queue
+                // soit prête : cette bascule n'a plus d'objet. L'exécuter
+                // quand même rejouait la fin du morceau terminé et sautait un
+                // morceau (son onSwitch fait seekToNextMediaItem sur une file
+                // qui a déjà avancé). Nos propres bascules passent par un
+                // seek : elles arrivent ici avec REASON_SEEK, jamais AUTO.
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO &&
+                    pendingSwitch != null
+                ) {
+                    pendingSwitch = null
+                    releaseTail()
+                }
                 if (mode.value != PlayerMode.DJ) updateFromExo()
                 persistState()
             }
@@ -358,10 +371,19 @@ object PlayerCore {
                         (exo.currentPosition.toFloat() / d).coerceIn(0f, 1f)
                     // Fondu croisé vers le morceau suivant : déclenché assez
                     // tôt pour que les deux se chevauchent vraiment.
+                    //
+                    // Plancher de la fenêtre : ce tick vit sur un Handler que
+                    // l'écran éteint retarde parfois de plusieurs secondes. Se
+                    // réveiller à deux secondes de la fin et lancer quand même
+                    // un fondu garantissait le pire : le morceau se terminait
+                    // naturellement pendant la préparation, puis la bascule
+                    // tardive rejouait sa fin et sautait un morceau. Trop
+                    // tard, c'est trop tard : on laisse l'enchaînement direct.
                     if (crossfade.value && d > 0 && isPlaying.value &&
                         exo.hasNextMediaItem() && exoTail == null &&
                         currentTrack.value?.uri != crossfadedFrom &&
-                        d - exo.currentPosition in 1..(CROSSFADE_MS + CROSSFADE_LEAD_MS)
+                        d - exo.currentPosition in
+                        MIN_AUTO_CROSSFADE_REMAIN_MS..(CROSSFADE_MS + CROSSFADE_LEAD_MS)
                     ) {
                         crossfadedFrom = currentTrack.value?.uri
                         crossfadeToNext()
@@ -802,6 +824,24 @@ object PlayerCore {
     private const val AUTO_WATCHDOG_MS = 6_000L
 
     /**
+     * En deçà de ce reste, on ne lance plus de fondu de fin : le temps de
+     * préparer la queue, le morceau serait déjà fini. L'enchaînement direct
+     * d'ExoPlayer, quasi sans blanc, vaut mieux qu'une bascule après la
+     * bataille.
+     */
+    private const val MIN_AUTO_CROSSFADE_REMAIN_MS = 4_000L
+
+    /**
+     * Retard de la queue sur le direct au-delà duquel le fondu croisé est
+     * abandonné. La queue reprend le morceau là où il était quand on l'a
+     * préparée ; si sa sortie audio a mis longtemps à s'amorcer, le direct
+     * a continué pendant ce temps, et basculer ferait ré-entendre tout ce
+     * retard. Quelques centaines de millisecondes passent inaperçues dans
+     * un fondu ; au-delà, l'oreille entend distinctement « ça rejoue ».
+     */
+    private const val MAX_TAIL_DRIFT_MS = 400L
+
+    /**
      * Confie [uri] à partir de [fromMs] au second lecteur, qui le prolonge
      * puis s'efface sur [fadeMs]. Le lecteur principal est libre de partir
      * ailleurs immédiatement.
@@ -852,6 +892,13 @@ object PlayerCore {
         }
         exoTail = player
         pendingSwitch = onSwitch
+        // Le morceau que cette bascule doit quitter. Si la file a avancé
+        // entre-temps — fin de morceau atteinte, le lecteur a enchaîné tout
+        // seul — la bascule est caduque : l'appliquer rejouerait la fin du
+        // morceau terminé et sauterait un morceau. Le listener
+        // onMediaItemTransition l'annule dès la transition ; ce jeton est la
+        // ceinture qui couvre l'ordre d'arrivée des messages.
+        val expectedIndex = exo.currentMediaItemIndex
         var switched = false
 
         /** Bascule : les deux sources jouent, puis se croisent. */
@@ -863,6 +910,11 @@ object PlayerCore {
             // doivent être touchés — le garde-fou des 2,5 s passe ici quand
             // la demande a déjà été remplacée.
             if (pendingSwitch !== onSwitch) return
+            if (exo.currentMediaItemIndex != expectedIndex) {
+                pendingSwitch = null
+                releaseTail()
+                return
+            }
             val v0 = exo.volume
             if (!withTail) {
                 releaseTail()
@@ -916,6 +968,17 @@ object PlayerCore {
                         if (exoTail !== player) return@launch
                     }
                     tailAudible = player.currentPosition > start
+                    // Le direct a continué pendant que la queue s'amorçait.
+                    // Si elle a pris trop de retard, basculer ferait
+                    // ré-entendre tout ce qu'il a joué entre-temps — le
+                    // « ça rejoue » entendu à l'usage. On renonce alors au
+                    // fondu croisé : l'arrivée franche est moins bonne, mais
+                    // elle ne revient pas en arrière.
+                    if (tailAudible &&
+                        exo.currentPosition - player.currentPosition > MAX_TAIL_DRIFT_MS
+                    ) {
+                        tailAudible = false
+                    }
                     if (tailAudible) {
                         player.volume = v0
                         // Le fondu ne doit pas déborder de la fin du fichier :
