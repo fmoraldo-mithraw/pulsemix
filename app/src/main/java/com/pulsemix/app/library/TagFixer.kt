@@ -333,7 +333,7 @@ object TagFixer {
         val fp = AcoustId.fingerprint(ctx, t.uri, t.durationMs)
             ?: return SoundOutcome.NOT_FOUND
         val cands = AcoustId.lookup(fp)
-        val best = pickBest(cands, t.durationMs) ?: return SoundOutcome.NOT_FOUND
+        val best = pickBest(cands, t) ?: return SoundOutcome.NOT_FOUND
         if (best.title.isBlank()) return SoundOutcome.NOT_FOUND
         return when {
             // L'empreinte est formelle : c'est cet enregistrement
@@ -433,7 +433,7 @@ object TagFixer {
         var proposal: Suggestion? = null
         for ((qTitle, qArtist) in attempts) {
             if (qTitle.isBlank()) continue
-            val best = pickBest(lookup(qTitle, qArtist), t.durationMs) ?: continue
+            val best = pickBest(lookup(qTitle, qArtist), t) ?: continue
             if (best.title.isBlank()) continue
             if (best.title == t.title &&
                 (best.artist.isBlank() || best.artist == t.artist)
@@ -576,10 +576,43 @@ object TagFixer {
         save()
     }
 
-    /** Meilleur candidat : durée compatible d'abord, score ensuite. */
-    private fun pickBest(cands: List<Candidate>, durMs: Long): Candidate? {
-        val durOk = cands.filter { durationClose(it.lengthMs, durMs) }
-        return (durOk.ifEmpty { cands }).maxByOrNull { it.score }
+    /**
+     * Écart de score en deçà duquel deux candidats sont tenus pour aussi
+     * probables l'un que l'autre. AcoustID donne le MÊME score à tous les
+     * enregistrements d'une même empreinte — c'est le même son — et des
+     * scores voisins d'une empreinte à l'autre. En dessous de ce seuil, le
+     * son ne départage rien et c'est au nom du fichier de le faire.
+     */
+    private const val SCORE_TIE = 3
+
+    /**
+     * Meilleur candidat : durée compatible d'abord, puis score, et à score
+     * équivalent celui dont le titre et l'artiste ressemblent le plus au
+     * nom du fichier.
+     *
+     * Sans ce dernier critère, on prenait au hasard parmi des candidats
+     * strictement à égalité : d'où des « (Remastered 2011) » ou des
+     * « Various Artists » de compilation appliqués silencieusement à la
+     * place du morceau tel qu'il est sur le disque.
+     */
+    private fun pickBest(cands: List<Candidate>, t: Track): Candidate? {
+        if (cands.isEmpty()) return null
+        val durOk = cands.filter { durationClose(it.lengthMs, t.durationMs) }
+        val pool = durOk.ifEmpty { cands }
+        val fileTokens = NameMatch.tokens(NameMatch.fileNameOf(t.uri))
+        // Aucun nom de fichier exploitable : le score seul décide, comme avant
+        if (fileTokens.isEmpty()) return pool.maxByOrNull { it.score }
+        val topScore = pool.maxOf { it.score }
+        return pool
+            .filter { it.score >= topScore - SCORE_TIE }
+            .maxWithOrNull(
+                // À proximité égale — nom de fichier muet ou inexploitable —
+                // c'est le score qui tranche, comme avant.
+                compareBy<Candidate>(
+                    { NameMatch.similarityToFile(fileTokens, it.title, it.artist) },
+                    { it.score }
+                )
+            )
     }
 
     private fun durationClose(a: Long, b: Long): Boolean =
