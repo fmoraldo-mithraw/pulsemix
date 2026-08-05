@@ -44,7 +44,21 @@ data class Track(
     val genre: String = "",
     /** Type choisi à la main : protégé contre le scan et la réanalyse.
      *  Le fichier audio n'est jamais modifié. */
-    val genreLocked: Boolean = false
+    val genreLocked: Boolean = false,
+    /** Énergie du dernier tiers rapportée au premier : la montée. */
+    val energySlope: Float = 0f,
+    /** Écart entre crête et fond sonore : l'amplitude de respiration. */
+    val dynamicSpread: Float = 0f,
+    /** Part de son tenu (0..1) : nappes, chœurs et cuivres contre percussions. */
+    val sustainRatio: Float = 0f,
+    /** Part de l'énergie entre 180 et 1200 Hz : voix massées et cuivres. */
+    val lowMidRatio: Float = 0f,
+    /**
+     * Version du jeu de caractéristiques extraites. En deçà de
+     * [com.pulsemix.app.analysis.AudioAnalyzer.FEATURES_VERSION], le
+     * morceau est réanalysé au prochain scan.
+     */
+    val featuresVersion: Int = 0
 )
 
 /**
@@ -173,6 +187,11 @@ class TrackStore(context: Context) {
             o.put("segmentLocked", t.segmentLocked)
             o.put("genre", t.genre)
             o.put("genreLocked", t.genreLocked)
+            o.put("energySlope", t.energySlope.toDouble())
+            o.put("dynamicSpread", t.dynamicSpread.toDouble())
+            o.put("sustainRatio", t.sustainRatio.toDouble())
+            o.put("lowMidRatio", t.lowMidRatio.toDouble())
+            o.put("featuresVersion", t.featuresVersion)
             return o
         }
 
@@ -198,7 +217,12 @@ class TrackStore(context: Context) {
             bpmLocked = o.optBoolean("bpmLocked", false),
             segmentLocked = o.optBoolean("segmentLocked", false),
             genre = o.optString("genre", ""),
-            genreLocked = o.optBoolean("genreLocked", false)
+            genreLocked = o.optBoolean("genreLocked", false),
+            energySlope = o.optDouble("energySlope", 0.0).toFloat(),
+            dynamicSpread = o.optDouble("dynamicSpread", 0.0).toFloat(),
+            sustainRatio = o.optDouble("sustainRatio", 0.0).toFloat(),
+            lowMidRatio = o.optDouble("lowMidRatio", 0.0).toFloat(),
+            featuresVersion = o.optInt("featuresVersion", 0)
         )
     }
 

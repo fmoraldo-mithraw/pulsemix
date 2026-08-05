@@ -28,6 +28,16 @@ class AudioAnalyzer {
         const val HOP = 1024
         const val RMS_BLOCK = 4096
 
+        /**
+         * Version du jeu de caractéristiques extraites. Un morceau analysé
+         * avec une version antérieure est réanalysé au prochain scan : les
+         * mesures qui manquent ne peuvent pas être devinées après coup.
+         *
+         * 2 : montée, amplitude de respiration, part de son tenu et part de
+         * bas-médium — de quoi reconnaître l'orchestral et l'épique.
+         */
+        const val FEATURES_VERSION = 2
+
         val NOTE_NAMES = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
         // Camelot : index = pitch class du fondamental
         val CAMELOT_MAJOR = arrayOf("8B", "3B", "10B", "5B", "12B", "7B", "2B", "9B", "4B", "11B", "6B", "1B")
@@ -50,7 +60,15 @@ class AudioAnalyzer {
         val segmentMs: Long,
         val firstBeatMs: Long,
         val musicStartMs: Long,
-        val durationMs: Long
+        val durationMs: Long,
+        /** Énergie du dernier tiers rapportée au premier : la montée. */
+        val energySlope: Float,
+        /** Écart entre crête et fond sonore : l'amplitude de respiration. */
+        val dynamicSpread: Float,
+        /** Part de son tenu (0..1) : nappes, chœurs et cuivres contre percussions. */
+        val sustainRatio: Float,
+        /** Part de l'énergie entre 180 et 1200 Hz : voix massées et cuivres. */
+        val lowMidRatio: Float
     )
 
     suspend fun analyze(
@@ -101,7 +119,17 @@ class AudioAnalyzer {
                 segmentMs = segmentMs,
                 firstBeatMs = firstBeatMs,
                 musicStartMs = musicStartMs,
-                durationMs = durationMs
+                durationMs = durationMs,
+                energySlope = energySlope(rms),
+                dynamicSpread = dynamicSpread(rms),
+                sustainRatio = if (state.magTotal > 0.0)
+                    (1.0 - state.fluxTotal / state.magTotal)
+                        .coerceIn(0.0, 1.0).toFloat()
+                else 0f,
+                lowMidRatio = if (state.centroidDen > 0.0)
+                    (state.lowMidNum / state.centroidDen)
+                        .coerceIn(0.0, 1.0).toFloat()
+                else 0f
             )
         }
 
@@ -135,6 +163,19 @@ class AudioAnalyzer {
         val chroma = DoubleArray(12)
         var centroidNum = 0.0
         var centroidDen = 0.0
+
+        // Part de l'énergie dans le bas-médium (180-1200 Hz) : c'est là que
+        // vivent les voix massées et les cuivres — chœurs et cors, la
+        // signature de l'orchestral. Le rapport à l'énergie totale distingue
+        // ces timbres d'une production électronique, qui se répartit plutôt
+        // entre le grave profond et l'aigu percussif.
+        var lowMidNum = 0.0
+
+        // Attaques rapportées à la matière sonore : une nappe de cordes ou
+        // un chœur tenu montent peu et longtemps (flux faible pour beaucoup
+        // d'énergie), une batterie fait l'inverse.
+        var fluxTotal = 0.0
+        var magTotal = 0.0
 
         var fftStart = 0L
         var fftEnd = Long.MAX_VALUE
@@ -194,6 +235,8 @@ class AudioAnalyzer {
             var fluxLowSum = 0f
             var cNum = 0.0
             var cDen = 0.0
+            var magSum = 0f
+            var lowMidSum = 0.0
             val binHz = sampleRate.toFloat() / FFT_SIZE
             for (i in 1 until FFT_SIZE / 2) {
                 val m = ln(1f + 10f * mags[i])
@@ -204,8 +247,10 @@ class AudioAnalyzer {
                     if (i * binHz <= 200f) fluxLowSum += d
                 }
                 prevMags[i] = m
+                magSum += m
 
                 val freq = i * binHz
+                if (freq in 180f..1200f) lowMidSum += mags[i].toDouble()
                 if (freq in 55f..5000f) {
                     val pitch = (12.0 * log2(freq / 440.0) + 69.0).roundToInt()
                     val pc = ((pitch % 12) + 12) % 12
@@ -216,6 +261,13 @@ class AudioAnalyzer {
             }
             centroidNum += cNum
             centroidDen += cDen
+            lowMidNum += lowMidSum
+            // La toute première trame n'a rien à quoi se comparer : son flux
+            // vaut la trame entière et gonflerait la part d'attaques.
+            if (!firstFrame) {
+                fluxTotal += fluxSum.toDouble()
+                magTotal += magSum.toDouble()
+            }
             flux.add(fluxSum)
             fluxLow.add(fluxLowSum)
             firstFrame = false
@@ -815,5 +867,41 @@ class AudioAnalyzer {
         val sorted = values.sorted()
         val idx = ((sorted.size - 1) * p).roundToInt().coerceIn(0, sorted.size - 1)
         return sorted[idx]
+    }
+
+    /**
+     * La montée : énergie moyenne du dernier tiers rapportée à celle du
+     * premier. Un morceau qui finit deux fois plus fort qu'il n'a commencé
+     * rend 2. C'est la trace d'un crescendo, ce qui fait qu'un morceau
+     * « raconte » quelque chose plutôt que de tourner en boucle.
+     *
+     * Le tiers de tête est pris après le silence d'introduction : sinon
+     * n'importe quel morceau précédé d'un blanc paraîtrait monter à
+     * l'infini.
+     */
+    internal fun energySlope(rms: List<Float>): Float {
+        if (rms.size < 9) return 1f
+        val floor = percentile(rms, 0.05f) + 1e-6f
+        val start = rms.indexOfFirst { it > floor * 3f }.coerceAtLeast(0)
+        val body = rms.subList(start, rms.size)
+        if (body.size < 9) return 1f
+        val third = body.size / 3
+        val head = body.take(third).average().toFloat()
+        val tail = body.takeLast(third).average().toFloat()
+        if (head <= 1e-6f) return 1f
+        return (tail / head).coerceIn(0f, 8f)
+    }
+
+    /**
+     * L'amplitude de respiration : crête rapportée au fond sonore. Une
+     * production compressée reste autour de 1,5 ; un orchestre qui passe du
+     * murmure au tutti dépasse largement 5.
+     */
+    internal fun dynamicSpread(rms: List<Float>): Float {
+        if (rms.size < 4) return 1f
+        val low = percentile(rms, 0.10f)
+        val high = percentile(rms, 0.95f)
+        if (low <= 1e-6f) return if (high > 1e-6f) 8f else 1f
+        return (high / low).coerceIn(1f, 8f)
     }
 }

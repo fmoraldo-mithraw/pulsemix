@@ -413,7 +413,29 @@ object MixEngine {
             )
         }
 
-        // 7. Auto-DJ : toute la bibliothèque, jusqu'au bout de la nuit
+        // 7. Épique : chœurs, cuivres et crescendos, rangés en arc
+        run {
+            val epic = EpicScore.select(tracks)
+            if (epic.size >= 5) {
+                // Rangés du plus retenu au plus écrasant : dans ce
+                // répertoire, l'arc compte plus que la continuité de tempo,
+                // qui n'a de toute façon guère de sens sur de l'orchestral.
+                val ordered = epic.sortedBy { EpicScore.intensity(it) }
+                plans.add(
+                    MixPlan(
+                        "epique", "Épique",
+                        "Chœurs, cuivres et crescendos : ça part retenu et " +
+                            "ça finit en apothéose.",
+                        splitIntoPhases(
+                            ordered,
+                            listOf("Prélude", "Montée", "Apothéose", "Épilogue")
+                        )
+                    )
+                )
+            }
+        }
+
+        // 8. Auto-DJ : toute la bibliothèque, jusqu'au bout de la nuit
         if (tracks.size >= 8) {
             val ordered = chainOrder(tracks, ascending = true)
             plans.add(
@@ -438,8 +460,13 @@ object MixEngine {
         // plafonnait à ~20 min quelle que soit la durée choisie.
         if (targetMinutes != null) {
             val targetMs = targetMinutes * 60_000L
-            return deduped.map {
-                extendToDuration(trimToDuration(it, targetMs, dj), targetMs, dj, tracks)
+            // La rallonge pioche dans le vivier du plan, pas dans toute la
+            // bibliothèque : allonger le mix épique avec les morceaux les
+            // plus compatibles au tempo l'aurait rempli de variété.
+            val epicPool by lazy { EpicScore.select(tracks, max = 200) }
+            return deduped.map { p ->
+                val pool = if (p.id == "epique") epicPool else tracks
+                extendToDuration(trimToDuration(p, targetMs, dj), targetMs, dj, pool)
             }
         }
         return deduped

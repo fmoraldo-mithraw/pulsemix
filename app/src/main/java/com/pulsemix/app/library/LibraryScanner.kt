@@ -135,20 +135,29 @@ object LibraryScanner {
                         if (stopRequested) break
                         val uriStr = doc.uri.toString()
                         val existing = known[uriStr]
-                        if (existing != null && existing.analyzed) {
+                        // Analysé avec un jeu de mesures dépassé : il manque
+                        // des caractéristiques qu'on ne peut pas deviner après
+                        // coup (montée, respiration, son tenu, bas-médium).
+                        // On le refait — les réglages faits à la main sont
+                        // conservés plus bas.
+                        val upToDate = existing?.takeIf {
+                            it.analyzed &&
+                                it.featuresVersion >= AudioAnalyzer.FEATURES_VERSION
+                        }
+                        if (upToDate != null) {
                             // Rattrapage du genre sans réanalyse : tag du
                             // fichier, sinon déduction par titre/signature
                             // acoustique (« - » = vérifié, rien trouvé)
-                            if (!existing.genreLocked &&
-                                (existing.genre.isEmpty() || existing.genre == "-")
+                            if (!upToDate.genreLocked &&
+                                (upToDate.genre.isEmpty() || upToDate.genre == "-")
                             ) {
-                                var g = if (existing.genre.isEmpty())
+                                var g = if (upToDate.genre.isEmpty())
                                     readGenre(context, doc.uri) else "-"
-                                if (g == "-") g = GenreClassifier.infer(existing)
-                                if (g != existing.genre) store.put(existing.copy(genre = g))
+                                if (g == "-") g = GenreClassifier.infer(upToDate)
+                                if (g != upToDate.genre) store.put(upToDate.copy(genre = g))
                             }
                             _progress.value =
-                                Progress(done.incrementAndGet(), total, existing.title)
+                                Progress(done.incrementAndGet(), total, upToDate.title)
                             continue
                         }
                         launch {
@@ -222,7 +231,12 @@ object LibraryScanner {
                                         favorite = existing?.favorite == true,
                                         excluded = existing?.excluded == true,
                                         bpmLocked = lockedBpm != null,
-                                        segmentLocked = lockedSeg != null
+                                        segmentLocked = lockedSeg != null,
+                                        energySlope = features.energySlope,
+                                        dynamicSpread = features.dynamicSpread,
+                                        sustainRatio = features.sustainRatio,
+                                        lowMidRatio = features.lowMidRatio,
+                                        featuresVersion = AudioAnalyzer.FEATURES_VERSION
                                     )
                                 } else {
                                     Track(
