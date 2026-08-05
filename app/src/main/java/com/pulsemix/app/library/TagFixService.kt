@@ -36,13 +36,19 @@ class TagFixService : Service() {
 
     companion object {
         private const val EXTRA_FORCE = "force"
+        private const val EXTRA_WRITE_ALL = "writeAll"
         private const val ACTION_STOP = "com.pulsemix.app.tagfix.STOP"
         private const val CHANNEL_ID = "tagfix"
         private const val NOTIF_ID = 3
 
-        fun start(context: Context, force: Boolean = false) {
+        /**
+         * @param writeAll true pour reporter les tags de la bibliothèque
+         * dans les fichiers, au lieu de chercher des corrections en ligne.
+         */
+        fun start(context: Context, force: Boolean = false, writeAll: Boolean = false) {
             val i = Intent(context, TagFixService::class.java)
                 .putExtra(EXTRA_FORCE, force)
+                .putExtra(EXTRA_WRITE_ALL, writeAll)
             ContextCompat.startForegroundService(context, i)
         }
     }
@@ -85,24 +91,39 @@ class TagFixService : Service() {
             }
 
         val force = intent?.getBooleanExtra(EXTRA_FORCE, false) ?: false
+        val writeAll = intent?.getBooleanExtra(EXTRA_WRITE_ALL, false) ?: false
         scope.launch {
             val notifJob = launch {
-                TagFixer.progress.collect { p ->
-                    if (p != null) {
-                        val (done, total, applied) = p
-                        notify(
-                            buildNotification(
-                                "Tags $done/$total — $applied corrigés",
-                                done, total
+                if (writeAll) {
+                    TagFixer.writeProgress.collect { p ->
+                        if (p != null) {
+                            val (done, total) = p
+                            notify(
+                                buildNotification(
+                                    "Écriture des tags $done/$total", done, total
+                                )
                             )
-                        )
+                        }
+                    }
+                } else {
+                    TagFixer.progress.collect { p ->
+                        if (p != null) {
+                            val (done, total, applied) = p
+                            notify(
+                                buildNotification(
+                                    "Tags $done/$total — $applied corrigés",
+                                    done, total
+                                )
+                            )
+                        }
                     }
                 }
             }
             try {
                 val store = Graph.store
                 store.loaded.first { it }
-                TagFixer.fixAll(store, force)
+                if (writeAll) TagFixer.writeAllToFiles(store)
+                else TagFixer.fixAll(store, force)
             } finally {
                 notifJob.cancel()
                 stopSelf()

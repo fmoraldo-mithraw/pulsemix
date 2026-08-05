@@ -93,7 +93,7 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         // ------------------------------------------- tags dans les fichiers
         val writeTags by vm.writeTagsToFiles.collectAsStateWithLifecycle()
         val tagWriteMsg by vm.tagWriteMessage.collectAsStateWithLifecycle()
-        val applied by vm.tagApplied.collectAsStateWithLifecycle()
+        val writeProg by vm.tagWriteProgress.collectAsStateWithLifecycle()
         SettingSwitch(
             title = "Écrire les tags dans les fichiers",
             subtitle = "Par défaut, les corrections de titre et d'artiste ne " +
@@ -103,10 +103,20 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
             checked = writeTags,
             onChange = { vm.setWriteTagsToFiles(it) }
         )
-        if (writeTags && applied.isNotEmpty()) {
+        if (writeTags) {
+            // Rattrapage de TOUT ce qui a été corrigé avant d'activer
+            // l'option : la bibliothèque fait foi, chaque fichier est lu et
+            // seuls ceux dont les tags diffèrent sont réécrits. Continue en
+            // arrière-plan, appli fermée.
             androidx.compose.material3.OutlinedButton(
-                onClick = { vm.writeAllTagsToFiles() }
-            ) { Text("Écrire les ${applied.size} corrections déjà faites") }
+                onClick = { vm.writeAllTagsToFiles() },
+                enabled = writeProg == null
+            ) {
+                Text(
+                    writeProg?.let { (done, total) -> "Écriture $done/$total…" }
+                        ?: "Reporter tous les tags de la bibliothèque"
+                )
+            }
         }
         tagWriteMsg?.let {
             Text(

@@ -322,18 +322,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         com.pulsemix.app.library.TagFixer.setWriteToFiles(enabled)
 
     /** Résultat de la dernière écriture en masse (message à afficher). */
-    val tagWriteMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val tagWriteMessage = com.pulsemix.app.library.TagFixer.writeMessage
 
-    /** Reporte dans les fichiers toutes les corrections déjà appliquées. */
-    fun writeAllTagsToFiles() {
-        viewModelScope.launch {
-            tagWriteMessage.value = "Écriture des tags en cours…"
-            val n = com.pulsemix.app.library.TagFixer.writeAllApplied()
-            tagWriteMessage.value =
-                if (n > 0) "$n fichiers mis à jour."
-                else "Aucun fichier n'a pu être mis à jour."
-        }
-    }
+    /** Avancement du report bibliothèque → fichiers : (faits, total). */
+    val tagWriteProgress = com.pulsemix.app.library.TagFixer.writeProgress
+
+    /**
+     * Reporte les tags de la bibliothèque dans tous les fichiers qui en
+     * diffèrent. Service en avant-plan : continue appli fermée.
+     */
+    fun writeAllTagsToFiles() =
+        com.pulsemix.app.library.TagFixService.start(
+            getApplication(), writeAll = true
+        )
 
     /** Nombre de morceaux déjà examinés par la recherche de tags. */
     val tagChecked = com.pulsemix.app.library.TagFixer.checkedCount

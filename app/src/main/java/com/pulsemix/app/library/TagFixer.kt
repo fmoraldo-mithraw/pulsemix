@@ -76,21 +76,50 @@ object TagFixer {
         writeScope.launch { TagWriter.write(ctx, uri, title, artist) }
     }
 
+    /** Avancement du report bibliothèque → fichiers : (faits, total). */
+    val writeProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+
+    /** Résultat du dernier report (message à afficher dans les réglages). */
+    val writeMessage = MutableStateFlow<String?>(null)
+
     /**
-     * Écrit dans les fichiers toutes les corrections déjà appliquées :
-     * pour celles faites avant d'activer l'option.
+     * Reporte les tags de la BIBLIOTHÈQUE dans les fichiers audio, pour
+     * toutes les corrections faites avant d'activer l'option.
+     *
+     * La bibliothèque fait foi, pas l'historique : celui-ci ne garde que
+     * les 300 dernières corrections, et tout ce qui avait été corrigé
+     * au-delà — ou avant qu'il existe — n'était jamais reporté. Chaque
+     * fichier est d'abord LU : seuls ceux dont les tags incrustés
+     * diffèrent sont réécrits, pas de copie ffmpeg pour rien.
+     *
      * @return nombre de fichiers effectivement réécrits.
      */
-    suspend fun writeAllApplied(): Int = withContext(Dispatchers.IO) {
+    suspend fun writeAllToFiles(store: TrackStore): Int = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext 0
-        var n = 0
-        // Une seule écriture par morceau, la plus récente d'abord
-        val seen = HashSet<String>()
-        for (s in applied.value) {
-            if (!seen.add(s.uri)) continue
-            if (TagWriter.write(ctx, s.uri, s.newTitle, s.newArtist)) n++
+        if (writeProgress.value != null) return@withContext 0
+        stopRequested = false
+        val all = store.tracks.value
+        var written = 0
+        writeProgress.value = 0 to all.size
+        try {
+            for ((i, t) in all.withIndex()) {
+                if (stopRequested) break
+                val embedded = readFileTags(ctx, t.uri)
+                // Fichier illisible : ne pas risquer une réécriture aveugle
+                if (embedded != null &&
+                    (embedded.first != t.title || embedded.second != t.artist)
+                ) {
+                    if (TagWriter.write(ctx, t.uri, t.title, t.artist)) written++
+                }
+                writeProgress.value = (i + 1) to all.size
+            }
+        } finally {
+            writeProgress.value = null
+            writeMessage.value =
+                if (written > 0) "$written fichiers mis à jour."
+                else "Tous les fichiers portaient déjà les bons tags."
         }
-        n
+        written
     }
 
     /** Progression du passage bibliothèque : (faits, total, appliqués auto). */
