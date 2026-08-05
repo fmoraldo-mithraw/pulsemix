@@ -673,19 +673,17 @@ object PlayerCore {
     private fun crossfadeTo(possible: Boolean, go: () -> Unit) {
         val uri = currentTrack.value?.uri
         if (!possible || !crossfade.value || uri == null || !isPlaying.value) {
-            // Même ordre qu'en fondu : retirer la bascule en attente avant
-            // stopTail, qui l'oublierait, et l'appliquer après.
-            val pending = pendingSwitch
-            pendingSwitch = null
-            stopTail()
-            pending?.invoke()
+            consumePendingBeforeGesture()
             go()
             return
         }
         // Pas besoin de marquer le morceau comme déjà fondu : la queue reste
         // en place pendant toute la bascule, et le déclencheur de fin exige
         // justement qu'il n'y en ait aucune.
-        handOffTail(uri, exo.currentPosition, CROSSFADE_MS, GESTURE_WATCHDOG_MS, go)
+        handOffTail(
+            uri, exo.currentPosition, CROSSFADE_MS, GESTURE_WATCHDOG_MS,
+            fromGesture = true, go
+        )
     }
 
     fun next() {
@@ -759,8 +757,30 @@ object PlayerCore {
     /**
      * Changement de morceau demandé mais pas encore appliqué : il n'a lieu
      * qu'une fois la queue prête à prolonger le son.
+     *
+     * L'origine compte. Une bascule née d'un GESTE qu'un nouveau geste
+     * remplace doit être appliquée d'abord — deux « suivant » rapprochés
+     * avancent de deux morceaux. Une bascule née de l'ENCHAÎNEMENT
+     * AUTOMATIQUE de fin de morceau, elle, doit être jetée : l'utilisateur
+     * ne l'a pas encore entendue, la rejouer sous son geste faisait sauter
+     * un morceau de trop — et « précédent » atterrissait au début du
+     * morceau… suivant.
      */
-    private var pendingSwitch: (() -> Unit)? = null
+    private class PendingSwitch(val go: () -> Unit, val fromGesture: Boolean)
+
+    private var pendingSwitch: PendingSwitch? = null
+
+    /**
+     * Retire la bascule en attente et l'applique si c'était un geste.
+     * Toujours AVANT stopTail (qui l'oublierait) ; l'application vient
+     * après, car stopTail remet les fondus à plat.
+     */
+    private fun consumePendingBeforeGesture() {
+        val pending = pendingSwitch
+        pendingSwitch = null
+        stopTail()
+        if (pending != null && pending.fromGesture) quickSwitch(pending.go)
+    }
 
     /**
      * Saut immédiat, sans queue pour prolonger le son : on remonte du
@@ -828,8 +848,17 @@ object PlayerCore {
      * préparer la queue, le morceau serait déjà fini. L'enchaînement direct
      * d'ExoPlayer, quasi sans blanc, vaut mieux qu'une bascule après la
      * bataille.
+     *
+     * Borne ADAPTATIVE : figée à 4 s, elle écrasait la fenêtre de
+     * déclenchement aux petits réglages — à 3 s de fondu, la fenêtre
+     * [4 s, 5 s] ne faisait qu'une seconde, et le premier tick un peu
+     * retardé l'enjambait : plus aucun fondu de fin, silencieusement. La
+     * fenêtre garde donc au moins trois secondes de large ; descendre la
+     * borne est sans danger, les verrous de bascule tardive (transition
+     * AUTO, jeton d'index) couvrent déjà le cas où c'était trop juste.
      */
-    private const val MIN_AUTO_CROSSFADE_REMAIN_MS = 4_000L
+    private val MIN_AUTO_CROSSFADE_REMAIN_MS: Long
+        get() = 4_000L.coerceAtMost(CROSSFADE_MS + CROSSFADE_LEAD_MS - 3_000L)
 
     /**
      * Retard de la queue sur le direct au-delà duquel le fondu croisé est
@@ -851,19 +880,13 @@ object PlayerCore {
         fromMs: Long,
         fadeMs: Long,
         watchdogMs: Long,
+        fromGesture: Boolean,
         onSwitch: () -> Unit
     ) {
-        // Une bascule encore en attente appartient à un geste précédent : la
-        // congédier sans l'appliquer perdrait cet appui. Deux « suivant »
-        // rapprochés doivent bien avancer de deux morceaux.
-        //
-        // L'ordre compte : on la retire de l'attente AVANT stopTail, qui
-        // l'oublierait, et on ne l'applique qu'APRÈS, car stopTail remet
-        // les fondus à plat et annulerait le sien.
-        val pending = pendingSwitch
-        pendingSwitch = null
-        stopTail()
-        pending?.let { quickSwitch(it) }
+        // Une bascule de geste encore en attente est appliquée d'abord (deux
+        // « suivant » rapprochés avancent de deux morceaux) ; une bascule
+        // automatique est jetée (voir PendingSwitch).
+        consumePendingBeforeGesture()
         val player = try {
             ExoPlayer.Builder(appContext).build().apply {
                 // Surtout pas de focus audio : il est déjà tenu par le
@@ -891,7 +914,8 @@ object PlayerCore {
             return
         }
         exoTail = player
-        pendingSwitch = onSwitch
+        val token = PendingSwitch(onSwitch, fromGesture)
+        pendingSwitch = token
         // Le morceau que cette bascule doit quitter. Si la file a avancé
         // entre-temps — fin de morceau atteinte, le lecteur a enchaîné tout
         // seul — la bascule est caduque : l'appliquer rejouerait la fin du
@@ -909,7 +933,7 @@ object PlayerCore {
             // appartient plus. Ni le son ni la queue, désormais à lui, ne
             // doivent être touchés — le garde-fou des 2,5 s passe ici quand
             // la demande a déjà été remplacée.
-            if (pendingSwitch !== onSwitch) return
+            if (pendingSwitch !== token) return
             if (exo.currentMediaItemIndex != expectedIndex) {
                 pendingSwitch = null
                 releaseTail()
@@ -1000,9 +1024,10 @@ object PlayerCore {
                 } catch (_: Exception) {
                     releaseTail()
                 }
-                // Un geste plus récent a repris la main pendant l'attente : il
-                // a déjà appliqué cette bascule, ne pas la rejouer.
-                if (pendingSwitch !== onSwitch) return@launch
+                // Un geste plus récent a repris la main pendant l'attente,
+                // ou le lecteur a enchaîné tout seul : cette bascule ne nous
+                // appartient plus.
+                if (pendingSwitch !== token) return@launch
                 pendingSwitch = null
                 // La queue n'a jamais sorti de son — fichier trop lent à
                 // ouvrir, position introuvable. Basculer quand même en la
@@ -1114,7 +1139,10 @@ object PlayerCore {
             persistState()
             return
         }
-        handOffTail(uri, exo.currentPosition, SEEK_CROSSFADE_MS, GESTURE_WATCHDOG_MS) {
+        handOffTail(
+            uri, exo.currentPosition, SEEK_CROSSFADE_MS, GESTURE_WATCHDOG_MS,
+            fromGesture = true
+        ) {
             exo.seekTo(target)
             persistState()
         }
@@ -1127,7 +1155,10 @@ object PlayerCore {
      */
     private fun crossfadeToNext() {
         val uri = currentTrack.value?.uri ?: return
-        handOffTail(uri, exo.currentPosition, CROSSFADE_MS, AUTO_WATCHDOG_MS) {
+        handOffTail(
+            uri, exo.currentPosition, CROSSFADE_MS, AUTO_WATCHDOG_MS,
+            fromGesture = false
+        ) {
             exo.seekToNextMediaItem()
         }
     }
