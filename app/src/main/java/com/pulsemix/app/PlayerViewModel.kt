@@ -338,10 +338,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Nombre de morceaux déjà examinés par la recherche de tags. */
     val tagChecked = com.pulsemix.app.library.TagFixer.checkedCount
 
-    /** Cherche les tags corrects de toute la bibliothèque (MusicBrainz). */
-    fun fetchTagsAll() {
-        viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixAll(store) }
-    }
+    /**
+     * Cherche les tags corrects de toute la bibliothèque. Service en
+     * avant-plan : le passage continue appli quittée ou écran éteint —
+     * dans le ViewModel, quitter l'appli l'arrêtait net, gênant pour un
+     * travail limité à ~1 morceau/s par politesse envers les services.
+     */
+    fun fetchTagsAll() =
+        com.pulsemix.app.library.TagFixService.start(getApplication())
 
     /** Vrai pendant une remise à zéro de la base de tags. */
     val tagResetting = com.pulsemix.app.library.TagFixer.resetting
@@ -367,11 +371,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Reprend la vérification depuis zéro, y compris les morceaux déjà vus. */
-    fun recheckAllTags() {
-        viewModelScope.launch {
-            com.pulsemix.app.library.TagFixer.fixAll(store, force = true)
-        }
-    }
+    fun recheckAllTags() =
+        com.pulsemix.app.library.TagFixService.start(getApplication(), force = true)
 
     fun fetchTagsFor(track: Track) {
         viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixOne(store, track) }

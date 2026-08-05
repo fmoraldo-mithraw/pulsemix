@@ -783,6 +783,14 @@ object PlayerCore {
     private var tailJob: Job? = null
 
     /**
+     * Égaliseur de la queue, copie de celui du principal. Sans lui, un
+     * morceau écouté avec les basses boostées ou l'égaliseur réglé perdait
+     * d'un coup tout son caractère en passant au second lecteur — un saut
+     * de timbre entendu comme une saccade à l'instant de la bascule.
+     */
+    private var eqTail: android.media.audiofx.Equalizer? = null
+
+    /**
      * Changement de morceau demandé mais pas encore appliqué : il n'a lieu
      * qu'une fois la queue prête à prolonger le son.
      *
@@ -893,10 +901,16 @@ object PlayerCore {
      * abandonné. La queue reprend le morceau là où il était quand on l'a
      * préparée ; si sa sortie audio a mis longtemps à s'amorcer, le direct
      * a continué pendant ce temps, et basculer ferait ré-entendre tout ce
-     * retard. Quelques centaines de millisecondes passent inaperçues dans
-     * un fondu ; au-delà, l'oreille entend distinctement « ça rejoue ».
+     * retard.
+     *
+     * Abaissé de 400 à 150 ms : entre les deux, le retour en arrière
+     * s'entendait comme un bégaiement au moment précis où la barre saute
+     * au morceau suivant — la « saccade avant la transition » rapportée en
+     * mix. Sous 150 ms, le chevauchement se fond dans le croisement ;
+     * au-delà, l'arrivée franche d'un quart de seconde est moins voyante
+     * qu'un bout de morceau rejoué.
      */
-    private const val MAX_TAIL_DRIFT_MS = 400L
+    private const val MAX_TAIL_DRIFT_MS = 150L
 
     /**
      * Confie [uri] à partir de [fromMs] au second lecteur, qui le prolonge
@@ -1044,6 +1058,17 @@ object PlayerCore {
                         tailAudible = false
                     }
                     if (tailAudible) {
+                        // Même timbre que le principal : l'égaliseur et les
+                        // boosts suivent le morceau sur le second lecteur.
+                        // La session audio n'existe qu'une fois la lecture
+                        // partie — d'où la création ici et pas à la
+                        // préparation.
+                        eqTail = try {
+                            android.media.audiofx.Equalizer(0, player.audioSessionId)
+                                .also { applyEqTo(it, includeFilter = true) }
+                        } catch (_: Exception) {
+                            null
+                        }
                         player.volume = v0
                         // Le fondu ne doit pas déborder de la fin du fichier :
                         // le son s'arrêterait net au milieu du croisement.
@@ -1130,6 +1155,11 @@ object PlayerCore {
     }
 
     private fun releaseTail() {
+        try {
+            eqTail?.release()
+        } catch (_: Exception) {
+        }
+        eqTail = null
         val p = exoTail ?: return
         exoTail = null
         try {

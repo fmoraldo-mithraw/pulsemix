@@ -239,9 +239,11 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 )
             }
             Text(
-                "~1 morceau par seconde (limite du service). Les morceaux " +
-                    "déjà examinés sont sautés : une relance ne refait que " +
-                    "les nouveaux. Tu peux aussi vérifier un seul morceau " +
+                "~1 morceau par seconde (limite du service). Continue en " +
+                    "arrière-plan, appli fermée ou écran éteint — la " +
+                    "notification suit l'avancement. Les morceaux déjà " +
+                    "examinés sont sautés : une relance ne refait que les " +
+                    "nouveaux. Tu peux aussi vérifier un seul morceau " +
                     "depuis son menu ⋮.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)

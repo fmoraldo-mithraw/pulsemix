@@ -62,6 +62,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Correction des tags en ligne : continue appli fermée -->
+        <service
+            android:name=".library.TagFixService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- Widgets d'écran d'accueil : lecteur et file d'attente -->
         <receiver
             android:name=".widget.PlayerWidget"
