@@ -1433,9 +1433,12 @@ object PlayerCore {
         // Vrai fondu croisé : le passage qu'on quitte continue sur le second
         // lecteur pendant que le principal se replace et remonte. Le
         // déplacement lui-même n'a lieu qu'une fois ce second lecteur prêt à
-        // prendre le relais, sinon il y aurait un blanc.
+        // prendre le relais, sinon il y aurait un blanc. À L'ARRÊT en
+        // revanche, il n'y a aucun son à prolonger : lancer la queue ferait
+        // sonner l'appareil en pleine pause — on se replace en silence,
+        // comme les boutons suivant/précédent le font déjà.
         val track = currentTrack.value
-        if (track == null || !crossfade.value) {
+        if (track == null || !crossfade.value || !isPlaying.value) {
             exo.seekTo(targetIndex, target)
             persistState()
             return
