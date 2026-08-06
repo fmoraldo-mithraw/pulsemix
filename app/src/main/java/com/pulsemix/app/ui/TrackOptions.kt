@@ -1,6 +1,7 @@
 package com.pulsemix.app.ui
 
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -56,7 +57,9 @@ fun TrackOptionsDialogs(
                 Text(track.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
             },
             text = {
-                Column {
+                // La liste dépasse les petits écrans (une douzaine d'entrées) :
+                // sans défilement, le bas était simplement coupé.
+                Column(Modifier.verticalScroll(rememberScrollState())) {
                     val plays = remember(track.uri) { vm.playCount(track) }
                     Text(
                         if (plays == 0) "Jamais joué"
