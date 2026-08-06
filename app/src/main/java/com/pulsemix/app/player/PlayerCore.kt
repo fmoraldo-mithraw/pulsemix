@@ -274,8 +274,7 @@ object PlayerCore {
                 // tuait le fondu à l'instant même où il commençait.
                 if (!playing && !exo.playWhenReady) stopTail()
                 if (mode.value == PlayerMode.DJ) mixer.setPaused(!playing)
-                persistState()
-                notifyWidgets()
+                scheduleHousekeeping()
             }
 
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
@@ -306,7 +305,7 @@ object PlayerCore {
                 // prochain passage du tick.
                 releasePrepared()
                 if (mode.value != PlayerMode.DJ) updateFromExo()
-                persistState()
+                scheduleHousekeeping()
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -327,7 +326,9 @@ object PlayerCore {
                 currentIndex.value = queue.value.indexOfFirst { it.uri == track.uri }
                 nextTrack.value = djNextAfter(track.uri)
                 recordHistory(track.uri)
-                notifyWidgets()
+                // Différé : le changement de piste DJ tombe en pleine
+                // transition battue, pas le moment d'aller peindre des widgets.
+                scheduleHousekeeping()
                 // La notification média suit ExoPlayer, qui joue la piste
                 // silencieuse en DJ : recopier le morceau réel dans ses
                 // métadonnées pour que notification, Bluetooth et voiture
@@ -346,7 +347,7 @@ object PlayerCore {
                             .build()
                     )
                 }
-                persistState()
+                scheduleHousekeeping()
             }
 
             override fun onProgress(p: Float) {
@@ -472,14 +473,18 @@ object PlayerCore {
                 }
                 // Sauvegarde régulière de la position pendant la lecture, pour
                 // pouvoir reprendre au même endroit même après un plantage.
-                if (isPlaying.value &&
+                // Jamais pendant qu'une bascule de fondu est en vol : ce
+                // travail sur le thread principal tomberait pile sur
+                // l'instant le plus sensible à l'oreille, il attendra le
+                // prochain tour.
+                if (isPlaying.value && pendingSwitch == null &&
                     System.currentTimeMillis() - lastSaveMs > 5_000
                 ) {
                     persistState()
                 }
                 // Barre de progression des widgets : toutes les 3 s, assez
                 // pour qu'elle avance visiblement sans marteler le système
-                if (isPlaying.value &&
+                if (isPlaying.value && pendingSwitch == null &&
                     System.currentTimeMillis() - lastWidgetTickMs > 3_000
                 ) {
                     lastWidgetTickMs = System.currentTimeMillis()
@@ -940,6 +945,17 @@ object PlayerCore {
     private const val FADE_STEP_MS = 25L
 
     /**
+     * Pont de bascule entre la queue et le principal : 5 pas de 12 ms,
+     * soit ~60 ms de tuilage. Assez long pour noyer l'accroc de phase d'un
+     * échange sec entre deux flux jamais alignés à l'échantillon près,
+     * assez court pour que le dédoublement des deux sources — décalées de
+     * quelques dizaines de millisecondes au plus — reste fondu en un seul
+     * son à l'oreille.
+     */
+    private const val BRIDGE_STEPS = 5
+    private const val BRIDGE_STEP_MS = 12L
+
+    /**
      * Fondu d'entrée quand il n'y a PAS de queue pour prolonger le son.
      *
      * Un fondu croisé n'a de sens que si les deux sources sonnent ensemble.
@@ -1218,7 +1234,8 @@ object PlayerCore {
                         } catch (_: Exception) {
                             null
                         }
-                        player.volume = v0
+                        // La queue reste MUETTE ici : c'est le pont ci-dessous
+                        // qui la fait monter pendant que le principal descend.
                         // Le fondu ne doit pas déborder de la fin du fichier :
                         // le son s'arrêterait net au milieu du croisement.
                         // La durée annoncée par le lecteur n'est pas toujours
@@ -1240,28 +1257,78 @@ object PlayerCore {
                     }
                 } catch (_: Exception) {
                     releaseTail()
+                    // La queue vient d'être libérée : la déclarer encore
+                    // audible enverrait le pont jouer avec un lecteur mort,
+                    // puis avorter en emportant le jeton — geste perdu et
+                    // bascule jamais appliquée. Le chemin « sans queue »
+                    // ci-dessous fait les deux proprement.
+                    tailAudible = false
                 }
                 // Un geste plus récent a repris la main pendant l'attente,
                 // ou le lecteur a enchaîné tout seul : cette bascule ne nous
                 // appartient plus.
                 if (pendingSwitch !== token) return@launch
-                pendingSwitch = null
                 // La queue n'a jamais sorti de son — fichier trop lent à
                 // ouvrir, position introuvable. Basculer quand même en la
                 // gardant reviendrait à couper le morceau en cours pour du
                 // silence : c'est exactement la microcoupure qu'on chasse.
                 // On s'en sépare et on arrive franchement.
                 if (!tailAudible) {
+                    pendingSwitch = null
                     releaseTail()
-                    eff = NO_TAIL_FADE_MS
+                    fadeGain = 0f
+                    applyVolume()
+                    onSwitch()
+                    fadeInMain(NO_TAIL_FADE_MS)
+                    return@launch
                 }
-                // Le volume tombe AVANT le saut : sinon le morceau d'arrivée se
-                // ferait entendre à plein volume le temps d'un souffle.
+                // Pont de bascule : même recalées, les deux sources ne sont
+                // jamais alignées à l'échantillon près — un échange sec
+                // (queue muette → pleine, principal plein → muet au même
+                // instant) laissait entendre un accroc de phase, la saccade
+                // résiduelle. À la place, elles se croisent sur ~60 ms : la
+                // queue monte pendant que le principal descend, à puissance
+                // constante, et la discontinuité disparaît sous le tuilage.
+                // Un fondu d'entrée hérité (geste tout juste appliqué) rendrait
+                // la main au pont de toute façon : on la lui donne proprement.
+                seekJob?.cancel()
+                val g0 = fadeGain
+                for (k in 1..BRIDGE_STEPS) {
+                    val x = k.toFloat() / BRIDGE_STEPS
+                    player.volume = v0 * kotlin.math.sin(x * (Math.PI / 2).toFloat())
+                    fadeGain = g0 * kotlin.math.cos(x * (Math.PI / 2).toFloat())
+                    applyVolume()
+                    delay(BRIDGE_STEP_MS)
+                    // Le pont tient le jeton pendant qu'il joue : un geste ou
+                    // un enchaînement naturel survenu là a déjà réglé le sort
+                    // de la queue et du volume (stopTail, quickSwitch) — sauf
+                    // l'enchaînement automatique, qui laisse le gain à
+                    // mi-course : on le remonte, sinon il y resterait.
+                    if (pendingSwitch !== token) {
+                        if (fadeGain != 1f && seekJob?.isActive != true) {
+                            fadeInMain(NO_TAIL_FADE_MS)
+                        }
+                        return@launch
+                    }
+                    // Jeton encore à nous mais queue disparue : personne
+                    // d'autre n'appliquera cette bascule. Sèchement plutôt
+                    // que perdue — et le jeton est rendu, sinon il bloquerait
+                    // l'entretien et rejouerait en fantôme des minutes après.
+                    if (exoTail !== player) {
+                        pendingSwitch = null
+                        fadeGain = 0f
+                        applyVolume()
+                        onSwitch()
+                        fadeInMain(NO_TAIL_FADE_MS)
+                        return@launch
+                    }
+                }
+                pendingSwitch = null
                 fadeGain = 0f
                 applyVolume()
                 onSwitch()
                 fadeInMain(eff)
-                if (exoTail != null) fadeOutTail(player, v0, eff)
+                fadeOutTail(player, v0, eff)
             }
         }
 
@@ -1378,7 +1445,8 @@ object PlayerCore {
             fromGesture = true
         ) {
             exo.seekTo(targetIndex, target)
-            persistState()
+            // Différé : ce bloc s'exécute à l'instant précis de la bascule.
+            scheduleHousekeeping()
         }
     }
 
@@ -1611,6 +1679,25 @@ object PlayerCore {
     // ------------------------------------------------- reprise après arrêt
 
     /**
+     * Sauvegarde d'état et rafraîchissement des widgets, remis à dans un
+     * instant et fusionnés s'ils se répètent. Ce travail — photographier le
+     * plan complet, construire les RemoteViews — tombait sur le thread
+     * principal à l'instant exact des bascules de lecture, précisément là où
+     * chaque milliseconde compte pour l'oreille. Rien n'exige qu'il soit
+     * fait à la milliseconde : 600 ms plus tard, la bascule est passée.
+     */
+    private var housekeepingPending = false
+    private fun scheduleHousekeeping() {
+        if (housekeepingPending) return
+        housekeepingPending = true
+        handler.postDelayed({
+            housekeepingPending = false
+            persistState()
+            notifyWidgets()
+        }, 600L)
+    }
+
+    /**
      * Photographie l'état courant (sur le thread principal, ExoPlayer oblige)
      * puis l'écrit sur disque en arrière-plan.
      */
@@ -1786,7 +1873,7 @@ object PlayerCore {
         }
         applyVolume()
         recordHistory(currentTrack.value?.uri)
-        notifyWidgets()
+        scheduleHousekeeping()
     }
 
     /** Redessine les widgets d'écran d'accueil (morceau, file, play/pause). */
