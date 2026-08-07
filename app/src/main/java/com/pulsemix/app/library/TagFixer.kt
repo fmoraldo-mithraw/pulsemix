@@ -132,7 +132,11 @@ object TagFixer {
      */
     suspend fun writeAllToFiles(store: TrackStore): Int = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext 0
-        if (writeProgress.value != null) return@withContext 0
+        if (writeProgress.value != null || _progress.value != null ||
+            coverProgress.value != null
+        ) {
+            return@withContext 0
+        }
         stopRequested = false
         val all = store.tracks.value
         var written = 0
@@ -161,6 +165,113 @@ object TagFixer {
     /** Progression du passage bibliothèque : (faits, total, appliqués auto). */
     val progress: StateFlow<Triple<Int, Int, Int>?> get() = _progress
     private val _progress = MutableStateFlow<Triple<Int, Int, Int>?>(null)
+
+    // ------------------------------------------------------------ jaquettes
+
+    /** Avancement du passage « jaquettes manquantes » : (faits, total). */
+    val coverProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+
+    /** Résultat du dernier passage jaquettes (message de l'écran Tags). */
+    val coverMessage = MutableStateFlow<String?>(null)
+
+    /**
+     * Passe la bibliothèque et récupère une jaquette pour chaque morceau
+     * qui n'en a aucune — ni embarquée dans le fichier, ni déjà
+     * téléchargée. L'album est retrouvé par recherche MusicBrainz sur les
+     * tags actuels (censés être corrects après la correction des tags) ;
+     * un candidat dont ni le titre ni la durée ne collent est écarté :
+     * mieux vaut pas de pochette qu'une pochette d'un autre morceau.
+     *
+     * @return nombre de jaquettes récupérées.
+     */
+    suspend fun fetchAllCovers(store: TrackStore): Int = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext 0
+        // Un seul passage à la fois, tous types confondus : ils partagent
+        // le drapeau d'arrêt et se contrediraient (remise à zéro qui efface
+        // les jaquettes pendant qu'un passage en télécharge, etc.).
+        if (coverProgress.value != null || _progress.value != null ||
+            writeProgress.value != null
+        ) {
+            return@withContext 0
+        }
+        stopRequested = false
+        coverMessage.value = null
+        val all = store.tracks.value
+        var got = 0
+        var seen = 0
+        coverProgress.value = 0 to all.size
+        try {
+            for ((i, t) in all.withIndex()) {
+                if (stopRequested) break
+                seen = i + 1
+                // Déjà une jaquette : rien à faire (vérif locale, rapide)
+                if (com.pulsemix.app.ui.ArtworkCache
+                        .loadBlocking(ctx, t.uri, 512) == null
+                ) {
+                    val title = cleanTitle(t.title)
+                    val artist = cleanArtist(t.artist)
+                    if (title.isNotBlank()) {
+                        val best = pickBest(lookup(title, artist), t)
+                        if (best != null && best.releaseGroupId.isNotBlank()) {
+                            val durOk = durationClose(best.lengthMs, t.durationMs)
+                            val titleMatch = norm(best.title) == norm(title)
+                            if (titleMatch || durOk) {
+                                if (CoverArt.fetchIfMissing(
+                                        ctx, t.uri, best.releaseGroupId
+                                    )
+                                ) got++
+                            }
+                        }
+                    }
+                }
+                coverProgress.value = (i + 1) to all.size
+            }
+        } finally {
+            coverProgress.value = null
+            // Un passage arrêté en route ne doit pas conclure sur toute la
+            // bibliothèque : il n'en a vu qu'une partie.
+            coverMessage.value = when {
+                stopRequested ->
+                    "Arrêté après $seen morceaux — $got jaquettes récupérées."
+                got > 0 -> "$got jaquettes récupérées."
+                else -> "Aucune jaquette manquante n'a pu être retrouvée."
+            }
+        }
+        got
+    }
+
+    /**
+     * Cherche la jaquette d'UN morceau d'après un titre et un artiste
+     * saisis à la main, et remplace celle affichée. Le fichier audio n'est
+     * jamais modifié.
+     *
+     * @return message de résultat, à afficher dans le dialogue.
+     */
+    suspend fun fetchCoverManual(
+        t: Track,
+        title: String,
+        artist: String
+    ): String = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext "Appli pas prête."
+        val cands = lookup(title.trim(), artist.trim())
+        if (cands.isEmpty()) {
+            return@withContext lastError.value
+                ?: "Aucun résultat MusicBrainz pour ce titre."
+        }
+        // Meilleur candidat pourvu d'un album : les suivants servent de
+        // repli, tous ne sont pas rattachés à une parution.
+        val ordered = listOfNotNull(pickBest(cands, t)) +
+            cands.sortedByDescending { it.score }
+        val rg = ordered.firstOrNull { it.releaseGroupId.isNotBlank() }
+            ?.releaseGroupId
+            ?: return@withContext "Résultats trouvés, mais aucun album " +
+                "rattaché : pas de jaquette à en tirer."
+        if (CoverArt.fetch(ctx, t.uri, rg, force = true)) {
+            "Jaquette récupérée."
+        } else {
+            "Cet album n'a pas de jaquette dans Cover Art Archive."
+        }
+    }
 
     @Volatile private var stopRequested = false
     private var appContext: Context? = null
@@ -205,7 +316,11 @@ object TagFixer {
      */
     suspend fun fixAll(store: TrackStore, force: Boolean = false): Unit =
         withContext(Dispatchers.IO) {
-            if (_progress.value != null) return@withContext
+            if (_progress.value != null || coverProgress.value != null ||
+                writeProgress.value != null
+            ) {
+                return@withContext
+            }
             stopRequested = false
             lastError.value = null
             if (force) {
@@ -291,7 +406,11 @@ object TagFixer {
      */
     suspend fun resetAll(store: TrackStore): Int = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext 0
-        if (_progress.value != null) return@withContext 0
+        if (_progress.value != null || coverProgress.value != null ||
+            writeProgress.value != null
+        ) {
+            return@withContext 0
+        }
         stopRequested = false
         resetting.value = true
         // Remise à zéro : les jaquettes téléchargées lors des

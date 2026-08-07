@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +46,13 @@ object ArtworkCache {
     }
     private val misses: MutableSet<String> =
         Collections.newSetFromMap(ConcurrentHashMap())
+
+    /**
+     * S'incrémente à chaque jaquette ajoutée, remplacée ou retirée : les
+     * vues déjà composées rechargent — sans lui, un bitmap retenu par
+     * remember() affichait l'ancienne pochette jusqu'au prochain passage.
+     */
+    val version = kotlinx.coroutines.flow.MutableStateFlow(0)
 
     private fun hashName(uri: String): String =
         java.security.MessageDigest.getInstance("MD5")
@@ -147,8 +155,17 @@ object ArtworkCache {
      * décodée et rééchantillonnée comme les jaquettes embarquées, écrite
      * durablement, mise en cache mémoire, et le morceau cesse d'être
      * compté « sans jaquette ».
+     *
+     * @param replaceCached true pour supprimer aussi la copie en cache de
+     * la jaquette embarquée : sans ça, elle repasserait devant la jaquette
+     * téléchargée au prochain chargement — l'ordre de lecture la privilégie.
      */
-    fun store(context: Context, uri: String, bytes: ByteArray): Boolean {
+    fun store(
+        context: Context,
+        uri: String,
+        bytes: ByteArray,
+        replaceCached: Boolean = false
+    ): Boolean {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         var sample = 1
@@ -163,8 +180,15 @@ object ArtworkCache {
             java.io.FileOutputStream(coverFile(context, uri)).use {
                 bmp.compress(Bitmap.CompressFormat.JPEG, 85, it)
             }
+            if (replaceCached) {
+                try {
+                    diskFile(context, uri).delete()
+                } catch (_: Exception) {
+                }
+            }
             cache.put(uri, bmp)
             misses.remove(uri)
+            version.value++
             true
         } catch (_: Exception) {
             false
@@ -179,6 +203,7 @@ object ArtworkCache {
         }
         cache.remove(uri)
         misses.remove(uri)
+        version.value++
     }
 
     /** Supprime toutes les jaquettes téléchargées (remise à zéro des tags). */
@@ -190,6 +215,7 @@ object ArtworkCache {
         }
         cache.evictAll()
         misses.clear()
+        version.value++
     }
 }
 
@@ -205,7 +231,10 @@ fun TrackArtwork(
 ) {
     val context = LocalContext.current
     var bmp by remember(uri) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(uri) {
+    // La version suit les jaquettes ajoutées/retirées : une pochette tout
+    // juste téléchargée apparaît sans attendre une recomposition complète.
+    val version by ArtworkCache.version.collectAsState()
+    LaunchedEffect(uri, version) {
         if (uri != null) bmp = ArtworkCache.load(context, uri, targetPx)
     }
     Box(

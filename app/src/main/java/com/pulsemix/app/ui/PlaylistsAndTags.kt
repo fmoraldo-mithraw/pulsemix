@@ -225,13 +225,15 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
         )
         Spacer(Modifier.height(8.dp))
 
+        val coverProg by vm.coverProgress.collectAsStateWithLifecycle()
         val p = prog
         if (p == null) {
             val done by vm.tagChecked.collectAsStateWithLifecycle()
             val remaining = (tracks.size - done).coerceAtLeast(0)
             Button(
                 onClick = { vm.fetchTagsAll() },
-                enabled = remaining > 0
+                // Le service ne mène qu'un passage à la fois
+                enabled = remaining > 0 && coverProg == null
             ) {
                 Text(
                     if (done > 0) "Vérifier les $remaining restants"
@@ -249,7 +251,12 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
             )
             if (done > 0) {
-                TextButton(onClick = { vm.recheckAllTags() }) {
+                TextButton(
+                    onClick = { vm.recheckAllTags() },
+                    // Le service n'accepte qu'un passage à la fois : un
+                    // appui pendant le passage jaquettes serait perdu
+                    enabled = coverProg == null
+                ) {
                     Text("Tout revérifier depuis zéro ($done déjà examinés)")
                 }
             }
@@ -269,6 +276,52 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 progress = { if (total > 0) done.toFloat() / total else 0f },
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+
+        // ------------------------------------------------ jaquettes manquantes
+        val writeProg by vm.tagWriteProgress.collectAsStateWithLifecycle()
+        val cp = coverProg
+        if (cp == null) {
+            TextButton(
+                onClick = { vm.fetchAllCovers() },
+                // Un seul passage à la fois (tags, report, jaquettes)
+                enabled = tracks.isNotEmpty() && p == null && writeProg == null
+            ) { Text("Chercher toutes les jaquettes manquantes") }
+            Text(
+                "Pour chaque morceau sans pochette, retrouve l'album sur " +
+                    "MusicBrainz d'après ses tags et télécharge la jaquette " +
+                    "officielle (Cover Art Archive). En arrière-plan, comme " +
+                    "la vérification des tags. Les fichiers audio ne sont " +
+                    "pas modifiés.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
+        } else {
+            val (cDone, cTotal) = cp
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Jaquettes : $cDone/$cTotal",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(onClick = { vm.stopTagFetch() }) { Text("Stop") }
+            }
+            LinearProgressIndicator(
+                progress = { if (cTotal > 0) cDone.toFloat() / cTotal else 0f },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        val coverMsg by vm.coverMessage.collectAsStateWithLifecycle()
+        coverMsg?.let {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { vm.clearCoverMessage() }) { Text("OK") }
+            }
         }
         tagError?.let {
             Spacer(Modifier.height(4.dp))

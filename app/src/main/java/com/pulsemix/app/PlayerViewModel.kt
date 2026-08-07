@@ -375,6 +375,38 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun recheckAllTags() =
         com.pulsemix.app.library.TagFixService.start(getApplication(), force = true)
 
+    // ------------------------------------------------------------ jaquettes
+    val coverProgress = com.pulsemix.app.library.TagFixer.coverProgress
+    val coverMessage = com.pulsemix.app.library.TagFixer.coverMessage
+
+    /** Récupère les jaquettes manquantes de toute la bibliothèque (fond). */
+    fun fetchAllCovers() =
+        com.pulsemix.app.library.TagFixService.start(getApplication(), covers = true)
+
+    fun clearCoverMessage() {
+        coverMessage.value = null
+    }
+
+    /** Message du bouton « chercher la jaquette » du dialogue manuel. */
+    val manualCoverMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val manualCoverBusy = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /** Cherche et remplace la jaquette du morceau (titre/artiste saisis). */
+    fun manualCoverSearch(track: Track, title: String, artist: String) {
+        if (title.isBlank() || manualCoverBusy.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            manualCoverBusy.value = true
+            manualCoverMessage.value = null
+            manualCoverMessage.value =
+                com.pulsemix.app.library.TagFixer.fetchCoverManual(track, title, artist)
+            manualCoverBusy.value = false
+        }
+    }
+
+    fun resetManualCoverSearch() {
+        manualCoverMessage.value = null
+    }
+
     fun fetchTagsFor(track: Track) {
         viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixOne(store, track) }
     }

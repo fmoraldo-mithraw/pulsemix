@@ -108,9 +108,12 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
             // l'option : la bibliothèque fait foi, chaque fichier est lu et
             // seuls ceux dont les tags diffèrent sont réécrits. Continue en
             // arrière-plan, appli fermée.
+            val coverProg by vm.coverProgress.collectAsStateWithLifecycle()
             androidx.compose.material3.OutlinedButton(
                 onClick = { vm.writeAllTagsToFiles() },
-                enabled = writeProg == null
+                // Un seul passage à la fois : un appui pendant le passage
+                // jaquettes serait silencieusement perdu par le service
+                enabled = writeProg == null && coverProg == null
             ) {
                 Text(
                     writeProg?.let { (done, total) -> "Écriture $done/$total…" }

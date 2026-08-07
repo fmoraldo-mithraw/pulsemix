@@ -37,6 +37,7 @@ class TagFixService : Service() {
     companion object {
         private const val EXTRA_FORCE = "force"
         private const val EXTRA_WRITE_ALL = "writeAll"
+        private const val EXTRA_COVERS = "covers"
         private const val ACTION_STOP = "com.pulsemix.app.tagfix.STOP"
         private const val CHANNEL_ID = "tagfix"
         private const val NOTIF_ID = 3
@@ -44,11 +45,19 @@ class TagFixService : Service() {
         /**
          * @param writeAll true pour reporter les tags de la bibliothèque
          * dans les fichiers, au lieu de chercher des corrections en ligne.
+         * @param covers true pour récupérer les jaquettes manquantes de
+         * toute la bibliothèque, au lieu de corriger les tags.
          */
-        fun start(context: Context, force: Boolean = false, writeAll: Boolean = false) {
+        fun start(
+            context: Context,
+            force: Boolean = false,
+            writeAll: Boolean = false,
+            covers: Boolean = false
+        ) {
             val i = Intent(context, TagFixService::class.java)
                 .putExtra(EXTRA_FORCE, force)
                 .putExtra(EXTRA_WRITE_ALL, writeAll)
+                .putExtra(EXTRA_COVERS, covers)
             ContextCompat.startForegroundService(context, i)
         }
     }
@@ -92,10 +101,21 @@ class TagFixService : Service() {
 
         val force = intent?.getBooleanExtra(EXTRA_FORCE, false) ?: false
         val writeAll = intent?.getBooleanExtra(EXTRA_WRITE_ALL, false) ?: false
+        val covers = intent?.getBooleanExtra(EXTRA_COVERS, false) ?: false
         scope.launch {
             val notifJob = launch {
-                if (writeAll) {
-                    TagFixer.writeProgress.collect { p ->
+                when {
+                    covers -> TagFixer.coverProgress.collect { p ->
+                        if (p != null) {
+                            val (done, total) = p
+                            notify(
+                                buildNotification(
+                                    "Jaquettes $done/$total", done, total
+                                )
+                            )
+                        }
+                    }
+                    writeAll -> TagFixer.writeProgress.collect { p ->
                         if (p != null) {
                             val (done, total) = p
                             notify(
@@ -105,8 +125,7 @@ class TagFixService : Service() {
                             )
                         }
                     }
-                } else {
-                    TagFixer.progress.collect { p ->
+                    else -> TagFixer.progress.collect { p ->
                         if (p != null) {
                             val (done, total, applied) = p
                             notify(
@@ -122,8 +141,11 @@ class TagFixService : Service() {
             try {
                 val store = Graph.store
                 store.loaded.first { it }
-                if (writeAll) TagFixer.writeAllToFiles(store)
-                else TagFixer.fixAll(store, force)
+                when {
+                    covers -> TagFixer.fetchAllCovers(store)
+                    writeAll -> TagFixer.writeAllToFiles(store)
+                    else -> TagFixer.fixAll(store, force)
+                }
             } finally {
                 notifJob.cancel()
                 stopSelf()

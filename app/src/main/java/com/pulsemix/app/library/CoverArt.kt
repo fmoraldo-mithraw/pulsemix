@@ -21,13 +21,29 @@ object CoverArt {
     /** Garde-fou : certaines pochettes d'archives sont des scans énormes. */
     private const val MAX_BYTES = 3 * 1024 * 1024
 
-    fun fetchIfMissing(context: Context, uri: String, releaseGroupId: String) {
-        if (releaseGroupId.isBlank()) return
-        if (ArtworkCache.loadBlocking(context, uri, 512) != null) return
+    fun fetchIfMissing(context: Context, uri: String, releaseGroupId: String): Boolean =
+        fetch(context, uri, releaseGroupId, force = false)
+
+    /**
+     * @param force true pour remplacer la jaquette affichée même si le
+     * morceau en a déjà une (bouton « chercher la jaquette » : c'est
+     * précisément une jaquette absente ou fausse qu'on veut corriger).
+     * Le fichier audio n'est jamais touché.
+     */
+    fun fetch(
+        context: Context,
+        uri: String,
+        releaseGroupId: String,
+        force: Boolean
+    ): Boolean {
+        if (releaseGroupId.isBlank()) return false
+        if (!force && ArtworkCache.loadBlocking(context, uri, 512) != null) {
+            return false
+        }
         val bytes = download(
             "https://coverartarchive.org/release-group/$releaseGroupId/front-500"
-        ) ?: return
-        ArtworkCache.store(context, uri, bytes)
+        ) ?: return false
+        return ArtworkCache.store(context, uri, bytes, replaceCached = force)
     }
 
     private fun download(u: String): ByteArray? {

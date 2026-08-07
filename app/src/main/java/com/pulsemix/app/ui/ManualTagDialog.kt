@@ -57,6 +57,7 @@ fun ManualTagDialog(
     // suite la recherche pour afficher la liste des possibilités.
     LaunchedEffect(track.uri) {
         vm.resetManualTagSearch()
+        vm.resetManualCoverSearch()
         if (autoSearch && title.isNotBlank()) vm.manualTagSearch(title, artist)
     }
 
@@ -110,9 +111,25 @@ fun ManualTagDialog(
                     onClick = { vm.manualTagIdentify(track) },
                     enabled = !searching
                 ) { Text("Identifier par le son") }
-                if (searching) {
+                // Jaquette seule : retrouve l'album d'après les champs et
+                // remplace la pochette affichée, sans toucher aux tags
+                val coverBusy by vm.manualCoverBusy.collectAsStateWithLifecycle()
+                val coverMsg by vm.manualCoverMessage.collectAsStateWithLifecycle()
+                TextButton(
+                    onClick = { vm.manualCoverSearch(track, title, artist) },
+                    enabled = title.isNotBlank() && !coverBusy
+                ) { Text("Chercher la jaquette") }
+                if (searching || coverBusy) {
                     Spacer(Modifier.height(6.dp))
                     LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                coverMsg?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
                 }
                 error?.let {
                     Spacer(Modifier.height(6.dp))
