@@ -46,11 +46,25 @@ object ArtworkCache {
     private val misses: MutableSet<String> =
         Collections.newSetFromMap(ConcurrentHashMap())
 
+    private fun hashName(uri: String): String =
+        java.security.MessageDigest.getInstance("MD5")
+            .digest(uri.toByteArray())
+            .joinToString("") { "%02x".format(it) } + ".jpg"
+
     private fun diskFile(context: Context, uri: String): java.io.File {
         val dir = java.io.File(context.cacheDir, "artwork").apply { mkdirs() }
-        val md = java.security.MessageDigest.getInstance("MD5")
-            .digest(uri.toByteArray())
-        return java.io.File(dir, md.joinToString("") { "%02x".format(it) } + ".jpg")
+        return java.io.File(dir, hashName(uri))
+    }
+
+    /**
+     * Jaquette récupérée en ligne (Cover Art Archive). Rangée dans les
+     * fichiers de l'appli, pas dans le cache : le système peut purger le
+     * cache, et une jaquette téléchargée ne serait jamais re-téléchargée —
+     * le morceau est marqué comme déjà examiné par la correction des tags.
+     */
+    private fun coverFile(context: Context, uri: String): java.io.File {
+        val dir = java.io.File(context.filesDir, "covers").apply { mkdirs() }
+        return java.io.File(dir, hashName(uri))
     }
 
     suspend fun load(context: Context, uri: String, targetPx: Int): Bitmap? =
@@ -75,6 +89,20 @@ object ArtworkCache {
             if (fromDisk != null) {
                 cache.put(uri, fromDisk)
                 return fromDisk
+            }
+        }
+
+        // Jaquette téléchargée lors d'une correction de tags
+        val cover = coverFile(context, uri)
+        if (cover.exists()) {
+            val fromCover = try {
+                BitmapFactory.decodeFile(cover.absolutePath)
+            } catch (_: Exception) {
+                null
+            }
+            if (fromCover != null) {
+                cache.put(uri, fromCover)
+                return fromCover
             }
         }
 
@@ -112,6 +140,56 @@ object ArtworkCache {
             } catch (_: Exception) {
             }
         }
+    }
+
+    /**
+     * Range une jaquette téléchargée (octets d'image) pour [uri] :
+     * décodée et rééchantillonnée comme les jaquettes embarquées, écrite
+     * durablement, mise en cache mémoire, et le morceau cesse d'être
+     * compté « sans jaquette ».
+     */
+    fun store(context: Context, uri: String, bytes: ByteArray): Boolean {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= 512) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bmp = try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        return try {
+            java.io.FileOutputStream(coverFile(context, uri)).use {
+                bmp.compress(Bitmap.CompressFormat.JPEG, 85, it)
+            }
+            cache.put(uri, bmp)
+            misses.remove(uri)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Supprime la jaquette téléchargée de [uri] (correction annulée). */
+    fun removeCover(context: Context, uri: String) {
+        try {
+            coverFile(context, uri).delete()
+        } catch (_: Exception) {
+        }
+        cache.remove(uri)
+        misses.remove(uri)
+    }
+
+    /** Supprime toutes les jaquettes téléchargées (remise à zéro des tags). */
+    fun clearCovers(context: Context) {
+        try {
+            java.io.File(context.filesDir, "covers")
+                .listFiles()?.forEach { it.delete() }
+        } catch (_: Exception) {
+        }
+        cache.evictAll()
+        misses.clear()
     }
 }
 

@@ -35,7 +35,9 @@ object TagFixer {
         val oldArtist: String,
         val newTitle: String,
         val newArtist: String,
-        val score: Int
+        val score: Int,
+        /** Groupe de parution MusicBrainz : la clé de la jaquette. */
+        val releaseGroupId: String = ""
     )
 
     /** Propositions incertaines en attente de validation. */
@@ -74,6 +76,40 @@ object TagFixer {
         if (!writeToFiles.value) return
         val ctx = appContext ?: return
         writeScope.launch { TagWriter.write(ctx, uri, title, artist) }
+    }
+
+    /**
+     * Récupère la jaquette du morceau identifié, en arrière-plan : le
+     * passage des tags n'attend jamais un téléchargement d'image.
+     */
+    private fun fetchCover(uri: String, releaseGroupId: String) {
+        if (releaseGroupId.isBlank()) return
+        val ctx = appContext ?: return
+        writeScope.launch { CoverArt.fetchIfMissing(ctx, uri, releaseGroupId) }
+    }
+
+    /**
+     * Suites d'une correction appliquée, en arrière-plan et DANS L'ORDRE :
+     * l'écriture du fichier d'abord (si l'option est active), la jaquette
+     * ensuite. Une seule coroutine par morceau — chercher une jaquette
+     * dans le fichier pendant que ffmpeg le réécrit tombait sur un fichier
+     * tronqué, et classait à tort le morceau comme « sans jaquette ».
+     */
+    private fun afterApply(
+        uri: String,
+        title: String,
+        artist: String,
+        releaseGroupId: String
+    ) {
+        val ctx = appContext ?: return
+        val write = writeToFiles.value
+        if (!write && releaseGroupId.isBlank()) return
+        writeScope.launch {
+            if (write) TagWriter.write(ctx, uri, title, artist)
+            if (releaseGroupId.isNotBlank()) {
+                CoverArt.fetchIfMissing(ctx, uri, releaseGroupId)
+            }
+        }
     }
 
     /** Avancement du report bibliothèque → fichiers : (faits, total). */
@@ -258,6 +294,9 @@ object TagFixer {
         if (_progress.value != null) return@withContext 0
         stopRequested = false
         resetting.value = true
+        // Remise à zéro : les jaquettes téléchargées lors des
+        // identifications partent avec elles — les fichiers font foi.
+        com.pulsemix.app.ui.ArtworkCache.clearCovers(ctx)
         val undo = applied.value
         val all = store.tracks.value
         val total = undo.size + all.size
@@ -371,6 +410,9 @@ object TagFixer {
                 if (best.title == t.title &&
                     (best.artist.isBlank() || best.artist == t.artist)
                 ) {
+                    // Identifié à coup sûr : sa jaquette aussi, même quand
+                    // les tags étaient déjà bons.
+                    fetchCover(t.uri, best.releaseGroupId)
                     SoundOutcome.DONE
                 } else {
                     store.update(t.uri) {
@@ -379,14 +421,16 @@ object TagFixer {
                             artist = best.artist.ifBlank { it.artist }
                         )
                     }
-                    writeTagsIfEnabled(
-                        t.uri, best.title, best.artist.ifBlank { t.artist }
+                    afterApply(
+                        t.uri, best.title, best.artist.ifBlank { t.artist },
+                        best.releaseGroupId
                     )
                     applied.value = AppliedTags.record(
                         applied.value,
                         Suggestion(
                             t.uri, t.title, t.artist,
-                            best.title, best.artist, best.score
+                            best.title, best.artist, best.score,
+                            best.releaseGroupId
                         ),
                         APPLIED_MAX
                     )
@@ -399,7 +443,8 @@ object TagFixer {
                 pending.value = pending.value.filter { it.uri != t.uri } +
                     Suggestion(
                         t.uri, t.title, t.artist,
-                        best.title, best.artist, best.score
+                        best.title, best.artist, best.score,
+                        best.releaseGroupId
                     )
                 SoundOutcome.DONE
             }
@@ -427,7 +472,7 @@ object TagFixer {
                 artist = s.newArtist.ifBlank { it.artist }
             )
         }
-        writeTagsIfEnabled(s.uri, s.newTitle, s.newArtist)
+        afterApply(s.uri, s.newTitle, s.newArtist, s.releaseGroupId)
         applied.value = AppliedTags.record(applied.value, s, APPLIED_MAX)
         pending.value = pending.value.filter { it.uri != s.uri }
         markChecked(s.uri)
@@ -495,14 +540,16 @@ object TagFixer {
                         artist = best.artist.ifBlank { it.artist }
                     )
                 }
-                writeTagsIfEnabled(
-                    t.uri, best.title, best.artist.ifBlank { t.artist }
+                afterApply(
+                    t.uri, best.title, best.artist.ifBlank { t.artist },
+                    best.releaseGroupId
                 )
                 applied.value = AppliedTags.record(
                     applied.value,
                     Suggestion(
                         t.uri, t.title, t.artist,
-                        best.title, best.artist, best.score
+                        best.title, best.artist, best.score,
+                        best.releaseGroupId
                     ),
                     APPLIED_MAX
                 )
@@ -515,7 +562,8 @@ object TagFixer {
                 (durOk || best.lengthMs <= 0)
             ) {
                 proposal = Suggestion(
-                    t.uri, t.title, t.artist, best.title, best.artist, best.score
+                    t.uri, t.title, t.artist, best.title, best.artist,
+                    best.score, best.releaseGroupId
                 )
             }
         }
@@ -531,7 +579,9 @@ object TagFixer {
         val title: String,
         val artist: String,
         val score: Int,
-        val lengthMs: Long
+        val lengthMs: Long,
+        /** Groupe de parution MusicBrainz : la clé de la jaquette. */
+        val releaseGroupId: String = ""
     )
 
     /**
@@ -556,10 +606,13 @@ object TagFixer {
         store.update(t.uri) {
             it.copy(title = c.title, artist = c.artist.ifBlank { it.artist })
         }
-        writeTagsIfEnabled(t.uri, c.title, c.artist.ifBlank { t.artist })
+        afterApply(t.uri, c.title, c.artist.ifBlank { t.artist }, c.releaseGroupId)
         applied.value = AppliedTags.record(
             applied.value,
-            Suggestion(t.uri, t.title, t.artist, c.title, c.artist, c.score),
+            Suggestion(
+                t.uri, t.title, t.artist, c.title, c.artist, c.score,
+                c.releaseGroupId
+            ),
             APPLIED_MAX
         )
         pending.value = pending.value.filter { it.uri != t.uri }
@@ -575,6 +628,14 @@ object TagFixer {
         if (s.oldTitle.isBlank()) return
         store.update(s.uri) { it.copy(title = s.oldTitle, artist = s.oldArtist) }
         writeTagsIfEnabled(s.uri, s.oldTitle, s.oldArtist)
+        // La jaquette téléchargée appartenait à l'identification qu'on
+        // annule : la garder afficherait la pochette du mauvais album, en
+        // masquant pour toujours celle embarquée dans le fichier.
+        appContext?.let { ctx ->
+            writeScope.launch {
+                com.pulsemix.app.ui.ArtworkCache.removeCover(ctx, s.uri)
+            }
+        }
         applied.value = AppliedTags.remove(applied.value, s.uri)
         // Correction annulée : le morceau redevient à examiner
         checked.remove(s.uri)
@@ -691,7 +752,11 @@ object TagFixer {
                         r.optJSONArray("artist-credit")
                             ?.optJSONObject(0)?.optString("name", "") ?: "",
                         r.optInt("score", 0),
-                        r.optLong("length", 0L)
+                        r.optLong("length", 0L),
+                        // Première parution rattachée : sa jaquette
+                        r.optJSONArray("releases")?.optJSONObject(0)
+                            ?.optJSONObject("release-group")
+                            ?.optString("id", "") ?: ""
                     )
                 )
             }
@@ -827,7 +892,8 @@ object TagFixer {
                     o.optString("oldArtist", ""),
                     o.optString("newTitle", ""),
                     o.optString("newArtist", ""),
-                    o.optInt("score", 0)
+                    o.optInt("score", 0),
+                    o.optString("releaseGroup", "")
                 )
             )
         }
@@ -848,6 +914,7 @@ object TagFixer {
                         .put("newTitle", s.newTitle)
                         .put("newArtist", s.newArtist)
                         .put("score", s.score)
+                        .put("releaseGroup", s.releaseGroupId)
                 )
             }
             f.writeText(arr.toString())

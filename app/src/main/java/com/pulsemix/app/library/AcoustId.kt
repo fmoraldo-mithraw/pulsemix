@@ -122,8 +122,10 @@ object AcoustId {
                 setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
             }
             // L'empreinte est en base64-URL : aucun caractère à échapper
+            // releasegroups : l'album d'origine de chaque enregistrement,
+            // dont l'identifiant donne la jaquette (Cover Art Archive).
             val body = "client=$CLIENT_KEY&duration=${print.declaredSec}" +
-                "&meta=recordings&fingerprint=${print.value}"
+                "&meta=recordings+releasegroups&fingerprint=${print.value}"
             conn.outputStream.use { it.write(body.toByteArray()) }
 
             http = conn.responseCode
@@ -185,7 +187,9 @@ object AcoustId {
                     out.add(
                         TagFixer.Candidate(
                             title, artist, score,
-                            r.optLong("duration", 0L) * 1000L
+                            r.optLong("duration", 0L) * 1000L,
+                            r.optJSONArray("releasegroups")
+                                ?.optJSONObject(0)?.optString("id", "") ?: ""
                         )
                     )
                 }
