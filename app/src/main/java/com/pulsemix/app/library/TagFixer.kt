@@ -240,38 +240,72 @@ object TagFixer {
         got
     }
 
+    /** Une jaquette possible pour un morceau : l'album et sa vignette. */
+    class CoverChoice(
+        val releaseGroupId: String,
+        val album: String,
+        val bytes: ByteArray
+    )
+
+    /** Albums distincts présentés au choix, au plus. */
+    private const val MAX_COVER_CHOICES = 6
+
     /**
-     * Cherche la jaquette d'UN morceau d'après un titre et un artiste
-     * saisis à la main, et remplace celle affichée. Le fichier audio n'est
-     * jamais modifié.
+     * Cherche les jaquettes possibles d'UN morceau d'après un titre et un
+     * artiste saisis à la main : un album distinct par candidat MusicBrainz,
+     * vignette téléchargée à l'appui — un album sans pochette dans Cover
+     * Art Archive n'est pas proposé. Le meilleur candidat (durée + nom de
+     * fichier) arrive en tête.
      *
-     * @return message de résultat, à afficher dans le dialogue.
+     * @return les choix, et un message d'échec quand il n'y en a aucun.
      */
-    suspend fun fetchCoverManual(
+    suspend fun searchCoverChoices(
         t: Track,
         title: String,
         artist: String
-    ): String = withContext(Dispatchers.IO) {
-        val ctx = appContext ?: return@withContext "Appli pas prête."
-        val cands = lookup(title.trim(), artist.trim())
+    ): Pair<List<CoverChoice>, String?> = withContext(Dispatchers.IO) {
+        val cands = lookup(title.trim(), artist.trim(), limit = 10)
         if (cands.isEmpty()) {
-            return@withContext lastError.value
-                ?: "Aucun résultat MusicBrainz pour ce titre."
+            return@withContext emptyList<CoverChoice>() to
+                (lastError.value ?: "Aucun résultat MusicBrainz pour ce titre.")
         }
-        // Meilleur candidat pourvu d'un album : les suivants servent de
-        // repli, tous ne sont pas rattachés à une parution.
+        // Meilleur candidat d'abord, puis par score ; un même album ne
+        // se présente qu'une fois.
         val ordered = listOfNotNull(pickBest(cands, t)) +
             cands.sortedByDescending { it.score }
-        val rg = ordered.firstOrNull { it.releaseGroupId.isNotBlank() }
-            ?.releaseGroupId
-            ?: return@withContext "Résultats trouvés, mais aucun album " +
-                "rattaché : pas de jaquette à en tirer."
-        if (CoverArt.fetch(ctx, t.uri, rg, force = true)) {
-            "Jaquette récupérée."
-        } else {
-            "Cet album n'a pas de jaquette dans Cover Art Archive."
+        val byAlbum = LinkedHashMap<String, Candidate>()
+        for (c in ordered) {
+            if (c.releaseGroupId.isNotBlank()) {
+                byAlbum.putIfAbsent(c.releaseGroupId, c)
+            }
         }
+        if (byAlbum.isEmpty()) {
+            return@withContext emptyList<CoverChoice>() to
+                "Résultats trouvés, mais aucun album rattaché : pas de " +
+                "jaquette à en tirer."
+        }
+        val choices = ArrayList<CoverChoice>()
+        for ((rg, c) in byAlbum.entries.take(MAX_COVER_CHOICES)) {
+            val bytes = CoverArt.thumbnail(rg) ?: continue
+            choices.add(CoverChoice(rg, c.album.ifBlank { c.title }, bytes))
+        }
+        if (choices.isEmpty()) {
+            return@withContext emptyList<CoverChoice>() to
+                "Ces albums n'ont pas de jaquette dans Cover Art Archive."
+        }
+        choices to null
     }
+
+    /**
+     * Applique la jaquette d'un album choisi : la pleine taille est
+     * téléchargée et remplace la pochette affichée. Le fichier audio n'est
+     * jamais modifié.
+     */
+    suspend fun applyCover(uri: String, releaseGroupId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val ctx = appContext ?: return@withContext false
+            CoverArt.fetch(ctx, uri, releaseGroupId, force = true)
+        }
 
     @Volatile private var stopRequested = false
     private var appContext: Context? = null
@@ -700,7 +734,9 @@ object TagFixer {
         val score: Int,
         val lengthMs: Long,
         /** Groupe de parution MusicBrainz : la clé de la jaquette. */
-        val releaseGroupId: String = ""
+        val releaseGroupId: String = "",
+        /** Nom de l'album, pour légender l'écran de choix des jaquettes. */
+        val album: String = ""
     )
 
     /**
@@ -865,6 +901,8 @@ object TagFixer {
             val out = ArrayList<Candidate>()
             for (i in 0 until recs.length()) {
                 val r = recs.getJSONObject(i)
+                // Première parution rattachée : sa jaquette et son album
+                val rel = r.optJSONArray("releases")?.optJSONObject(0)
                 out.add(
                     Candidate(
                         r.optString("title", ""),
@@ -872,10 +910,9 @@ object TagFixer {
                             ?.optJSONObject(0)?.optString("name", "") ?: "",
                         r.optInt("score", 0),
                         r.optLong("length", 0L),
-                        // Première parution rattachée : sa jaquette
-                        r.optJSONArray("releases")?.optJSONObject(0)
-                            ?.optJSONObject("release-group")
-                            ?.optString("id", "") ?: ""
+                        rel?.optJSONObject("release-group")
+                            ?.optString("id", "") ?: "",
+                        rel?.optString("title", "") ?: ""
                     )
                 )
             }

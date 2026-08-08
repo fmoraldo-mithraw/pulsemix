@@ -184,12 +184,13 @@ object AcoustId {
                     }
                     val key = (title + " " + artist).lowercase()
                     if (!seen.add(key)) continue
+                    val rg = r.optJSONArray("releasegroups")?.optJSONObject(0)
                     out.add(
                         TagFixer.Candidate(
                             title, artist, score,
                             r.optLong("duration", 0L) * 1000L,
-                            r.optJSONArray("releasegroups")
-                                ?.optJSONObject(0)?.optString("id", "") ?: ""
+                            rg?.optString("id", "") ?: "",
+                            rg?.optString("title", "") ?: ""
                         )
                     )
                 }

@@ -46,6 +46,13 @@ object CoverArt {
         return ArtworkCache.store(context, uri, bytes, replaceCached = force)
     }
 
+    /** Vignette (250 px) d'un groupe de parution, pour l'écran de choix. */
+    fun thumbnail(releaseGroupId: String): ByteArray? =
+        if (releaseGroupId.isBlank()) null
+        else download(
+            "https://coverartarchive.org/release-group/$releaseGroupId/front-250"
+        )
+
     private fun download(u: String): ByteArray? {
         var conn: HttpURLConnection? = null
         return try {

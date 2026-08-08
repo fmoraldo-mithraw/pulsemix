@@ -391,20 +391,70 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val manualCoverMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     val manualCoverBusy = kotlinx.coroutines.flow.MutableStateFlow(false)
 
-    /** Cherche et remplace la jaquette du morceau (titre/artiste saisis). */
+    /**
+     * Jaquettes possibles trouvées, RATTACHÉES au morceau qui les a
+     * demandées (uri → choix) : une recherche lancée pour un morceau puis
+     * aboutissant après fermeture du dialogue ne doit jamais proposer —
+     * ni appliquer — ses pochettes à un autre morceau.
+     */
+    val manualCoverChoices = kotlinx.coroutines.flow.MutableStateFlow<
+        Pair<String, List<com.pulsemix.app.library.TagFixer.CoverChoice>>?>(null)
+
+    /**
+     * Cherche la jaquette du morceau (titre/artiste saisis). Un seul album
+     * trouvé : appliqué directement. Plusieurs : l'écran de choix s'ouvre.
+     */
     fun manualCoverSearch(track: Track, title: String, artist: String) {
         if (title.isBlank() || manualCoverBusy.value) return
         viewModelScope.launch(Dispatchers.IO) {
             manualCoverBusy.value = true
             manualCoverMessage.value = null
-            manualCoverMessage.value =
-                com.pulsemix.app.library.TagFixer.fetchCoverManual(track, title, artist)
+            manualCoverChoices.value = null
+            val (choices, message) =
+                com.pulsemix.app.library.TagFixer.searchCoverChoices(
+                    track, title, artist
+                )
+            when {
+                choices.isEmpty() -> manualCoverMessage.value = message
+                choices.size == 1 -> applyCoverNow(track.uri, choices[0])
+                else -> manualCoverChoices.value = track.uri to choices
+            }
             manualCoverBusy.value = false
         }
     }
 
+    /** L'utilisateur a touché une pochette dans l'écran de choix. */
+    fun applyCoverChoice(
+        uri: String,
+        c: com.pulsemix.app.library.TagFixer.CoverChoice
+    ) {
+        manualCoverChoices.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            manualCoverBusy.value = true
+            applyCoverNow(uri, c)
+            manualCoverBusy.value = false
+        }
+    }
+
+    private suspend fun applyCoverNow(
+        uri: String,
+        c: com.pulsemix.app.library.TagFixer.CoverChoice
+    ) {
+        manualCoverMessage.value =
+            if (com.pulsemix.app.library.TagFixer.applyCover(
+                    uri, c.releaseGroupId
+                )
+            ) "Jaquette récupérée."
+            else "Impossible de récupérer cette jaquette."
+    }
+
+    fun dismissCoverChoices() {
+        manualCoverChoices.value = null
+    }
+
     fun resetManualCoverSearch() {
         manualCoverMessage.value = null
+        manualCoverChoices.value = null
     }
 
     fun fetchTagsFor(track: Track) {
