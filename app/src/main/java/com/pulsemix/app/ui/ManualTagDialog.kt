@@ -69,7 +69,7 @@ fun ManualTagDialog(
 
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("Corriger les tags à la main") },
+        title = { Text("Modifier les tags") },
         text = {
             Column {
                 Text(

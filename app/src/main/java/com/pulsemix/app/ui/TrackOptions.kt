@@ -116,11 +116,10 @@ fun TrackOptionsDialogs(
                                     ?.let { " ($it)" } ?: "") + "…"
                         )
                     }
-                    TextButton(onClick = { vm.fetchTagsFor(track); onClose() }) {
-                        Text("Chercher les vrais tags en ligne")
-                    }
+                    // La recherche en ligne (texte ou empreinte sonore) vit
+                    // dans ce dialogue : une entrée séparée faisait doublon.
                     TextButton(onClick = { manualTagEdit = true; menuOpen = false }) {
-                        Text("Corriger les tags à la main…")
+                        Text("Modifier les tags…")
                     }
                     TextButton(onClick = { delEdit = true; menuOpen = false }) {
                         Text(

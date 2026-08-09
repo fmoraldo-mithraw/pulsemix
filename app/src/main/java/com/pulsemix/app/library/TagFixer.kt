@@ -325,20 +325,6 @@ object TagFixer {
 
     // ------------------------------------------------------------ traitement
 
-    /** Cherche les tags d'un seul morceau (proposition ou application sûre). */
-    suspend fun fixOne(store: TrackStore, track: Track): Unit =
-        withContext(Dispatchers.IO) {
-            lastError.value = null
-            when (handleBySound(store, track)) {
-                SoundOutcome.APPLIED, SoundOutcome.DONE -> {}
-                SoundOutcome.NOT_FOUND -> handle(store, track)
-            }
-            // Réseau tombé : ne pas classer le morceau comme examiné
-            if (lastError.value == null) markChecked(track.uri)
-            save()
-            store.save()
-        }
-
     /**
      * Passe toute la bibliothèque : identification par empreinte sonore
      * d'abord (AcoustID), recherche texte MusicBrainz en repli. Les
