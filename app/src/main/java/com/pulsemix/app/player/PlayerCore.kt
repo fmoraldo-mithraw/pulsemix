@@ -41,8 +41,8 @@ enum class PlayerMode { NORMAL, DOUCE, MIX, DJ }
  *   session active, si bien que play/pause/next/prev Bluetooth continuent de
  *   fonctionner et sont routés vers le moteur DJ.
  *
- * « Suivant » avance d'un MORCEAU quel que soit le mode ; en MIX et DJ,
- * « précédent » remonte à la phase précédente du mix.
+ * « Suivant » et « précédent » naviguent de MORCEAU en morceau, quel que
+ * soit le mode.
  */
 object PlayerCore {
 
@@ -827,21 +827,23 @@ object PlayerCore {
         crossfadedFrom = null
         if (mode.value == PlayerMode.DJ) {
             stopTail()
-            mixer.prevPhase()
+            // Morceau précédent, pas phase précédente : même règle que
+            // « suivant », la navigation se fait morceau par morceau.
+            mixer.prevTrack()
             return
         }
         // Un geste précédent encore en attente est appliqué d'abord, puis
         // les cibles sont arrêtées en ABSOLU — mêmes raisons que next().
         // « Reviens au début de CE morceau » doit rester ce morceau-là,
         // même si la file enchaîne toute seule pendant la préparation.
+        // En MIX aussi : retour au début du morceau (ou au précédent),
+        // le saut de phase n'est plus son affaire.
         consumePendingBeforeGesture()
-        val targetPhase = currentPhase.value - 1
         val restart = exo.currentPosition > 3000
         val restartIndex = exo.currentMediaItemIndex
         val prevIndex = exo.previousMediaItemIndex
         crossfadeTo(restart || exo.hasPreviousMediaItem()) {
             when {
-                mode.value == PlayerMode.MIX -> jumpToPhase(targetPhase)
                 restart -> exo.seekTo(restartIndex, 0)
                 prevIndex != C.INDEX_UNSET -> exo.seekTo(prevIndex, 0)
                 else -> exo.seekToPreviousMediaItem()
@@ -1749,21 +1751,6 @@ object PlayerCore {
             exo.shuffleModeEnabled = enabled
         }
         persistState()
-    }
-
-    private fun jumpToPhase(target: Int) {
-        val p = plan ?: return
-        when {
-            target < 0 -> {
-                val idx = phaseStartIndices.getOrNull(currentPhase.value) ?: 0
-                exo.seekTo(idx, 0)
-            }
-            target >= p.phases.size -> exo.seekToNextMediaItem()
-            else -> {
-                val idx = phaseStartIndices.getOrNull(target) ?: return
-                exo.seekTo(idx, 0)
-            }
-        }
     }
 
     // ------------------------------------------------- reprise après arrêt

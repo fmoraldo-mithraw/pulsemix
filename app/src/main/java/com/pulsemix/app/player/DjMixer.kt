@@ -31,9 +31,8 @@ import kotlin.math.sin
  * décodent en parallèle ; le morceau entrant est resamplé pour caler son BPM
  * sur le morceau en cours (façon pitch fader, ±8 %), son premier beat est
  * aligné à l'échantillon près sur la grille de beats du deck actif, puis un
- * crossfade equal-power fait la transition. Le bouton next passe au morceau
- * suivant (transition immédiate, fondu court) ; previous remonte à la phase
- * précédente.
+ * crossfade equal-power fait la transition. Les boutons next/previous
+ * passent au morceau suivant/précédent (transition immédiate, fondu court).
  */
 class DjMixer(private val context: Context, private val listener: Listener) {
 
@@ -140,6 +139,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     // Position visée par la barre de progression (-1 = aucune)
     @Volatile private var pendingSeek = -1f
     @Volatile private var currentPhaseIndex = 0
+    // Segment joué par le deck actif — lu par le bouton « précédent »
+    // depuis le thread UI, écrit par la boucle de mix.
+    @Volatile private var currentSegIndex = 0
     @Volatile private var startSegIndex = 0
     @Volatile private var rehearsal = false
     @Volatile private var recorder: MixRecorder? = null
@@ -229,11 +231,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         pendingJump = -2
     }
 
-    /** Previous = début de la phase précédente (ou de la phase courante). */
-    fun prevPhase() {
-        val prev = max(0, currentPhaseIndex - 1)
-        val target = segments.indexOfFirst { it.phaseIndex == prev }
-        if (target >= 0) pendingJump = target
+    /**
+     * Transition vers le morceau précédent (bouton « précédent »). Au tout
+     * premier morceau du set, il repart de son début.
+     */
+    fun prevTrack() {
+        pendingJump = max(0, currentSegIndex - 1)
     }
 
     /**
@@ -845,6 +848,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             }
             deckA.startedAtFrame = 0L
             currentPhaseIndex = deckA.segment.phaseIndex
+            currentSegIndex = deckA.segIndex
             announce(deckA)
             fastForward(deckA)
 
@@ -1409,6 +1413,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     fadeEndF = framesGlobal
                     echoBuf = null
                     currentPhaseIndex = b.segment.phaseIndex
+                    currentSegIndex = b.segIndex
                     announce(b)
                     fastForward(b)
                 }
