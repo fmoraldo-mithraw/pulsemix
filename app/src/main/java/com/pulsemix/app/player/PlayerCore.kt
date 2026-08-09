@@ -41,7 +41,8 @@ enum class PlayerMode { NORMAL, DOUCE, MIX, DJ }
  *   session active, si bien que play/pause/next/prev Bluetooth continuent de
  *   fonctionner et sont routés vers le moteur DJ.
  *
- * En MIX et DJ, next/previous naviguent entre les PHASES du mix.
+ * « Suivant » avance d'un MORCEAU quel que soit le mode ; en MIX et DJ,
+ * « précédent » remonte à la phase précédente du mix.
  */
 object PlayerCore {
 
@@ -794,7 +795,10 @@ object PlayerCore {
         crossfadedFrom = null
         if (mode.value == PlayerMode.DJ) {
             stopTail()
-            mixer.nextPhase()
+            // Morceau suivant, pas phase suivante : « suivant » avance d'un
+            // morceau quel que soit le mode. Le moteur y fait une vraie
+            // transition battue, comme pour un enchaînement naturel.
+            mixer.nextTrack()
             return
         }
         // Un geste précédent encore en attente est appliqué d'abord : les
@@ -806,11 +810,11 @@ object PlayerCore {
         // toute seule entre-temps. Une cible relative (seekToNextMediaItem)
         // avancerait alors d'un morceau de trop ; l'index, lui, reste juste
         // — shuffle compris, nextMediaItemIndex suit l'ordre de lecture.
-        val targetPhase = currentPhase.value + 1
+        // En MIX aussi : « suivant » avance d'un morceau dans la file, le
+        // saut de phase n'est plus son affaire.
         val target = exo.nextMediaItemIndex
         crossfadeTo(exo.hasNextMediaItem()) {
             when {
-                mode.value == PlayerMode.MIX -> jumpToPhase(targetPhase)
                 target != C.INDEX_UNSET -> exo.seekTo(target, 0)
                 else -> exo.seekToNextMediaItem()
             }

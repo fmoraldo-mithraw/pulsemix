@@ -31,8 +31,9 @@ import kotlin.math.sin
  * décodent en parallèle ; le morceau entrant est resamplé pour caler son BPM
  * sur le morceau en cours (façon pitch fader, ±8 %), son premier beat est
  * aligné à l'échantillon près sur la grille de beats du deck actif, puis un
- * crossfade equal-power fait la transition. Le bouton next saute à la phase
- * suivante du mix (transition immédiate, fondu court).
+ * crossfade equal-power fait la transition. Le bouton next passe au morceau
+ * suivant (transition immédiate, fondu court) ; previous remonte à la phase
+ * précédente.
  */
 class DjMixer(private val context: Context, private val listener: Listener) {
 
@@ -218,10 +219,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     val isRunning: Boolean get() = running
 
-    /** Next en mode DJ = saut à la phase suivante. */
-    fun nextPhase() {
-        val target = segments.indexOfFirst { it.phaseIndex > currentPhaseIndex }
-        pendingJump = if (target >= 0) target else -2 // -2 = simple morceau suivant
+    /**
+     * Transition immédiate vers le morceau suivant (bouton « suivant »).
+     * -2 se résout dans la boucle de mix : morceau d'après le deck actif —
+     * ou d'après la transition déjà en vol, pour que deux appuis
+     * rapprochés avancent bien de deux morceaux.
+     */
+    fun nextTrack() {
+        pendingJump = -2
     }
 
     /** Previous = début de la phase précédente (ou de la phase courante). */
@@ -883,11 +888,20 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     a.startLiveLoop(PlayerCore.liveLoopBeats.value)
                 else a.stopLiveLoop()
 
-                // Saut de phase demandé alors qu'une transition est déjà chargée
-                val pj = pendingJump
-                if (pj != -1 && deckB != null &&
-                    (pj == -2 || deckB!!.segIndex != pj)
-                ) {
+                // Saut demandé alors qu'une transition est déjà chargée
+                var pj = pendingJump
+                // « Suivant » pendant une transition en vol : la cible se
+                // compte à partir du morceau qui ARRIVE, pas de celui qui
+                // sort — deux appuis rapprochés avancent bien de deux
+                // morceaux au lieu de rouvrir le même. Et s'il n'y a rien
+                // après, la transition en cours va à son terme au lieu
+                // d'être cassée pour rien.
+                if (pj == -2 && deckB != null) {
+                    val after = deckB!!.segIndex + 1
+                    pj = if (after < segments.size) after else -1
+                    pendingJump = pj
+                }
+                if (pj != -1 && deckB != null && deckB!!.segIndex != pj) {
                     deckB!!.close()
                     deckB = null
                     fadeStartF = -1L
@@ -955,6 +969,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     ) {
                         endFadeFrames = OUT_SR / 2L // fondu de fin : 0,5 s
                     }
+                    // Saut demandé au-delà du dernier morceau : rien à jouer
+                    // ensuite — le désarmer plutôt que le retraiter sans fin.
+                    if (jumping && nextIdx >= segments.size) pendingJump = -1
                 }
 
                 // Deck suivant prêt : programmer le fondu, aligné sur la
