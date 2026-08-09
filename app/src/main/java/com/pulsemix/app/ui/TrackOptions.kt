@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.PlayerViewModel
 import com.pulsemix.app.data.Track
 import com.pulsemix.app.mix.MixEngine
@@ -69,6 +70,14 @@ fun TrackOptionsDialogs(
                     )
                     TextButton(onClick = { vm.preview(track); onClose() }) {
                         Text("▶ Écouter le meilleur passage")
+                    }
+                    // Le moteur DJ tient son propre plan : hors de ce mode
+                    // seulement. Déjà dans la file : déplacé, pas dupliqué.
+                    val playerMode by vm.mode.collectAsStateWithLifecycle()
+                    if (playerMode != com.pulsemix.app.player.PlayerMode.DJ) {
+                        TextButton(onClick = { vm.playNext(track); onClose() }) {
+                            Text("Jouer après ce morceau")
+                        }
                     }
                     TextButton(onClick = { vm.startSimilar(track, false); onClose() }) {
                         Text("Mix « comme ce morceau »")

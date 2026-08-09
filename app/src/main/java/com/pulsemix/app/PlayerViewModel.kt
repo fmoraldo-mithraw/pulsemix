@@ -457,6 +457,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         manualCoverChoices.value = null
     }
 
+    /** Programme le morceau juste après celui en cours (normal et mix). */
+    fun playNext(track: Track) = PlayerCore.playNext(track)
+
     fun fetchTagsFor(track: Track) {
         viewModelScope.launch { com.pulsemix.app.library.TagFixer.fixOne(store, track) }
     }

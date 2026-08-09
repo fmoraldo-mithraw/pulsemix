@@ -1619,6 +1619,89 @@ object PlayerCore {
         if (from < exo.mediaItemCount && to < exo.mediaItemCount) {
             exo.moveMediaItem(from, to)
         }
+        shiftPhaseStartsForMove(from, to)
+        updateFromExo()
+        persistState()
+    }
+
+    /**
+     * Bornes des phases d'un mix après déplacement d'un morceau [from] →
+     * [to] : les débuts de phase entre les deux glissent d'un cran. Sans
+     * ça, l'affichage de la phase en cours dérivait à chaque réordonnement.
+     */
+    private fun shiftPhaseStartsForMove(from: Int, to: Int) {
+        if (phaseStartIndices.isEmpty()) return
+        // Déplacer l'unique morceau d'une dernière phase la laisserait
+        // commencer APRÈS la fin de la file : « suivant » viserait un index
+        // inexistant, que le lecteur ignore en silence — bouton mort.
+        val last = (queueTracks.size - 1).coerceAtLeast(0)
+        phaseStartIndices = phaseStartIndices.map { s ->
+            when {
+                from < s && s <= to -> s - 1
+                to < s && s <= from -> s + 1
+                else -> s
+            }.coerceIn(0, last)
+        }
+    }
+
+    /**
+     * Programme [track] juste après le morceau en cours (lecture normale
+     * et mix). S'il figure déjà dans la file, il y est DÉPLACÉ plutôt que
+     * dupliqué — la file affiche chaque chanson une seule fois. Sans
+     * lecture en cours, le morceau est simplement lancé.
+     */
+    fun playNext(track: Track) {
+        if (mode.value == PlayerMode.DJ) return // le moteur DJ tient son plan
+        if (!initialized || exo.mediaItemCount == 0 || queueTracks.isEmpty()) {
+            playNormal(listOf(track))
+            return
+        }
+        // Comme les autres gestes qui remanient la file : un fondu de fin
+        // déjà armé peut être invalidé par le décalage des index — laisser
+        // le déclencheur en réarmer un propre sur la file remaniée.
+        crossfadedFrom = null
+        val cur = exo.currentMediaItemIndex.coerceAtLeast(0)
+        val existing = queueTracks.indexOfFirst { it.uri == track.uri }
+        val target: Int
+        if (existing >= 0) {
+            if (existing == cur) return // déjà en train de jouer
+            // Après retrait, l'index du morceau en cours a pu glisser :
+            // la place « juste après lui » n'est pas la même selon le sens.
+            target = if (existing < cur) cur else cur + 1
+            if (existing != target) {
+                queueTracks = queueTracks.toMutableList().also {
+                    val t = it.removeAt(existing)
+                    it.add(target, t)
+                }
+                exo.moveMediaItem(existing, target)
+                shiftPhaseStartsForMove(existing, target)
+            }
+        } else {
+            target = (cur + 1).coerceAtMost(queueTracks.size)
+            queueTracks = queueTracks.toMutableList().also { it.add(target, track) }
+            exo.addMediaItem(target, mediaItem(track))
+            // Le morceau inséré rejoint la phase du morceau en cours : les
+            // phases qui commençaient à cet endroit ou après reculent.
+            phaseStartIndices = phaseStartIndices.map { s ->
+                if (s >= target) s + 1 else s
+            }
+        }
+        // En aléatoire, l'ordre de lecture est une permutation qui ignore
+        // les index : reconstruire un ordre qui part du morceau en cours,
+        // enchaîne sur celui qu'on vient de programmer, puis brasse le
+        // reste — sinon « jouer ensuite » atterrissait n'importe quand.
+        if (exo.shuffleModeEnabled) {
+            val cur2 = exo.currentMediaItemIndex.coerceAtLeast(0)
+            val rest = (0 until exo.mediaItemCount)
+                .filter { it != cur2 && it != target }
+                .shuffled()
+            exo.setShuffleOrder(
+                androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder(
+                    (listOf(cur2, target) + rest).toIntArray(),
+                    System.currentTimeMillis()
+                )
+            )
+        }
         updateFromExo()
         persistState()
     }
@@ -1721,13 +1804,25 @@ object PlayerCore {
                 )
             }
             PlayerMode.MIX -> p?.let {
+                // La file VIVANTE, découpée par les bornes de phases — pas
+                // le plan d'origine : morceaux programmés « juste après »,
+                // réordonnés ou retirés doivent survivre à la reprise,
+                // sinon l'index sauvegardé retombe sur la mauvaise chanson.
+                val starts = phaseStartIndices
+                val phaseUris = it.phases.indices.map { i ->
+                    val s = (starts.getOrNull(i) ?: 0)
+                        .coerceIn(0, queueTracks.size)
+                    val e = (starts.getOrNull(i + 1) ?: queueTracks.size)
+                        .coerceIn(s, queueTracks.size)
+                    queueTracks.subList(s, e).map { t -> t.uri }
+                }
                 PlaybackState(
                     mode = m.name,
                     planId = it.id,
                     planName = it.name,
                     planDescription = it.description,
                     phaseNames = it.phases.map { ph -> ph.name },
-                    phaseUris = it.phases.map { ph -> ph.tracks.map { t -> t.uri } },
+                    phaseUris = phaseUris,
                     currentIndex = exo.currentMediaItemIndex,
                     positionMs = exo.currentPosition.coerceAtLeast(0L),
                     currentPhase = currentPhase.value.coerceAtLeast(0),
