@@ -2,6 +2,7 @@ package com.pulsemix.app.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,8 +15,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -37,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.PlayerViewModel
 import com.pulsemix.app.data.Track
+import com.pulsemix.app.mix.MixEngine
 
 /**
  * Recherche manuelle des tags d'un morceau : l'utilisateur ajuste titre
@@ -71,7 +77,9 @@ fun ManualTagDialog(
         onDismissRequest = onClose,
         title = { Text("Modifier les tags") },
         text = {
-            Column {
+            // Le dialogue s'est enrichi (type, épique, jaquette, résultats) :
+            // sans défilement, le bas déborderait des petits écrans.
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     "Fichier : ${track.title}",
                     style = MaterialTheme.typography.labelSmall,
@@ -95,6 +103,69 @@ fun ManualTagDialog(
                     label = { Text("Artiste (optionnel)") },
                     singleLine = true
                 )
+                // ---- Type de musique et mix Épique. Les puces appliquent
+                // immédiatement (bibliothèque seulement, le fichier audio
+                // n'est pas modifié) ; la saisie libre se valide par son
+                // bouton. `live` suit la bibliothèque : le morceau passé en
+                // paramètre est un instantané qui ne bouge plus.
+                val allTracks by vm.tracks.collectAsStateWithLifecycle()
+                val live = allTracks.firstOrNull { it.uri == track.uri } ?: track
+                var genreText by remember(track.uri) {
+                    mutableStateOf(track.genre.takeIf { it != "-" } ?: "")
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = genreText,
+                    onValueChange = { genreText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Type (genre)") },
+                    singleLine = true
+                )
+                val knownGenres = remember(track.uri) {
+                    MixEngine.genresOf(allTracks).map { it.first }.take(8)
+                }
+                if (knownGenres.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for (g in knownGenres) {
+                            FilterChip(
+                                selected = genreText.trim()
+                                    .equals(g, ignoreCase = true),
+                                onClick = {
+                                    genreText = g
+                                    vm.setManualGenre(track, g)
+                                },
+                                label = { Text(g) }
+                            )
+                        }
+                    }
+                }
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = live.notEpic,
+                        onClick = { vm.toggleNotEpic(track) },
+                        label = { Text("Pas épique") }
+                    )
+                    val savedGenre = live.genre.takeIf { it != "-" } ?: ""
+                    if (genreText.trim() != savedGenre && genreText.isNotBlank()) {
+                        TextButton(onClick = {
+                            vm.setManualGenre(track, genreText)
+                        }) { Text("Enregistrer le type") }
+                    }
+                    if (live.genreLocked) {
+                        TextButton(onClick = {
+                            vm.unlockGenre(track)
+                            genreText = ""
+                        }) { Text("Type auto") }
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(

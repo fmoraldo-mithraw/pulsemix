@@ -1,6 +1,5 @@
 package com.pulsemix.app.ui
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -30,12 +29,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.PlayerViewModel
 import com.pulsemix.app.data.Track
-import com.pulsemix.app.mix.MixEngine
 
 /**
- * Menu d'options d'un morceau (pré-écoute, mix/DJ similaires, favori,
- * exclusion, BPM, meilleur passage, type, suppression) et ses
- * sous-dialogues. Partagé entre la bibliothèque et l'écran lecteur.
+ * Menu d'options d'un morceau (pré-écoute, jouer ensuite, mix/DJ
+ * similaires, favori, exclusion, BPM, meilleur passage, tags, suppression)
+ * et ses sous-dialogues. Partagé entre la bibliothèque et l'écran lecteur.
+ * Type, épique et jaquette se règlent dans « Modifier les tags ».
  */
 @Composable
 fun TrackOptionsDialogs(
@@ -47,7 +46,6 @@ fun TrackOptionsDialogs(
     var menuOpen by remember(track.uri) { mutableStateOf(true) }
     var bpmEdit by remember(track.uri) { mutableStateOf(false) }
     var segEdit by remember(track.uri) { mutableStateOf(false) }
-    var genreEdit by remember(track.uri) { mutableStateOf(false) }
     var delEdit by remember(track.uri) { mutableStateOf(false) }
     var manualTagEdit by remember(track.uri) { mutableStateOf(false) }
 
@@ -97,27 +95,15 @@ fun TrackOptionsDialogs(
                             else "Exclure des mix"
                         )
                     }
-                    TextButton(onClick = { vm.toggleNotEpic(track); onClose() }) {
-                        Text(
-                            if (track.notEpic) "Réautoriser dans le mix Épique"
-                            else "Pas épique (jamais dans ce mix)"
-                        )
-                    }
                     TextButton(onClick = { bpmEdit = true; menuOpen = false }) {
                         Text("Corriger le BPM (${track.bpm})")
                     }
                     TextButton(onClick = { segEdit = true; menuOpen = false }) {
                         Text("Définir le meilleur passage…")
                     }
-                    TextButton(onClick = { genreEdit = true; menuOpen = false }) {
-                        Text(
-                            "Changer le type" +
-                                (track.genre.takeIf { it.isNotBlank() && it != "-" }
-                                    ?.let { " ($it)" } ?: "") + "…"
-                        )
-                    }
-                    // La recherche en ligne (texte ou empreinte sonore) vit
-                    // dans ce dialogue : une entrée séparée faisait doublon.
+                    // Titre/artiste, recherche en ligne (texte ou empreinte
+                    // sonore), type, « pas épique » et jaquette vivent tous
+                    // dans ce dialogue : les entrées séparées faisaient doublon.
                     TextButton(onClick = { manualTagEdit = true; menuOpen = false }) {
                         Text("Modifier les tags…")
                     }
@@ -184,68 +170,6 @@ fun TrackOptionsDialogs(
                     bpmText.replace(',', '.').toFloatOrNull()?.let {
                         if (it in 40f..250f) vm.setManualBpm(track, it)
                     }
-                    onClose()
-                }) { Text("Enregistrer") }
-            },
-            dismissButton = {
-                TextButton(onClick = onClose) { Text("Annuler") }
-            }
-        )
-    }
-
-    // ------------------------------------------------------ type de musique
-    if (genreEdit) {
-        var genreText by remember(track.uri) {
-            mutableStateOf(track.genre.takeIf { it != "-" } ?: "")
-        }
-        val knownGenres = remember(track.uri) {
-            MixEngine.genresOf(tracks).map { it.first }.take(8)
-        }
-        AlertDialog(
-            onDismissRequest = onClose,
-            title = { Text("Type de musique") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = genreText,
-                        onValueChange = { genreText = it },
-                        label = { Text("Genre") },
-                        singleLine = true
-                    )
-                    if (knownGenres.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            for (g in knownGenres) {
-                                FilterChip(
-                                    selected = genreText == g,
-                                    onClick = { genreText = g },
-                                    label = { Text(g) }
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Le fichier audio n'est pas modifié : le type est " +
-                            "gardé dans la bibliothèque et protégé contre la " +
-                            "réanalyse.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                    if (track.genreLocked) {
-                        TextButton(onClick = {
-                            vm.unlockGenre(track)
-                            onClose()
-                        }) { Text("Revenir au type automatique") }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    vm.setManualGenre(track, genreText)
                     onClose()
                 }) { Text("Enregistrer") }
             },
