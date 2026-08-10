@@ -213,103 +213,109 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         SubHeader("Tags en ligne", onBack)
         Spacer(Modifier.height(4.dp))
+        // Une ligne, pas un mode d'emploi : la place appartient aux listes.
         Text(
-            "Identifie chaque morceau d'abord par son empreinte sonore " +
-                "(AcoustID écoute le son, peu importe les tags), puis par " +
-                "recherche texte MusicBrainz si le son ne suffit pas. Les " +
-                "corrections sûres sont appliquées automatiquement ; les " +
-                "incertaines s'ajoutent à la liste ci-dessous. Les fichiers " +
-                "audio ne sont jamais modifiés.",
+            "Empreinte sonore puis recherche texte. Sûr : appliqué ; " +
+                "douteux : à valider.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )
         Spacer(Modifier.height(8.dp))
 
         val coverProg by vm.coverProgress.collectAsStateWithLifecycle()
-        val p = prog
-        if (p == null) {
-            val done by vm.tagChecked.collectAsStateWithLifecycle()
-            val remaining = (tracks.size - done).coerceAtLeast(0)
-            Button(
-                onClick = { vm.fetchTagsAll() },
-                // Le service ne mène qu'un passage à la fois
-                enabled = remaining > 0 && coverProg == null
-            ) {
-                Text(
-                    if (done > 0) "Vérifier les $remaining restants"
-                    else "Vérifier toute la bibliothèque (${tracks.size})"
-                )
-            }
-            Text(
-                "~1 morceau par seconde (limite du service). Continue en " +
-                    "arrière-plan, appli fermée ou écran éteint — la " +
-                    "notification suit l'avancement. Les morceaux déjà " +
-                    "examinés sont sautés : une relance ne refait que les " +
-                    "nouveaux. Tu peux aussi vérifier un seul morceau " +
-                    "depuis son menu ⋮.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-            )
-            if (done > 0) {
-                TextButton(
-                    onClick = { vm.recheckAllTags() },
-                    // Le service n'accepte qu'un passage à la fois : un
-                    // appui pendant le passage jaquettes serait perdu
-                    enabled = coverProg == null
-                ) {
-                    Text("Tout revérifier depuis zéro ($done déjà examinés)")
-                }
-            }
-        } else {
-            val (done, total, applied) = p
-            val resetting by vm.tagResetting.collectAsStateWithLifecycle()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (resetting) "Remise à zéro : $done/$total — $applied rétablis"
-                    else "Recherche : $done/$total — $applied corrigés auto",
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedButton(onClick = { vm.stopTagFetch() }) { Text("Stop") }
-            }
-            LinearProgressIndicator(
-                progress = { if (total > 0) done.toFloat() / total else 0f },
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        // ------------------------------------------------ jaquettes manquantes
         val writeProg by vm.tagWriteProgress.collectAsStateWithLifecycle()
-        val cp = coverProg
-        if (cp == null) {
-            TextButton(
-                onClick = { vm.fetchAllCovers() },
-                // Un seul passage à la fois (tags, report, jaquettes)
-                enabled = tracks.isNotEmpty() && p == null && writeProg == null
-            ) { Text("Chercher toutes les jaquettes manquantes") }
-            Text(
-                "Pour chaque morceau sans pochette, retrouve l'album sur " +
-                    "MusicBrainz d'après ses tags et télécharge la jaquette " +
-                    "officielle (Cover Art Archive). En arrière-plan, comme " +
-                    "la vérification des tags. Les fichiers audio ne sont " +
-                    "pas modifiés.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-            )
-        } else {
-            val (cDone, cTotal) = cp
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Jaquettes : $cDone/$cTotal",
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.weight(1f)
+        val p = prog
+        when {
+            // Un passage en cours prend la zone d'actions : progression et
+            // Stop, rien d'autre — un seul passage tourne à la fois.
+            p != null -> {
+                val (done, total, applied) = p
+                val resetting by vm.tagResetting.collectAsStateWithLifecycle()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (resetting) "Remise à zéro : $done/$total — $applied rétablis"
+                        else "Recherche : $done/$total — $applied corrigés auto",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(onClick = { vm.stopTagFetch() }) { Text("Stop") }
+                }
+                LinearProgressIndicator(
+                    progress = { if (total > 0) done.toFloat() / total else 0f },
+                    modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedButton(onClick = { vm.stopTagFetch() }) { Text("Stop") }
             }
-            LinearProgressIndicator(
-                progress = { if (cTotal > 0) cDone.toFloat() / cTotal else 0f },
-                modifier = Modifier.fillMaxWidth()
-            )
+            coverProg != null -> {
+                val (cDone, cTotal) = coverProg!!
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Jaquettes : $cDone/$cTotal",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(onClick = { vm.stopTagFetch() }) { Text("Stop") }
+                }
+                LinearProgressIndicator(
+                    progress = { if (cTotal > 0) cDone.toFloat() / cTotal else 0f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            // Au repos : deux rangées de boutons de même famille, libellés
+            // courts, largeurs égales — l'empilement de styles dépareillés
+            // repoussait les listes hors de l'écran.
+            else -> {
+                val done by vm.tagChecked.collectAsStateWithLifecycle()
+                val remaining = (tracks.size - done).coerceAtLeast(0)
+                // Pendant le report des tags dans les fichiers (réglages),
+                // le service refuserait un second passage : ne pas le promettre
+                val canRun = tracks.isNotEmpty() && writeProg == null
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { vm.fetchTagsAll() },
+                        enabled = remaining > 0 && canRun,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            if (done > 0) "Vérifier ($remaining)"
+                            else "Vérifier tout"
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { vm.fetchAllCovers() },
+                        enabled = canRun,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Jaquettes") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { pickTrack = true },
+                        enabled = tracks.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Un morceau…") }
+                    if (done > 0) {
+                        OutlinedButton(
+                            onClick = { vm.recheckAllTags() },
+                            enabled = canRun,
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Revérifier") }
+                    }
+                    OutlinedButton(
+                        onClick = { confirmReset = true },
+                        enabled = tracks.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            "Remise à zéro",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+                Text(
+                    "~1 morceau/s, continue en arrière-plan.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+            }
         }
         val coverMsg by vm.coverMessage.collectAsStateWithLifecycle()
         coverMsg?.let {
@@ -331,23 +337,6 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.error
             )
         }
-        TextButton(
-            onClick = { pickTrack = true },
-            enabled = tracks.isNotEmpty()
-        ) { Text("Corriger un morceau…") }
-
-        if (prog == null) {
-            TextButton(
-                onClick = { confirmReset = true },
-                enabled = tracks.isNotEmpty()
-            ) {
-                Text(
-                    "Tout remettre à zéro…",
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-        }
-
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
