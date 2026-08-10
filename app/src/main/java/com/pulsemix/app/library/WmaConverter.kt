@@ -79,7 +79,7 @@ object WmaConverter {
         val outName = convertedName(name)
         parent.findFile(outName)?.let { if (it.length() > 0) return it }
 
-        val bin = FfmpegBin.path(context) ?: return null
+        val cmd = FfmpegBin.command(context) ?: return null
         val cacheDir = File(context.cacheDir, "wma").apply { mkdirs() }
         // ffmpeg ne sait pas lire une URI SAF : on lui donne des fichiers
         val inFile = File(cacheDir, "in.wma")
@@ -91,10 +91,12 @@ object WmaConverter {
                 inFile.outputStream().use { o -> i.copyTo(o, 64 * 1024) }
             }
             val pb = ProcessBuilder(
-                bin, "-hide_banner", "-loglevel", "error", "-y",
-                "-i", inFile.absolutePath,
-                "-vn", "-c:a", "aac", "-b:a", "192k",
-                outFile.absolutePath
+                cmd + listOf(
+                    "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", inFile.absolutePath,
+                    "-vn", "-c:a", "aac", "-b:a", "192k",
+                    outFile.absolutePath
+                )
             )
             pb.environment().putAll(FfmpegBin.env())
             pb.redirectErrorStream(true)

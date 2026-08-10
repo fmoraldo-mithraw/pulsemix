@@ -22,7 +22,7 @@ object TagWriter {
      * @return true si le fichier a bien été remplacé.
      */
     fun write(context: Context, uri: String, title: String, artist: String): Boolean {
-        val bin = FfmpegBin.path(context) ?: return false
+        val cmd = FfmpegBin.command(context) ?: return false
         val src = Uri.parse(uri)
         val ext = extensionOf(context, src) ?: return false
         val dir = File(context.cacheDir, "tagwrite").apply { mkdirs() }
@@ -37,13 +37,15 @@ object TagWriter {
             if (inFile.length() < 1024) return false
 
             val pb = ProcessBuilder(
-                bin, "-hide_banner", "-loglevel", "error", "-y",
-                "-i", inFile.absolutePath,
-                // Toutes les pistes (l'audio et la pochette embarquée)
-                "-map", "0", "-c", "copy",
-                "-metadata", "title=$title",
-                "-metadata", "artist=$artist",
-                outFile.absolutePath
+                cmd + listOf(
+                    "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", inFile.absolutePath,
+                    // Toutes les pistes (l'audio et la pochette embarquée)
+                    "-map", "0", "-c", "copy",
+                    "-metadata", "title=$title",
+                    "-metadata", "artist=$artist",
+                    outFile.absolutePath
+                )
             )
             pb.environment().putAll(FfmpegBin.env())
             pb.redirectErrorStream(true)

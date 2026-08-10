@@ -62,8 +62,8 @@ import com.pulsemix.app.data.Track
 import com.pulsemix.app.mix.MixEngine
 import kotlin.math.abs
 
-private enum class SortMode(val label: String) {
-    TITRE("Titre"), BPM("BPM"), ENERGIE("Énergie"), CLE("Clé")
+private enum class SortMode(val label: String, val naturalDesc: Boolean = false) {
+    TITRE("Titre"), BPM("BPM"), ENERGIE("Énergie", naturalDesc = true), CLE("Clé")
 }
 
 @Composable
@@ -79,6 +79,8 @@ fun LibraryScreen(
 
     var search by remember { mutableStateOf("") }
     var sortMode by remember { mutableStateOf(SortMode.TITRE) }
+    // Re-cliquer le tri actif inverse son ordre (flèche sur la puce)
+    var sortReversed by remember { mutableStateOf(false) }
     var compatOnly by remember { mutableStateOf(false) }
     var failedOnly by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
@@ -250,8 +252,20 @@ fun LibraryScreen(
                 for (m in SortMode.entries) {
                     FilterChip(
                         selected = sortMode == m,
-                        onClick = { sortMode = m },
-                        label = { Text(m.label) }
+                        onClick = {
+                            if (sortMode == m) sortReversed = !sortReversed
+                            else {
+                                sortMode = m
+                                sortReversed = false
+                            }
+                        },
+                        label = {
+                            Text(
+                                if (sortMode != m) m.label
+                                else m.label + if (m.naturalDesc != sortReversed)
+                                    " ↓" else " ↑"
+                            )
+                        }
                     )
                 }
                 FilterChip(
@@ -295,6 +309,7 @@ fun LibraryScreen(
                         SortMode.CLE -> list.sortedBy { camelotSortKey(it.camelot) }
                     }
                 }
+                .let { if (sortReversed) it.asReversed() else it }
 
             Text(
                 "${displayed.size}/${tracks.size} morceaux · " +

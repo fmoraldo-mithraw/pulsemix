@@ -244,6 +244,7 @@ object PlayerCore {
         // les sessions rend le PREMIER fondu aussi propre que les suivants,
         // au lieu de repartir d'une valeur typique à recalibrer.
         tailStartupLagMs = prefs.getLong("tailStartupLag", 120L).coerceIn(0L, 400L)
+        repeatMode.value = prefs.getInt("repeatMode", 0).coerceIn(0, 2)
         eqBands.value = Triple(
             prefs.getFloat("eqBass", 0f),
             prefs.getFloat("eqMid", 0f),
@@ -292,7 +293,13 @@ object PlayerCore {
                 // phase pressé juste avant la fin était silencieusement
                 // avalé. Nos propres bascules passent par un seek : elles
                 // arrivent ici avec REASON_SEEK, jamais AUTO.
-                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                // REPEAT : la fin naturelle qui REBOUCLE sur le même morceau
+                // (répétition du morceau, ou liste d'un seul) est le même
+                // événement qu'un enchaînement — la ceinture d'index de la
+                // bascule, elle, ne voit rien : l'index n'a pas changé.
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                    reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
+                ) {
                     val pending = pendingSwitch
                     if (pending != null) {
                         pendingSwitch = null
@@ -305,6 +312,12 @@ object PlayerCore {
                 // arriver ici) : celle du morceau suivant se ré-armera au
                 // prochain passage du tick.
                 releasePrepared()
+                // La marque « fin déjà fondue » protège UNE lecture du
+                // morceau : la transition faite, elle a rempli son office.
+                // La garder collait en répétition (liste d'un seul morceau,
+                // morceau en boucle) : le même URI revient, et tous les
+                // tours suivants enchaînaient à sec.
+                crossfadedFrom = null
                 if (mode.value != PlayerMode.DJ) updateFromExo()
                 scheduleHousekeeping()
             }
@@ -539,7 +552,7 @@ object PlayerCore {
         queueTracks = tracks
         exo.setMediaItems(tracks.map { mediaItem(it) }, startIndex.coerceIn(0, tracks.size - 1), 0)
         exo.shuffleModeEnabled = shuffle.value
-        exo.repeatMode = Player.REPEAT_MODE_OFF
+        applyRepeat()
         exo.volume = 1f
         exo.prepare()
         exo.play()
@@ -563,7 +576,7 @@ object PlayerCore {
         queueTracks = soft
         exo.setMediaItems(soft.map { mediaItem(it) }, 0, 0)
         exo.shuffleModeEnabled = false
-        exo.repeatMode = Player.REPEAT_MODE_OFF
+        applyRepeat()
         exo.volume = 1f
         exo.prepare()
         exo.play()
@@ -812,7 +825,15 @@ object PlayerCore {
         // — shuffle compris, nextMediaItemIndex suit l'ordre de lecture.
         // En MIX aussi : « suivant » avance d'un morceau dans la file, le
         // saut de phase n'est plus son affaire.
-        val target = exo.nextMediaItemIndex
+        // En répétition du morceau, nextMediaItemIndex désigne… le morceau
+        // courant : l'appui relançait le même titre. Le bouton, lui, veut
+        // dire « avance quand même » — cible calculée à la main.
+        val target = if (exo.repeatMode == Player.REPEAT_MODE_ONE) {
+            val n = exo.mediaItemCount
+            if (n > 0) (exo.currentMediaItemIndex + 1) % n else C.INDEX_UNSET
+        } else {
+            exo.nextMediaItemIndex
+        }
         crossfadeTo(exo.hasNextMediaItem()) {
             when {
                 target != C.INDEX_UNSET -> exo.seekTo(target, 0)
@@ -841,7 +862,14 @@ object PlayerCore {
         consumePendingBeforeGesture()
         val restart = exo.currentPosition > 3000
         val restartIndex = exo.currentMediaItemIndex
-        val prevIndex = exo.previousMediaItemIndex
+        // Même règle que next() : en répétition du morceau, l'index
+        // « précédent » du lecteur désigne le morceau courant.
+        val prevIndex = if (exo.repeatMode == Player.REPEAT_MODE_ONE) {
+            val n = exo.mediaItemCount
+            if (n > 0) (exo.currentMediaItemIndex - 1 + n) % n else C.INDEX_UNSET
+        } else {
+            exo.previousMediaItemIndex
+        }
         crossfadeTo(restart || exo.hasPreviousMediaItem()) {
             when {
                 restart -> exo.seekTo(restartIndex, 0)
@@ -1753,6 +1781,29 @@ object PlayerCore {
         persistState()
     }
 
+    /**
+     * Répétition en lecture normale : 0 = aucune, 1 = la liste en boucle,
+     * 2 = le morceau en boucle. Le bouton fait le tour des trois.
+     */
+    val repeatMode = MutableStateFlow(0)
+
+    fun cycleRepeat() {
+        repeatMode.value = (repeatMode.value + 1) % 3
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit().putInt("repeatMode", repeatMode.value).apply()
+        applyRepeat()
+    }
+
+    /** Traduit le réglage vers ExoPlayer — hors mix et DJ, qui n'en ont pas. */
+    private fun applyRepeat() {
+        if (mode.value != PlayerMode.NORMAL && mode.value != PlayerMode.DOUCE) return
+        exo.repeatMode = when (repeatMode.value) {
+            1 -> Player.REPEAT_MODE_ALL
+            2 -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_OFF
+        }
+    }
+
     // ------------------------------------------------- reprise après arrêt
 
     /**
@@ -1864,7 +1915,7 @@ object PlayerCore {
                     list.map { mediaItem(it) }, idx, saved.positionMs.coerceAtLeast(0L)
                 )
                 exo.shuffleModeEnabled = saved.shuffle
-                exo.repeatMode = Player.REPEAT_MODE_OFF
+                applyRepeat()
                 exo.volume = 1f
                 exo.playWhenReady = false
                 exo.prepare()

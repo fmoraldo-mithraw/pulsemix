@@ -51,4 +51,47 @@ object FfmpegBin {
         bin = exe.absolutePath
         return bin
     }
+
+    @Volatile private var cmdPrefix: List<String>? = null
+
+    /**
+     * Commande d'invocation de ffmpeg, testée une fois : le binaire seul,
+     * ou via le linker système en repli.
+     *
+     * Android 10+ interdit aux applis récentes d'EXÉCUTER un binaire
+     * rangé dans leurs propres données — précisément là où le ffmpeg
+     * embarqué est extrait. L'interdiction porte sur l'exec direct ;
+     * passer le binaire en argument au linker système (un exécutable
+     * système, lui autorisé) le charge quand même. Sans ce repli, la
+     * conversion des WMA et l'écriture des tags échouaient en silence
+     * sur tout Android moderne.
+     *
+     * @return la commande à préfixer aux arguments, ou null si aucune
+     * forme ne fonctionne.
+     */
+    @Synchronized
+    fun command(context: Context): List<String>? {
+        cmdPrefix?.let { return it }
+        val exe = path(context) ?: return null
+
+        fun works(cmd: List<String>): Boolean = try {
+            val p = ProcessBuilder(cmd + "-version").apply {
+                environment().putAll(env())
+                redirectErrorStream(true)
+            }.start()
+            p.inputStream.bufferedReader().use { it.readText() }
+            p.waitFor() == 0
+        } catch (_: Exception) {
+            false
+        }
+
+        val linker = if (File("/system/bin/linker64").exists())
+            "/system/bin/linker64" else "/system/bin/linker"
+        val chosen = listOf(listOf(exe), listOf(linker, exe)).firstOrNull { works(it) }
+        if (chosen == null) {
+            android.util.Log.w("FfmpegBin", "ffmpeg inexécutable, direct comme via $linker")
+        }
+        cmdPrefix = chosen
+        return chosen
+    }
 }

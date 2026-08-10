@@ -52,6 +52,8 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.AlertDialog
@@ -388,6 +390,24 @@ fun PlayerScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
+            // Répétition (lecture normale) : un appui = la liste en boucle,
+            // deux = le morceau en boucle, trois = retour à la normale.
+            if (mode == PlayerMode.NORMAL || mode == PlayerMode.DOUCE) {
+                val repeat by vm.repeatMode.collectAsStateWithLifecycle()
+                IconButton(onClick = { vm.cycleRepeat() }) {
+                    Icon(
+                        if (repeat == 2) Icons.Rounded.RepeatOne
+                        else Icons.Rounded.Repeat,
+                        when (repeat) {
+                            1 -> "Répéter la liste"
+                            2 -> "Répéter le morceau"
+                            else -> "Répétition coupée"
+                        },
+                        tint = if (repeat != 0) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+            }
             IconButton(onClick = { showQueueSheet = true }) {
                 Icon(
                     Icons.Rounded.QueueMusic, "File d'attente",
