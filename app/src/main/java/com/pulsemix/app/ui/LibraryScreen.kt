@@ -50,6 +50,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,17 +78,23 @@ fun LibraryScreen(
     val folders by vm.folders.collectAsStateWithLifecycle()
     val current by vm.currentTrack.collectAsStateWithLifecycle()
 
-    var search by remember { mutableStateOf("") }
-    var sortMode by remember { mutableStateOf(SortMode.TITRE) }
+    // rememberSaveable : recherche, tri et filtres survivent à la rotation —
+    // avec remember seul, un pivot de l'écran remettait tout à zéro.
+    var search by rememberSaveable { mutableStateOf("") }
+    // SortMode est un enum, non sauvegardable tel quel dans un Bundle : on
+    // stocke son nom (String) et on reconvertit, plus simple qu'un Saver.
+    var sortModeName by rememberSaveable { mutableStateOf(SortMode.TITRE.name) }
+    val sortMode = SortMode.entries.firstOrNull { it.name == sortModeName }
+        ?: SortMode.TITRE
     // Re-cliquer le tri actif inverse son ordre (flèche sur la puce)
-    var sortReversed by remember { mutableStateOf(false) }
-    var compatOnly by remember { mutableStateOf(false) }
-    var failedOnly by remember { mutableStateOf(false) }
+    var sortReversed by rememberSaveable { mutableStateOf(false) }
+    var compatOnly by rememberSaveable { mutableStateOf(false) }
+    var failedOnly by rememberSaveable { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<Track?>(null) }
 
     // Sous-écrans : playlists et tags en ligne (la bibliothèque reste légère)
-    var subScreen by remember { mutableStateOf(0) }
+    var subScreen by rememberSaveable { mutableStateOf(0) }
     if (subScreen == 1) {
         Box(modifier.fillMaxSize()) { PlaylistsScreen(vm, onBack = { subScreen = 0 }) }
         return
@@ -242,7 +249,16 @@ fun LibraryScreen(
                 onValueChange = { search = it },
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("Rechercher un titre ou un artiste…") },
-                singleLine = true
+                singleLine = true,
+                // Croix d'effacement : vider champ + filtre d'un tap, au lieu
+                // d'effacer le texte lettre par lettre au clavier.
+                trailingIcon = if (search.isEmpty()) null else {
+                    {
+                        IconButton(onClick = { search = "" }) {
+                            Icon(Icons.Rounded.Close, "Effacer la recherche")
+                        }
+                    }
+                }
             )
             Spacer(Modifier.height(6.dp))
             Row(
@@ -255,7 +271,7 @@ fun LibraryScreen(
                         onClick = {
                             if (sortMode == m) sortReversed = !sortReversed
                             else {
-                                sortMode = m
+                                sortModeName = m.name
                                 sortReversed = false
                             }
                         },
@@ -282,34 +298,42 @@ fun LibraryScreen(
             }
             Spacer(Modifier.height(6.dp))
 
-            val cur = current
-            val displayed = tracks
-                .filter { !failedOnly || !it.analyzed }
-                .filter {
-                    search.isBlank() ||
-                        it.title.contains(search, ignoreCase = true) ||
-                        it.artist.contains(search, ignoreCase = true)
-                }
-                .filter {
-                    if (!compatOnly || cur == null || !cur.analyzed) true
-                    else {
-                        val bpmOk = cur.bpm > 0f && it.bpm > 0f && minOf(
-                            abs(it.bpm - cur.bpm),
-                            abs(it.bpm * 2 - cur.bpm),
-                            abs(it.bpm / 2 - cur.bpm)
-                        ) / cur.bpm <= 0.08f
-                        bpmOk && MixEngine.camelotScore(cur.camelot, it.camelot) >= 0.8f
+            // Mémorisé : filtres + tri complet, rejoués sinon à CHAQUE
+            // recomposition — y compris à chaque tick de progression du scan,
+            // qui n'affecte ni la liste ni son ordre.
+            val displayed = remember(
+                tracks, search, sortMode, sortReversed, compatOnly, failedOnly,
+                current
+            ) {
+                val cur = current
+                tracks
+                    .filter { !failedOnly || !it.analyzed }
+                    .filter {
+                        search.isBlank() ||
+                            it.title.contains(search, ignoreCase = true) ||
+                            it.artist.contains(search, ignoreCase = true)
                     }
-                }
-                .let { list ->
-                    when (sortMode) {
-                        SortMode.TITRE -> list.sortedBy { it.title.lowercase() }
-                        SortMode.BPM -> list.sortedBy { it.bpm }
-                        SortMode.ENERGIE -> list.sortedByDescending { it.energyPeak }
-                        SortMode.CLE -> list.sortedBy { camelotSortKey(it.camelot) }
+                    .filter {
+                        if (!compatOnly || cur == null || !cur.analyzed) true
+                        else {
+                            val bpmOk = cur.bpm > 0f && it.bpm > 0f && minOf(
+                                abs(it.bpm - cur.bpm),
+                                abs(it.bpm * 2 - cur.bpm),
+                                abs(it.bpm / 2 - cur.bpm)
+                            ) / cur.bpm <= 0.08f
+                            bpmOk && MixEngine.camelotScore(cur.camelot, it.camelot) >= 0.8f
+                        }
                     }
-                }
-                .let { if (sortReversed) it.asReversed() else it }
+                    .let { list ->
+                        when (sortMode) {
+                            SortMode.TITRE -> list.sortedBy { it.title.lowercase() }
+                            SortMode.BPM -> list.sortedBy { it.bpm }
+                            SortMode.ENERGIE -> list.sortedByDescending { it.energyPeak }
+                            SortMode.CLE -> list.sortedBy { camelotSortKey(it.camelot) }
+                        }
+                    }
+                    .let { if (sortReversed) it.asReversed() else it }
+            }
 
             Text(
                 "${displayed.size}/${tracks.size} morceaux · " +

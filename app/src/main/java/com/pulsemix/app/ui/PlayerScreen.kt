@@ -514,10 +514,13 @@ fun PlayerScreen(
     if (showDouceDialog) {
         // Défaut très doux : le quart le plus calme de la bibliothèque
         var softness by remember { mutableFloatStateOf(0.25f) }
-        // Mémorisé : ce décompte trie quatre fois toute la bibliothèque, et
-        // il repartait à chaque image tant que le doigt glissait sur le
-        // curseur — sur le thread principal.
-        val matching = remember(softness, tracks) { vm.softCount(softness) }
+        // Mémorisé sur une clé ARRONDIE (crans de 1/20) : ce décompte trie
+        // quatre fois toute la bibliothèque sur le thread principal, et une
+        // clé sur la valeur brute le relançait à chaque image tant que le
+        // doigt glissait sur le curseur. Au cran près, l'affichage ne change
+        // pas et le tri n'est refait qu'aux franchissements de cran.
+        val softStep = (softness * 20).toInt()
+        val matching = remember(softStep, tracks) { vm.softCount(softness) }
         val label = when {
             softness <= 0.20f -> "très doux"
             softness <= 0.35f -> "doux"
@@ -612,10 +615,16 @@ fun PlayerScreen(
                             )
                         },
                         confirmButton = {
-                            Button(onClick = {
-                                vm.savePlaylistFromQueue(name.trim())
-                                showSavePlaylist = false
-                            }) { Text("Enregistrer") }
+                            // Désactivé tant que le nom est vide : une
+                            // playlist sans nom serait injouable — même
+                            // garde-fou que côté bibliothèque.
+                            Button(
+                                enabled = name.isNotBlank(),
+                                onClick = {
+                                    vm.savePlaylistFromQueue(name.trim())
+                                    showSavePlaylist = false
+                                }
+                            ) { Text("Enregistrer") }
                         },
                         dismissButton = {
                             TextButton(onClick = { showSavePlaylist = false }) {
@@ -1038,7 +1047,7 @@ private fun MixPlanCard(
 
 /**
  * Bouton de boost à crans (-3..+3).
- * - Tap : bascule 0 ↔ +2 (boost standard).
+ * - Tap : monte d'un cran, jusqu'à +3 puis retour à zéro.
  * - Appui long puis glisser : chaque glissade d'un seuil (~40 dp) vers le
  *   haut monte d'un cran, vers le bas descend d'un cran (jusqu'en négatif :
  *   ralentir / couper les basses).
@@ -1223,8 +1232,9 @@ private fun BoostDragGauge(level: Int, progress: Float, modifier: Modifier = Mod
 }
 
 /**
- * Panneau « Effets » : tous les contrôles live à crans (tap = on/off,
- * appui long + glisser = régler), plus la boucle live (maintenir).
+ * Panneau « Effets » : tous les contrôles live à crans (tap = +1 cran puis
+ * retour à zéro, appui long + glisser = régler), plus la boucle live
+ * (maintenir).
  * Écho, auto-pan, gate et boucle sont rendus par le moteur DJ uniquement.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1254,8 +1264,11 @@ private fun FxSheet(vm: PlayerViewModel, dj: Boolean, onDismiss: () -> Unit) {
                 )
                 TextButton(onClick = { vm.resetEffects() }) { Text("Réinitialiser") }
             }
+            // Aligné sur le geste réel (onTap) : chaque tap monte d'un cran
+            // jusqu'à +3, le suivant revient à zéro — pas un simple on/off.
             Text(
-                "Tap : activer/couper. Appui long puis glisser : régler par crans.",
+                "Tap : monter d'un cran (puis retour à zéro). " +
+                    "Appui long puis glisser : régler par crans.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )

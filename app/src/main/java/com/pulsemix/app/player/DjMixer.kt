@@ -112,6 +112,135 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Coupure du passe-bas de l'entrant : basses seules -> bande pleine
         const val OPEN_FC_LOW = 140f
         const val OPEN_FC_HIGH = 16_000f
+
+        /**
+         * Cale le BPM du morceau entrant sur le BPM effectif du deck actif
+         * (±8 %). Fonction PURE (companion, internal) : c'est elle qui
+         * décide si deux morceaux peuvent être battus ensemble, et une
+         * régression s'entendrait sans se voir — d'où les tests JVM.
+         * @param effBpm BPM effectif du deck actif (bpm × rate courant).
+         */
+        internal fun computeRate(effBpm: Float, nextBpm: Float): Float {
+            if (effBpm <= 0f || nextBpm <= 0f) return 1f
+            val base = effBpm / nextBpm
+            val candidates = floatArrayOf(base, base * 2f, base / 2f)
+            var best = base.coerceIn(0.92f, 1.08f)
+            var bestDist = Float.MAX_VALUE
+            for (c in candidates) {
+                if (c in 0.92f..1.08f) {
+                    val d = kotlin.math.abs(c - 1f)
+                    if (d < bestDist) {
+                        bestDist = d
+                        best = c
+                    }
+                }
+            }
+            return best
+        }
+
+        /**
+         * Durée ET technique de la jonction, choisies par transition comme
+         * un DJ choisit son geste :
+         *  - tempos calés ET tonalités compatibles : long blend (18 s) avec
+         *    bass swap puis mid swap (KIND_HARMONIC) ;
+         *  - calage impossible (écart > ±8 %, hors double/moitié) : coupe
+         *    courte (6 s) avec echo-out (KIND_CUT) — étirer deux tempos non
+         *    synchrones ferait battre les beats ;
+         *  - tempos calés, tonalités moyennes (le cas le plus fréquent) : la
+         *    technique est choisie selon le caractère des deux morceaux —
+         *    entrant calme → sweep sombre et long ; deux morceaux
+         *    énergiques → palette punchy (sweep, coupe écho, bass swap) ;
+         *    sortant brillant → plutôt sweep sombre ; sinon sweep
+         *    clair/sombre/bass swap. Un tirage déterministe par paire varie
+         *    le choix, sans jamais répéter la technique précédente quand
+         *    plusieurs conviennent ;
+         *  - saut de phase manuel : fondu court (5 s), bass swap neutre.
+         *
+         * Fonction PURE (companion, internal, testée en JVM) : l'état
+         * qu'elle lisait sur le Deck est passé en paramètres ([curRate],
+         * [lastKind]).
+         */
+        internal fun fadeSpec(
+            current: Track,
+            curRate: Float,
+            next: Track,
+            rate: Float,
+            jumping: Boolean,
+            lastKind: Int
+        ): Pair<Double, Int> {
+            if (jumping) return FADE_JUMP_S to KIND_EQ
+            val effA = current.bpm * curRate
+            val effB = next.bpm * rate
+            if (effA <= 0f || effB <= 0f) return FADE_NORMAL_S to KIND_EQ
+            val ratio = effA / effB
+            val lockErr = minOf(
+                abs(ratio - 1f),
+                abs(ratio - 2f) / 2f,
+                abs(ratio - 0.5f) * 2f
+            )
+            if (lockErr > 0.005f) return FADE_CUT_S to KIND_CUT
+            val harmonic = MixEngine.camelotScore(current.camelot, next.camelot)
+            if (harmonic >= 0.8f) return FADE_LOCKED_HARMONIC_S to KIND_HARMONIC
+
+            val eOut = current.energyMean
+            val eIn = next.energyMean
+            val bright = current.centroid
+            // Caractère des deux morceaux, quand l'analyse récente l'a
+            // mesuré : un morceau TENU (nappes, chœurs, cuivres) supporte
+            // mal une coupe sèche — le son s'interrompt en pleine tenue —
+            // et se marie aux longues transitions ; un morceau PERCUSSIF
+            // fait l'inverse. Les anciennes analyses laissent ces champs à
+            // zéro : les règles historiques s'appliquent alors, inchangées.
+            val sustained = current.sustainRatio > 0.65f &&
+                next.sustainRatio > 0.55f
+            val percussive = current.sustainRatio in 0.01f..0.45f &&
+                next.sustainRatio in 0.01f..0.45f
+            val pool: List<Pair<Double, Int>> = when {
+                // Deux morceaux tenus : fondus longs et filtres doux, jamais
+                // de coupe — c'est ici que les CUT écorchaient l'oreille
+                sustained -> listOf(
+                    FADE_LOCKED_HARMONIC_S to KIND_HARMONIC,
+                    20.0 to KIND_DARK,
+                    FADE_NORMAL_S to KIND_NORMAL
+                )
+                // Deux morceaux percussifs : gestes francs, la coupe écho
+                // tombe sur des attaques et sonne voulue
+                percussive && eOut > 0.14f && eIn > 0.14f -> listOf(
+                    7.0 to KIND_CUT,
+                    FADE_NORMAL_S to KIND_NORMAL,
+                    11.0 to KIND_EQ
+                )
+                // Entrant calme : arrivée en douceur, sortant qui s'étouffe
+                eIn > 0f && eIn < 0.10f -> listOf(
+                    20.0 to KIND_DARK,
+                    FADE_NORMAL_S to KIND_NORMAL,
+                    14.0 to KIND_EQ
+                )
+                // Deux morceaux énergiques : gestes francs, coupe écho permise
+                eOut > 0.17f && eIn > 0.17f -> listOf(
+                    FADE_NORMAL_S to KIND_NORMAL,
+                    7.0 to KIND_CUT,
+                    11.0 to KIND_EQ
+                )
+                // Sortant brillant : l'étouffer (passe-bas) sonne naturel
+                bright > 2_600f -> listOf(
+                    17.0 to KIND_DARK,
+                    FADE_NORMAL_S to KIND_NORMAL,
+                    12.0 to KIND_EQ
+                )
+                else -> listOf(
+                    FADE_NORMAL_S to KIND_NORMAL,
+                    17.0 to KIND_DARK,
+                    12.0 to KIND_EQ
+                )
+            }
+            // Tirage stable par paire de morceaux, sans répéter la technique
+            // de la transition précédente
+            var idx = ((current.uri.hashCode() * 31 + next.uri.hashCode())
+                ushr 1) % pool.size
+            if (pool[idx].second == lastKind) idx = (idx + 1) % pool.size
+            return pool[idx]
+        }
     }
 
     /** Détecteur d'attaques (kicks) sur l'enveloppe de basses d'un deck. */
@@ -153,6 +282,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     @Volatile private var startSegIndex = 0
     @Volatile private var rehearsal = false
     @Volatile private var recorder: MixRecorder? = null
+    /**
+     * AudioTrack du run en cours, posé par runMix (où il reste une variable
+     * locale, créée et libérée dans son finally) : stop() en a besoin pour
+     * débloquer une écriture en cours depuis le thread appelant.
+     */
+    @Volatile private var liveAudioTrack: AudioTrack? = null
 
     /** Active/coupe l'enregistrement du set (fichier M4A). */
     fun setRecorder(r: MixRecorder?) {
@@ -221,7 +356,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     fun stop() {
         running = false
         paused = false
-        mixThread?.join(2000)
+        // Le thread audio peut être bloqué ~1 s dans audioTrack.write
+        // (WRITE_BLOCKING, tampon volontairement large) : pause + flush le
+        // débloquent tout de suite, au lieu de faire attendre le thread
+        // appelant (UI) toute la durée de l'écriture.
+        try {
+            liveAudioTrack?.pause()
+            liveAudioTrack?.flush()
+        } catch (_: Exception) {
+        }
+        // Join court : le jeton de génération (runGeneration) rend de toute
+        // façon inoffensif un thread qui traînerait — il ne peut ni
+        // reprendre la boucle ni livrer ses callbacks sur le set suivant.
+        mixThread?.join(500)
         mixThread = null
     }
 
@@ -753,6 +900,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 max(minBuf * 3, 256 * 1024) + OUT_EXTRA_BYTES
             )
             .build()
+        // Exposé à stop() pour débloquer une écriture bloquante en cours ;
+        // la propriété (création ET release, dans le finally) reste ici.
+        liveAudioTrack = audioTrack
         // Le son écrit maintenant ne se fera entendre qu'une fois le tampon
         // écoulé : les annonces à l'interface sont retardées d'autant, sinon
         // le titre changerait une seconde avant qu'on entende le morceau.
@@ -863,10 +1013,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             fastForward(deckA)
 
             while (running && gen == runGeneration) {
-                // Pause (miroir du bouton play/pause et du Bluetooth)
+                // Pause (miroir du bouton play/pause et du Bluetooth).
+                // 200 ms entre deux réveils : à 40 ms, ce thread (priorité
+                // audio max) se réveillait 25 fois par seconde pour rien
+                // pendant toute la pause ; la latence de reprise reste
+                // imperceptible à 5 réveils par seconde.
                 if (paused) {
                     audioTrack.pause()
-                    while (paused && running && gen == runGeneration) Thread.sleep(40)
+                    while (paused && running && gen == runGeneration) Thread.sleep(200)
                     if (!running) break
                     audioTrack.play()
                 }
@@ -964,9 +1118,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         else -> a.segIndex + 1
                     }
                     if (nextIdx < segments.size && failedForSeg != a.segIndex) {
-                        val rate = computeRate(a, segments[nextIdx].track)
-                        val (fadeS, fadeKind) =
-                            fadeSpec(a, segments[nextIdx].track, rate, jumping)
+                        val rate =
+                            computeRate(a.track.bpm * a.curRate, segments[nextIdx].track.bpm)
+                        val (fadeS, fadeKind) = fadeSpec(
+                            a.track, a.curRate, segments[nextIdx].track,
+                            rate, jumping, lastFadeKind
+                        )
                         val fadeF = (fadeS * OUT_SR).toLong()
                         // 3 s d'avance : le deck est prêt (et pré-décodé)
                         // avant l'heure du fondu
@@ -1460,16 +1617,24 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             deckA?.close()
             deckB?.close()
             openResult.getAndSet(null)?.deck?.close()
+            // `running` encore vrai = la boucle est sortie d'elle-même :
+            // le set est allé à son terme (un stop() manuel l'aurait mis
+            // à false avant). Photographié AVANT les écritures ci-dessous.
+            val natural = running && gen == runGeneration
+            // Les champs partagés ne sont rendus QUE par leur génération :
+            // le finally d'un thread traînard (finalisation du M4A > délai
+            // du join) s'exécute APRÈS le démarrage du set suivant — écrire
+            // running=false ou effacer liveAudioTrack sans cette garde
+            // tuait le nouveau set en silence.
+            if (gen == runGeneration) {
+                liveAudioTrack = null
+                running = false
+            }
             try {
                 audioTrack.stop()
             } catch (_: Exception) {
             }
             audioTrack.release()
-            // `running` encore vrai = la boucle est sortie d'elle-même :
-            // le set est allé à son terme (un stop() manuel l'aurait mis
-            // à false avant). C'est ce qui déclenche l'enchaînement.
-            val natural = running && gen == runGeneration
-            running = false
             ui.post {
                 // Un nouveau set a démarré entre-temps : cette fin ne le
                 // concerne pas — la livrer mettait le set suivant en pause.
@@ -1506,120 +1671,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         }, outLatencyMs)
     }
 
-    /**
-     * Durée ET technique de la jonction, choisies par transition comme un
-     * DJ choisit son geste :
-     *  - tempos calés ET tonalités compatibles : long blend (18 s) avec
-     *    bass swap puis mid swap (KIND_HARMONIC) ;
-     *  - calage impossible (écart > ±8 %, hors double/moitié) : coupe
-     *    courte (6 s) avec echo-out (KIND_CUT) — étirer deux tempos non
-     *    synchrones ferait battre les beats ;
-     *  - tempos calés, tonalités moyennes (le cas le plus fréquent) : la
-     *    technique est choisie selon le caractère des deux morceaux —
-     *    entrant calme → sweep sombre et long ; deux morceaux énergiques →
-     *    palette punchy (sweep, coupe écho, bass swap) ; sortant brillant →
-     *    plutôt sweep sombre ; sinon sweep clair/sombre/bass swap. Un tirage
-     *    déterministe par paire varie le choix, sans jamais répéter la
-     *    technique précédente quand plusieurs conviennent ;
-     *  - saut de phase manuel : fondu court (5 s), bass swap neutre.
-     */
-    private fun fadeSpec(
-        current: Deck,
-        next: Track,
-        rate: Float,
-        jumping: Boolean
-    ): Pair<Double, Int> {
-        if (jumping) return FADE_JUMP_S to KIND_EQ
-        val effA = current.track.bpm * current.curRate
-        val effB = next.bpm * rate
-        if (effA <= 0f || effB <= 0f) return FADE_NORMAL_S to KIND_EQ
-        val ratio = effA / effB
-        val lockErr = minOf(
-            abs(ratio - 1f),
-            abs(ratio - 2f) / 2f,
-            abs(ratio - 0.5f) * 2f
-        )
-        if (lockErr > 0.005f) return FADE_CUT_S to KIND_CUT
-        val harmonic = MixEngine.camelotScore(current.track.camelot, next.camelot)
-        if (harmonic >= 0.8f) return FADE_LOCKED_HARMONIC_S to KIND_HARMONIC
-
-        val eOut = current.track.energyMean
-        val eIn = next.energyMean
-        val bright = current.track.centroid
-        // Caractère des deux morceaux, quand l'analyse récente l'a mesuré :
-        // un morceau TENU (nappes, chœurs, cuivres) supporte mal une coupe
-        // sèche — le son s'interrompt en pleine tenue — et se marie aux
-        // longues transitions ; un morceau PERCUSSIF fait l'inverse. Les
-        // anciennes analyses laissent ces champs à zéro : les règles
-        // historiques s'appliquent alors, inchangées.
-        val sustained = current.track.sustainRatio > 0.65f &&
-            next.sustainRatio > 0.55f
-        val percussive = current.track.sustainRatio in 0.01f..0.45f &&
-            next.sustainRatio in 0.01f..0.45f
-        val pool: List<Pair<Double, Int>> = when {
-            // Deux morceaux tenus : fondus longs et filtres doux, jamais
-            // de coupe — c'est ici que les CUT écorchaient l'oreille
-            sustained -> listOf(
-                FADE_LOCKED_HARMONIC_S to KIND_HARMONIC,
-                20.0 to KIND_DARK,
-                FADE_NORMAL_S to KIND_NORMAL
-            )
-            // Deux morceaux percussifs : gestes francs, la coupe écho
-            // tombe sur des attaques et sonne voulue
-            percussive && eOut > 0.14f && eIn > 0.14f -> listOf(
-                7.0 to KIND_CUT,
-                FADE_NORMAL_S to KIND_NORMAL,
-                11.0 to KIND_EQ
-            )
-            // Entrant calme : arrivée en douceur, sortant qui s'étouffe
-            eIn > 0f && eIn < 0.10f -> listOf(
-                20.0 to KIND_DARK,
-                FADE_NORMAL_S to KIND_NORMAL,
-                14.0 to KIND_EQ
-            )
-            // Deux morceaux énergiques : gestes francs, coupe écho permise
-            eOut > 0.17f && eIn > 0.17f -> listOf(
-                FADE_NORMAL_S to KIND_NORMAL,
-                7.0 to KIND_CUT,
-                11.0 to KIND_EQ
-            )
-            // Sortant brillant : l'étouffer (passe-bas) sonne naturel
-            bright > 2_600f -> listOf(
-                17.0 to KIND_DARK,
-                FADE_NORMAL_S to KIND_NORMAL,
-                12.0 to KIND_EQ
-            )
-            else -> listOf(
-                FADE_NORMAL_S to KIND_NORMAL,
-                17.0 to KIND_DARK,
-                12.0 to KIND_EQ
-            )
-        }
-        // Tirage stable par paire de morceaux, sans répéter la technique
-        // de la transition précédente
-        var idx = ((current.track.uri.hashCode() * 31 + next.uri.hashCode())
-            ushr 1) % pool.size
-        if (pool[idx].second == lastFadeKind) idx = (idx + 1) % pool.size
-        return pool[idx]
-    }
-
-    /** Cale le BPM du morceau entrant sur le BPM effectif du deck actif (±8 %). */
-    private fun computeRate(current: Deck, next: Track): Float {
-        val effBpm = current.track.bpm * current.curRate
-        if (effBpm <= 0f || next.bpm <= 0f) return 1f
-        val base = effBpm / next.bpm
-        val candidates = floatArrayOf(base, base * 2f, base / 2f)
-        var best = base.coerceIn(0.92f, 1.08f)
-        var bestDist = Float.MAX_VALUE
-        for (c in candidates) {
-            if (c in 0.92f..1.08f) {
-                val d = kotlin.math.abs(c - 1f)
-                if (d < bestDist) {
-                    bestDist = d
-                    best = c
-                }
-            }
-        }
-        return best
-    }
+    // computeRate et fadeSpec : voir le companion object (fonctions pures,
+    // internal, testées en JVM).
 }

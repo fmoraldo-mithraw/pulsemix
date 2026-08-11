@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.library.SongRecognizer
 import com.pulsemix.app.PlayerViewModel
+import kotlinx.coroutines.delay
 
 /** En-tête d'un sous-écran : retour + titre. */
 @Composable
@@ -81,6 +82,37 @@ private fun SubHeader(title: String, onBack: () -> Unit) {
 fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     BackHandler { onBack() }
     val playlists by vm.playlists.collectAsStateWithLifecycle()
+    // Suppression sur confirmation : un simple tap de croix effaçait la
+    // playlist sans retour possible — action définitive, comme les morceaux.
+    var deleteTarget by remember { mutableStateOf<String?>(null) }
+    // Export M3U : PlaylistStore.exportM3u est asynchrone et ne renvoie rien
+    // (erreurs avalées) — on affiche donc une confirmation générique, sinon
+    // le bouton « m3u » restait muet. Horodatage en clé pour que le message
+    // se réarme même en ré-exportant la même playlist.
+    var exportInfo by remember { mutableStateOf<Pair<Long, String>?>(null) }
+
+    deleteTarget?.let { name ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Supprimer la playlist « $name » ?") },
+            text = {
+                Text(
+                    "La playlist sera supprimée — c'est définitif. Les " +
+                        "morceaux, eux, restent dans la bibliothèque."
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    vm.deletePlaylist(name)
+                    deleteTarget = null
+                }) { Text("Supprimer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("Annuler") }
+            }
+        )
+    }
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         SubHeader("Playlists", onBack)
         Spacer(Modifier.height(8.dp))
@@ -101,6 +133,20 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
+            exportInfo?.let { (stamp, name) ->
+                Text(
+                    "Playlist « $name » exportée en M3U " +
+                        "(dossier Playlists de l'appli).",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                // Le message confirme puis s'efface : il ne doit pas
+                // s'installer entre le titre et la liste.
+                LaunchedEffect(stamp) {
+                    delay(4_000)
+                    exportInfo = null
+                }
+            }
             Spacer(Modifier.height(4.dp))
             LazyColumn {
                 items(playlists, key = { it.name }) { pl ->
@@ -128,8 +174,11 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                         IconButton(onClick = { vm.playPlaylist(pl); onBack() }) {
                             Icon(Icons.Rounded.PlayArrow, "Lire")
                         }
-                        TextButton(onClick = { vm.exportPlaylist(pl) }) { Text("m3u") }
-                        IconButton(onClick = { vm.deletePlaylist(pl.name) }) {
+                        TextButton(onClick = {
+                            vm.exportPlaylist(pl)
+                            exportInfo = System.currentTimeMillis() to pl.name
+                        }) { Text("m3u") }
+                        IconButton(onClick = { deleteTarget = pl.name }) {
                             Icon(
                                 Icons.Rounded.Close, "Supprimer",
                                 tint = MaterialTheme.colorScheme.onSurface
@@ -385,6 +434,20 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
         } else {
+            // Clés par OCCURRENCE pour la liste des corrigés (même approche
+            // que la file de lecture) : une clé d'index ("a:$i") faisait
+            // changer de clé toutes les lignes suivantes à chaque retrait,
+            // et l'URI seul dupliquerait la clé d'un morceau corrigé deux
+            // fois. L'URI, suffixé seulement pour les doublons, donne les
+            // deux : stabilité et unicité.
+            val appliedKeys = remember(appliedList) {
+                val seen = HashMap<String, Int>()
+                appliedList.map { s ->
+                    val n = (seen[s.uri] ?: 0) + 1
+                    seen[s.uri] = n
+                    if (n == 1) "a:" + s.uri else "a:${s.uri}#$n"
+                }
+            }
             LazyColumn {
                 items(pending, key = { "p:" + it.uri }) { s ->
                     Row(
@@ -438,7 +501,7 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                             }
                         }
                     }
-                    itemsIndexed(appliedList, key = { i, _ -> "a:$i" }) { _, s ->
+                    itemsIndexed(appliedList, key = { i, _ -> appliedKeys[i] }) { _, s ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()

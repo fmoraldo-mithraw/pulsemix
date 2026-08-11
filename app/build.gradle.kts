@@ -81,6 +81,9 @@ dependencies {
 
     // Tests unitaires (JVM) des fonctions pures : moteur de mix, empreintes
     testImplementation("junit:junit:4.13.2")
+    // org.json réel pour la JVM : les stubs d'android.jar lèvent à l'appel,
+    // or le round-trip de PlaybackState (PlaybackStateStoreTest) en a besoin
+    testImplementation("org.json:json:20231013")
 
     // Import depuis YouTube / SoundCloud / Bandcamp… : yt-dlp embarqué
     // (fork maintenu par le dev de Seal, publié sur Maven Central).

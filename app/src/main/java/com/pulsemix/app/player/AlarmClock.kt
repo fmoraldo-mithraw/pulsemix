@@ -54,6 +54,9 @@ object AlarmClock {
     private const val REQ_FIRE = 4242
     private const val REQ_SNOOZE = 4243
 
+    /** Volume média d'avant le réveil, copié en prefs (voir restoreVolume). */
+    private const val KEY_VOLUME_BEFORE = "volumeBeforeAlarm"
+
     private var loaded = false
     private var rampJob: Job? = null
 
@@ -66,6 +69,13 @@ object AlarmClock {
             minute.value = p.getInt("minute", 0)
             mixId.value = p.getString("mixId", "douce") ?: "douce"
             rampMinutes.value = p.getInt("ramp", 3)
+            // Un réveil interrompu par la mort du processus n'a jamais rendu
+            // le volume : la clé traîne encore dans les prefs. On le rend
+            // maintenant — sinon la première vidéo ou le premier morceau
+            // après le redémarrage partait à fond. Sans risque de conflit :
+            // ce bloc ne tourne qu'une fois par processus, toujours avant
+            // que startRamp n'écrive la clé du réveil en cours.
+            if (p.contains(KEY_VOLUME_BEFORE)) restoreVolume(context)
         }
         if (enabled.value) schedule(context)
     }
@@ -203,10 +213,19 @@ object AlarmClock {
      * Le réveil pousse le volume média jusqu'au maximum du téléphone. Sans
      * cette remise en état, la première vidéo ou le premier morceau joué
      * après l'avoir coupé partait à fond.
+     *
+     * La variable ne survit pas à la mort du processus (fréquente entre le
+     * lever du réveil et son arrêt : l'app est en arrière-plan) : la copie
+     * en prefs, écrite au moment de pousser le volume, fait foi quand la
+     * variable a été perdue. La clé est effacée une fois le volume rendu.
      */
     private fun restoreVolume(context: Context) {
-        val v = volumeBeforeAlarm ?: return
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val v = volumeBeforeAlarm
+            ?: p.getInt(KEY_VOLUME_BEFORE, -1).takeIf { it >= 0 }
         volumeBeforeAlarm = null
+        p.edit().remove(KEY_VOLUME_BEFORE).apply()
+        if (v == null) return
         try {
             context.getSystemService(AudioManager::class.java)
                 ?.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
@@ -351,9 +370,15 @@ object AlarmClock {
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val start = (max / 8).coerceAtLeast(1)
         try {
-            // Mémorisé avant d'y toucher : le réveil rendra ce volume
+            // Mémorisé avant d'y toucher : le réveil rendra ce volume.
+            // Copié en prefs dans la foulée : si le processus meurt avant
+            // stopRinging, la variable disparaît avec lui et c'est la copie
+            // qui permettra de rendre le volume (init / restoreVolume).
             if (volumeBeforeAlarm == null) {
-                volumeBeforeAlarm = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                val before = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                volumeBeforeAlarm = before
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit().putInt(KEY_VOLUME_BEFORE, before).apply()
             }
             am.setStreamVolume(AudioManager.STREAM_MUSIC, start, 0)
         } catch (_: Exception) {

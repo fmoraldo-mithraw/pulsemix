@@ -98,6 +98,71 @@ object PulseWidgets {
      */
     private var queueSignature: Int? = null
 
+    /**
+     * Ce que le widget lecteur affiche en ce moment : URI du morceau et
+     * état play/pause de la dernière reconstruction complète. C'est ce qui
+     * permet au tick de 3 s de savoir que SEULE la progression a bougé.
+     */
+    @Volatile private var shownUri: String? = null
+    @Volatile private var shownPlaying = false
+
+    /**
+     * Dernière jaquette chargée (URI → bitmap). Le tick reconstruisait le
+     * widget entier, et chaque reconstruction relançait un thread
+     * « widget-art » pour relire la même jaquette sur disque : on la garde
+     * tant que le morceau ne change pas.
+     */
+    @Volatile private var artCache: Pair<String, android.graphics.Bitmap>? = null
+
+    /** Jaquette en cache pour cet URI, sinon null (le thread la chargera). */
+    internal fun cachedArt(uri: String): android.graphics.Bitmap? =
+        artCache?.takeIf { it.first == uri }?.second
+
+    internal fun rememberArt(uri: String, bmp: android.graphics.Bitmap) {
+        artCache = uri to bmp
+    }
+
+    /** Mémorise ce que la reconstruction complète vient d'afficher. */
+    internal fun rememberShown(uri: String?, playing: Boolean) {
+        shownUri = uri
+        shownPlaying = playing
+    }
+
+    /**
+     * Chemin LÉGER du tick de progression (toutes les 3 s pendant la
+     * lecture) : si morceau et état play/pause n'ont pas changé, seule la
+     * barre a avancé — un partiallyUpdateAppWidget avec la barre seule
+     * suffit, au lieu de reconstruire ~25 PendingIntent, tout le
+     * RemoteViews et un thread de jaquette par tick.
+     */
+    fun refreshProgress(context: Context) {
+        val app = context.applicationContext
+        val track = com.pulsemix.app.player.PlayerCore.currentTrack.value
+        val playing = com.pulsemix.app.player.PlayerCore.isPlaying.value
+        if (track?.uri != shownUri || playing != shownPlaying) {
+            // La structure a changé (morceau, pause…) : reconstruction
+            // complète, qui remettra la mémoire à jour.
+            refresh(app)
+            return
+        }
+        val mgr = AppWidgetManager.getInstance(app) ?: return
+        try {
+            val ids = mgr.getAppWidgetIds(
+                ComponentName(app, PlayerWidget::class.java)
+            )
+            if (ids.isEmpty()) return
+            val views = RemoteViews(app.packageName, R.layout.widget_player)
+            views.setProgressBar(
+                R.id.widget_progress, 1000,
+                (com.pulsemix.app.player.PlayerCore.progress.value * 1000)
+                    .toInt().coerceIn(0, 1000),
+                false
+            )
+            mgr.partiallyUpdateAppWidget(ids, views)
+        } catch (_: Exception) {
+        }
+    }
+
     /** Redessine tous les widgets posés (appelé quand l'état change). */
     fun refresh(context: Context) {
         val app = context.applicationContext
@@ -169,6 +234,9 @@ class PlayerWidget : AppWidgetProvider() {
     ) {
         val track = PlayerCore.currentTrack.value
         val playing = PlayerCore.isPlaying.value
+        // Mémoire du chemin léger (refreshProgress) : tant que ce couple ne
+        // change pas, les prochains ticks n'auront que la barre à pousser.
+        PulseWidgets.rememberShown(track?.uri, playing)
 
         val views = RemoteViews(context.packageName, R.layout.widget_player)
         views.setTextViewText(
@@ -184,7 +252,15 @@ class PlayerWidget : AppWidgetProvider() {
             R.id.widget_toggle,
             if (playing) R.drawable.ic_widget_pause else R.drawable.ic_widget_play
         )
-        views.setImageViewResource(R.id.widget_art, R.drawable.ic_widget_note)
+        // Jaquette déjà en cache pour ce morceau : posée tout de suite dans
+        // la même passe, sans thread ni relecture disque. Sinon,
+        // pictogramme d'attente, et chargement asynchrone plus bas.
+        val cachedArt = track?.uri?.let { PulseWidgets.cachedArt(it) }
+        if (cachedArt != null) {
+            views.setImageViewBitmap(R.id.widget_art, cachedArt)
+        } else {
+            views.setImageViewResource(R.id.widget_art, R.drawable.ic_widget_note)
+        }
 
         val cls = PlayerWidget::class.java
         views.setOnClickPendingIntent(
@@ -233,8 +309,11 @@ class PlayerWidget : AppWidgetProvider() {
         manager.updateAppWidget(ids, views)
 
         // Jaquette : lecture disque/tag hors du thread principal, puis
-        // seconde passe sur le widget une fois le bitmap prêt.
+        // seconde passe sur le widget une fois le bitmap prêt. SEULEMENT si
+        // elle n'était pas déjà en cache : sinon chaque rafraîchissement
+        // relançait un thread pour relire la même image.
         val uri = track?.uri ?: return
+        if (cachedArt != null) return
         val app = context.applicationContext
         thread(name = "widget-art") {
             val bmp = try {
@@ -243,6 +322,8 @@ class PlayerWidget : AppWidgetProvider() {
                 null
             } ?: return@thread
             try {
+                // Retenue pour les reconstructions suivantes du même morceau
+                PulseWidgets.rememberArt(uri, bmp)
                 val v = RemoteViews(app.packageName, R.layout.widget_player)
                 v.setImageViewBitmap(R.id.widget_art, bmp)
                 AppWidgetManager.getInstance(app)

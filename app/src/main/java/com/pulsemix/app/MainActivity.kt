@@ -23,7 +23,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -72,7 +72,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = PulseColors) {
                 val vm: PlayerViewModel = viewModel()
-                var screen by remember { mutableStateOf(0) }
+                // rememberSaveable : l'onglet courant survit à la rotation
+                // (remember seul repartait sur le lecteur à chaque pivot)
+                var screen by rememberSaveable { mutableStateOf(0) }
 
                 val toPlay by externalUri
                 LaunchedEffect(toPlay) {

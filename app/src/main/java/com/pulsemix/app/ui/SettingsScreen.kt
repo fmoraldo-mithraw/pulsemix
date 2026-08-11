@@ -16,12 +16,18 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.PlayerViewModel
 
@@ -31,6 +37,22 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
     val skipIntros by vm.skipIntros.collectAsStateWithLifecycle()
     val normalize by vm.normalizeVolume.collectAsStateWithLifecycle()
     val eq by vm.eqBands.collectAsStateWithLifecycle()
+
+    // Les états de permission Android (alarmes exactes, notifications,
+    // optimisation batterie) sont lus hors Compose et ne notifient aucun
+    // changement : évalués une seule fois à la composition, les
+    // avertissements restaient affichés après que l'utilisateur a accordé
+    // la permission dans les réglages système. Ce compteur, incrémenté à
+    // chaque ON_RESUME, sert de clé pour les ré-évaluer au retour à l'écran.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var resumeTick by remember { mutableIntStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumeTick++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Column(
         modifier
@@ -198,13 +220,17 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
                 steps = 8
             )
             // Android 12 : la permission « alarmes exactes » peut être
-            // révoquée — le réveil deviendrait approximatif (± 10 min)
+            // révoquée — le réveil deviendrait approximatif (± 10 min).
+            // Ré-évaluée à chaque retour à l'écran (resumeTick) pour que
+            // l'avertissement disparaisse dès la permission accordée.
             val alarmMgr = context.getSystemService(
                 android.app.AlarmManager::class.java
             )
-            if (android.os.Build.VERSION.SDK_INT >= 31 &&
-                alarmMgr != null && !alarmMgr.canScheduleExactAlarms()
-            ) {
+            val exactAlarmsDenied = remember(resumeTick) {
+                android.os.Build.VERSION.SDK_INT >= 31 &&
+                    alarmMgr != null && !alarmMgr.canScheduleExactAlarms()
+            }
+            if (exactAlarmsDenied) {
                 Text(
                     "Les alarmes exactes sont désactivées pour PulseMix : le " +
                         "réveil pourra dériver de plusieurs minutes. Autorise-" +
@@ -261,38 +287,53 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )
-        androidx.compose.material3.OutlinedButton(onClick = {
-            try {
-                val pm = context.getSystemService(android.os.PowerManager::class.java)
-                if (pm != null && pm.isIgnoringBatteryOptimizations(context.packageName)) {
-                    return@OutlinedButton
-                }
-                context.startActivity(
-                    android.content.Intent(
-                        android.provider.Settings
-                            .ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                        android.net.Uri.parse("package:${context.packageName}")
-                    )
-                )
-            } catch (_: Exception) {
+        // Déjà exclu de l'optimisation ? Le bouton ne ferait rien : on le
+        // dit et on le désactive. Ré-évalué au retour des réglages système
+        // (resumeTick) pour refléter l'autorisation tout juste accordée.
+        val batteryIgnored = remember(resumeTick) {
+            context.getSystemService(android.os.PowerManager::class.java)
+                ?.isIgnoringBatteryOptimizations(context.packageName) == true
+        }
+        androidx.compose.material3.OutlinedButton(
+            enabled = !batteryIgnored,
+            onClick = {
                 try {
                     context.startActivity(
                         android.content.Intent(
                             android.provider.Settings
-                                .ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                                .ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            android.net.Uri.parse("package:${context.packageName}")
                         )
                     )
                 } catch (_: Exception) {
+                    try {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.provider.Settings
+                                    .ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                            )
+                        )
+                    } catch (_: Exception) {
+                    }
                 }
             }
-        }) { Text("Autoriser PulseMix en arrière-plan") }
+        ) {
+            Text(
+                if (batteryIgnored) "Déjà autorisé"
+                else "Autoriser PulseMix en arrière-plan"
+            )
+        }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         // Notifications coupées (permission refusée au premier lancement ?) :
         // la notification de lecture ne peut alors jamais s'afficher.
-        if (!androidx.core.app.NotificationManagerCompat.from(context)
+        // Ré-évalué à chaque ON_RESUME : la section disparaît dès que
+        // l'utilisateur revient des réglages Android après les avoir activées.
+        val notificationsEnabled = remember(resumeTick) {
+            androidx.core.app.NotificationManagerCompat.from(context)
                 .areNotificationsEnabled()
-        ) {
+        }
+        if (!notificationsEnabled) {
             Text("Notifications", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(

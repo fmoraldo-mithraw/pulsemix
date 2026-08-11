@@ -506,6 +506,11 @@ object PlayerCore {
                 }
                 // Sauvegarde régulière de la position pendant la lecture, pour
                 // pouvoir reprendre au même endroit même après un plantage.
+                // Position SEULE : la structure de la file n'a pas bougé
+                // entre deux ticks, resérialiser toute la file toutes les
+                // 5 s pendant la lecture usait la flash (~70 Mo/h) pour
+                // deux nombres. L'instantané complet, lui, n'est écrit que
+                // quand la structure change (persistState).
                 // Jamais pendant qu'une bascule de fondu est en vol : ce
                 // travail sur le thread principal tomberait pile sur
                 // l'instant le plus sensible à l'oreille, il attendra le
@@ -513,15 +518,22 @@ object PlayerCore {
                 if (isPlaying.value && pendingSwitch == null &&
                     System.currentTimeMillis() - lastSaveMs > 5_000
                 ) {
-                    persistState()
+                    persistPositionOnly()
                 }
                 // Barre de progression des widgets : toutes les 3 s, assez
-                // pour qu'elle avance visiblement sans marteler le système
+                // pour qu'elle avance visiblement sans marteler le système.
+                // Chemin LÉGER : seule la progression a changé entre deux
+                // ticks — reconstruire tout le widget (25 PendingIntent,
+                // jaquette relue sur un thread) toutes les 3 s coûtait cher
+                // pour une barre qui avance.
                 if (isPlaying.value && pendingSwitch == null &&
                     System.currentTimeMillis() - lastWidgetTickMs > 3_000
                 ) {
                     lastWidgetTickMs = System.currentTimeMillis()
-                    notifyWidgets()
+                    try {
+                        com.pulsemix.app.widget.PulseWidgets.refreshProgress(appContext)
+                    } catch (_: Exception) {
+                    }
                 }
                 // À l'arrêt complet — rien ne joue, aucune rampe ni minuterie
                 // en cours — ce réveil deux fois par seconde ne servait plus
@@ -1685,22 +1697,14 @@ object PlayerCore {
 
     /**
      * Bornes des phases d'un mix après déplacement d'un morceau [from] →
-     * [to] : les débuts de phase entre les deux glissent d'un cran. Sans
-     * ça, l'affichage de la phase en cours dérivait à chaque réordonnement.
+     * [to]. La formule vit dans [QueueMath] (pur, testé en JVM) : ici on
+     * ne fait que l'appliquer à l'état courant.
      */
     private fun shiftPhaseStartsForMove(from: Int, to: Int) {
         if (phaseStartIndices.isEmpty()) return
-        // Déplacer l'unique morceau d'une dernière phase la laisserait
-        // commencer APRÈS la fin de la file : « suivant » viserait un index
-        // inexistant, que le lecteur ignore en silence — bouton mort.
-        val last = (queueTracks.size - 1).coerceAtLeast(0)
-        phaseStartIndices = phaseStartIndices.map { s ->
-            when {
-                from < s && s <= to -> s - 1
-                to < s && s <= from -> s + 1
-                else -> s
-            }.coerceIn(0, last)
-        }
+        phaseStartIndices = QueueMath.shiftPhaseStartsForMove(
+            phaseStartIndices, from, to, queueTracks.size
+        )
     }
 
     /**
@@ -1909,8 +1913,34 @@ object PlayerCore {
             }
         }
         ioScope.launch(stateWriter) {
-            if (state != null) stateStore.save(state) else stateStore.clear()
+            if (state != null) {
+                stateStore.save(state)
+                // Le mini-fichier de position est réaligné sur l'instantané
+                // frais : sans ça, une position périmée (écrite avant un
+                // seek ou un remaniement de file) survivait avec un index
+                // par hasard concordant et gagnait à la reprise.
+                stateStore.savePosition(state.currentIndex, state.positionMs)
+            } else {
+                stateStore.clear()
+            }
         }
+    }
+
+    /**
+     * Tick périodique : n'écrit QUE {index, position} dans un mini-fichier
+     * séparé (voir PlaybackStateStore). L'instantané complet reste celui
+     * de la dernière modification de structure ; restore() applique cette
+     * position par-dessus si les index concordent toujours.
+     */
+    private fun persistPositionOnly() {
+        if (!initialized) return
+        lastSaveMs = System.currentTimeMillis()
+        // En DJ, ExoPlayer boucle sur la piste silencieuse : sa position
+        // ne veut rien dire, et la reprise DJ repart au début de phase.
+        if (mode.value == PlayerMode.DJ) return
+        val idx = exo.currentMediaItemIndex
+        val pos = exo.currentPosition.coerceAtLeast(0L)
+        ioScope.launch(stateWriter) { stateStore.savePosition(idx, pos) }
     }
 
     /** Restaure la dernière session dès que library.json est chargé. */
@@ -1918,7 +1948,15 @@ object PlayerCore {
         ioScope.launch {
             store.loaded.first { it }
             val saved = stateStore.load() ?: return@launch
-            handler.post { restore(saved, store) }
+            // Position du dernier tick (mini-fichier séparé) : plus fraîche
+            // que celle de l'instantané complet, elle prime — mais seulement
+            // si la file n'a pas bougé depuis (même index), sinon elle
+            // viserait un autre morceau.
+            val tick = stateStore.loadPosition()
+            val merged = if (tick != null && tick.first == saved.currentIndex)
+                saved.copy(positionMs = tick.second.coerceAtLeast(0L))
+            else saved
+            handler.post { restore(merged, store) }
         }
     }
 

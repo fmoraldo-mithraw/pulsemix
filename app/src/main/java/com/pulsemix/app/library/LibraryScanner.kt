@@ -199,11 +199,17 @@ object LibraryScanner {
                                 val name = doc.name ?: "?"
                                 _progress.value = Progress(done.get(), total, name)
 
-                                val meta = readMetadata(context, doc.uri, name)
+                                // Un SEUL MediaMetadataRetriever pour titre/
+                                // artiste/durée ET genre : en ouvrir deux sur
+                                // le même fichier doublait le coût d'ouverture
+                                // (extracteur natif + I/O SAF) pour chaque
+                                // morceau analysé.
+                                val (meta, tagGenre) =
+                                    readMetaAndGenre(context, doc.uri, name)
                                 // Type choisi à la main : toujours conservé
                                 val genre =
                                     if (existing?.genreLocked == true) existing.genre
-                                    else readGenre(context, doc.uri)
+                                    else tagGenre
                                 val features = try {
                                     analyzer.analyze(context, doc.uri, meta.third) { !stopRequested }
                                 } catch (_: Exception) {
@@ -521,7 +527,45 @@ object LibraryScanner {
         return ext in audioExtensions
     }
 
-    /** Genre normalisé, ou « - » si le fichier n'en déclare pas. */
+    /**
+     * Métadonnées ET genre en une seule ouverture de fichier : la passe
+     * d'analyse a besoin des deux, et deux MediaMetadataRetriever
+     * successifs sur le même URI payaient deux fois l'ouverture.
+     * @return ((titre, artiste, duréeMs), genre normalisé ou « - »)
+     */
+    private fun readMetaAndGenre(
+        context: Context,
+        uri: Uri,
+        fallbackName: String
+    ): Pair<Triple<String, String, Long>, String> {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                ?.takeIf { it.isNotBlank() }
+                ?: fallbackName.substringBeforeLast('.')
+            val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                ?.takeIf { it.isNotBlank() } ?: ""
+            val duration = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+            val genre = MixEngine.normalizeGenre(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)
+            ).ifBlank { "-" }
+            Triple(title, artist, duration) to genre
+        } catch (_: Exception) {
+            Triple(fallbackName.substringBeforeLast('.'), "", 0L) to "-"
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Genre normalisé, ou « - » si le fichier n'en déclare pas.
+     *  (Encore utilisé seul par le rattrapage de genre des morceaux déjà
+     *  analysés, qui n'a pas besoin du reste des métadonnées.) */
     private fun readGenre(context: Context, uri: Uri): String {
         val retriever = MediaMetadataRetriever()
         return try {
