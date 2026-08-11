@@ -324,6 +324,18 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun setGateLevel(level: Int) = PlayerCore.setGateLevel(level)
     fun setLiveLoop(active: Boolean) = PlayerCore.setLiveLoop(active)
     fun resetEffects() = PlayerCore.resetEffects()
+
+    // Panneau « Performance » (contrôles DJ manuels)
+    val djTransition = PlayerCore.djTransition
+    val manualFadeOn = PlayerCore.manualFadeOn
+    val bassKillA = PlayerCore.bassKillA
+    val bassKillB = PlayerCore.bassKillB
+    val exitLoopBeats = PlayerCore.exitLoopBeats
+    fun setManualFade(pos: Float?) = PlayerCore.setManualFade(pos)
+    fun setBassKill(deckA: Boolean, on: Boolean) = PlayerCore.setBassKill(deckA, on)
+    fun setExitLoop(beats: Int) = PlayerCore.setExitLoop(beats)
+    fun nudgeTempo(delta: Float) = PlayerCore.nudgeTempo(delta)
+    fun mixNow() = PlayerCore.mixNow()
     fun rehearseTransitions(plan: MixEngine.MixPlan) =
         PlayerCore.rehearseTransitions(plan)
 

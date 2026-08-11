@@ -197,6 +197,67 @@ object PlayerCore {
         liveLoop.value = active
     }
 
+    /**
+     * Mode « performance » (contrôles DJ manuels, feuille dédiée) : état
+     * miroir pour l'UI. Le moteur reste en pilotage automatique par
+     * défaut, ces commandes sont une surcouche — no-op hors mode DJ.
+     * [djTransition] suit les transitions du moteur (deux decks en vol) :
+     * le crossfader manuel n'a d'effet complet que pendant une transition.
+     */
+    val djTransition = MutableStateFlow(false)
+    val manualFadeOn = MutableStateFlow(false) // fader saisi (« Auto » = rendre la main)
+    val bassKillA = MutableStateFlow(false)
+    val bassKillB = MutableStateFlow(false)
+    val exitLoopBeats = MutableStateFlow(0)    // 0 = off ; 4 ou 8 temps
+
+    /** Crossfader manuel A↔B (null = « Auto », reprise en douceur). */
+    fun setManualFade(pos: Float?) {
+        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        manualFadeOn.value = pos != null
+        mixer.setManualFade(pos)
+    }
+
+    /** Kill des basses d'un deck (A = actif/sortant, B = entrant). */
+    fun setBassKill(deckA: Boolean, on: Boolean) {
+        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        if (deckA) bassKillA.value = on else bassKillB.value = on
+        mixer.setBassKill(deckA, on)
+    }
+
+    /** Boucle de sortie manuelle du deck actif (0 = off, 4 ou 8 temps). */
+    fun setExitLoop(beats: Int) {
+        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        val b = if (beats == 4 || beats == 8) beats else 0
+        exitLoopBeats.value = b
+        mixer.setManualLoop(b)
+    }
+
+    /** Nudge tempo ± : petite retouche momentanée pour recaler à l'oreille. */
+    fun nudgeTempo(delta: Float) {
+        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        mixer.nudgeTempo(delta)
+    }
+
+    /** « Mixer maintenant » : transition immédiate vers le morceau
+     *  suivant — le même chemin que le bouton « suivant » en mode DJ. */
+    fun mixNow() {
+        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        crossfadedFrom = null
+        stopTail()
+        mixer.nextTrack()
+    }
+
+    /** Remise à zéro du mode performance (nouveau set, arrêt du moteur) :
+     *  le moteur fait la sienne de son côté (start/stop), ici on remet le
+     *  miroir UI d'équerre pour que la feuille ne mente pas. */
+    private fun resetPerformance() {
+        djTransition.value = false
+        manualFadeOn.value = false
+        bassKillA.value = false
+        bassKillB.value = false
+        exitLoopBeats.value = 0
+    }
+
     /** Remet tous les effets live à zéro. */
     fun resetEffects() {
         bassLevel.value = 0
@@ -414,6 +475,17 @@ object PlayerCore {
                 progress.value = p
             }
 
+            override fun onTransitionChanged(active: Boolean) {
+                djTransition.value = active
+                // La boucle de sortie manuelle « tient » le morceau
+                // jusqu'à la transition : une fois celle-ci terminée elle
+                // a rempli son office — la laisser armée mettrait le
+                // morceau entrant en boucle dès ses premières mesures.
+                // (Le moteur la coupe aussi de son côté ; ici on remet le
+                // miroir UI d'équerre.)
+                if (!active && exitLoopBeats.value != 0) setExitLoop(0)
+            }
+
             override fun onStopped(natural: Boolean) {
                 if (mode.value == PlayerMode.DJ) {
                     exo.stop()
@@ -423,6 +495,8 @@ object PlayerCore {
                 // tracklist + playlist (si assez de morceaux joués).
                 flushDjSetLog()
                 djRecording.value = false
+                // Les commandes du mode performance meurent avec le moteur
+                resetPerformance()
                 try {
                     eqDj?.release()
                 } catch (_: Exception) {
@@ -743,6 +817,9 @@ object PlayerCore {
         exo.play()
         startService()
 
+        // Aucune commande manuelle (performance) n'est héritée d'un set
+        // précédent — le moteur remet les siennes à zéro dans start().
+        resetPerformance()
         mixer.start(mixPlan, currentPhase.value, rehearsal)
         persistState()
     }

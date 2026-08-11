@@ -210,4 +210,68 @@ class DjMixerSpecTest {
             DjMixer.snapEndToStructure(236_000L, 100_000L, 120f, 240_000L, s)
         )
     }
+
+    // ------------------------------------------------- crossfader manuel
+    // Le fader du panneau « Performance » remplace la progression
+    // temporelle du fondu : mêmes courbes equal-power que le moteur, et
+    // les mêmes exigences — pas de creux de volume au milieu, pas de
+    // saut aux extrêmes.
+
+    @Test
+    fun `fadeGains - extremes francs`() {
+        // Fader à gauche : deck A plein, B muet — et symétriquement
+        assertEquals(1f, DjMixer.fadeGainA(0f), EPS)
+        assertEquals(0f, DjMixer.fadeGainB(0f), EPS)
+        assertEquals(0f, DjMixer.fadeGainA(1f), EPS)
+        assertEquals(1f, DjMixer.fadeGainB(1f), EPS)
+    }
+
+    @Test
+    fun `fadeGains - equal power sur toute la course`() {
+        // gA² + gB² = 1 : la puissance perçue ne creuse pas au milieu
+        var p = 0f
+        while (p <= 1f) {
+            val gA = DjMixer.fadeGainA(p)
+            val gB = DjMixer.fadeGainB(p)
+            assertEquals(1f, gA * gA + gB * gB, 1e-3f)
+            p += 0.05f
+        }
+    }
+
+    @Test
+    fun `fadeGains - position hors bornes ramenee dans la course`() {
+        // Un geste qui déborde du slider ne doit pas inverser les gains
+        assertEquals(DjMixer.fadeGainA(0f), DjMixer.fadeGainA(-0.5f), EPS)
+        assertEquals(DjMixer.fadeGainB(1f), DjMixer.fadeGainB(1.5f), EPS)
+    }
+
+    @Test
+    fun `soloGain - plein volume jusqu'a mi-course puis extinction`() {
+        // Hors transition, un seul deck : pousser le fader vers B ne
+        // déclenche rien, il n'atténue que le deck actif
+        assertEquals(1f, DjMixer.soloGain(0f), EPS)
+        assertEquals(1f, DjMixer.soloGain(0.25f), EPS)
+        assertEquals(1f, DjMixer.soloGain(0.5f), EPS)
+        assertEquals(0f, DjMixer.soloGain(1f), EPS)
+        // Décroissance monotone sur la seconde moitié (pas de rebond)
+        var prev = 1f
+        var p = 0.5f
+        while (p <= 1f) {
+            val g = DjMixer.soloGain(p)
+            assertTrue(g <= prev + EPS)
+            prev = g
+            p += 0.05f
+        }
+    }
+
+    @Test
+    fun `blendGain - la rampe de reprise va du manuel a l'auto sans saut`() {
+        // blend 1 = tout manuel, 0 = courbe du moteur, ½ = à mi-chemin
+        assertEquals(0.9f, DjMixer.blendGain(0.2f, 0.9f, 1f), EPS)
+        assertEquals(0.2f, DjMixer.blendGain(0.2f, 0.9f, 0f), EPS)
+        assertEquals(0.55f, DjMixer.blendGain(0.2f, 0.9f, 0.5f), EPS)
+        // Un blend qui déborde (rampe mal bornée) reste aux extrémités
+        assertEquals(0.9f, DjMixer.blendGain(0.2f, 0.9f, 1.4f), EPS)
+        assertEquals(0.2f, DjMixer.blendGain(0.2f, 0.9f, -0.1f), EPS)
+    }
 }

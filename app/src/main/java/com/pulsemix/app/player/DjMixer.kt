@@ -44,6 +44,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         fun onStopped(natural: Boolean)
         /** Session audio du moteur DJ (pour y attacher l'égaliseur). */
         fun onSessionReady(sessionId: Int) {}
+        /** Une transition (deux decks en vol) démarre ou se termine —
+         *  pilote l'activation du crossfader du panneau « Performance ». */
+        fun onTransitionChanged(active: Boolean) {}
     }
 
     private data class Segment(val track: Track, val phaseIndex: Int)
@@ -296,6 +299,49 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             }
             return best
         }
+
+        // Crossfader manuel (panneau « Performance ») : durée de la rampe
+        // qui ramène les gains manuels vers la courbe automatique après
+        // « Auto » (et symétriquement à la saisie) — un basculement sec
+        // ferait sauter le volume.
+        const val MANUAL_RESUME_FRAMES = 11_025 // 250 ms à 44,1 kHz
+
+        /**
+         * Gains du crossfader manuel PENDANT une transition : mêmes
+         * courbes equal-power que le long blend automatique — la position
+         * du fader (0 = deck A plein, 1 = deck B plein) remplace la
+         * progression temporelle du fondu. Deux fonctions scalaires
+         * plutôt qu'une paire : la boucle audio les lit par bloc et ne
+         * doit rien allouer (un Pair boxerait deux Float).
+         * Fonctions PURES (companion, internal, testées en JVM).
+         */
+        internal fun fadeGainA(pos: Float): Float =
+            cos(pos.coerceIn(0f, 1f) * HALF_PI)
+
+        internal fun fadeGainB(pos: Float): Float =
+            sin(pos.coerceIn(0f, 1f) * HALF_PI)
+
+        /**
+         * Fader manuel HORS transition : un seul deck joue — pousser le
+         * fader vers B ne déclenche RIEN (pas de deck fantôme), il
+         * n'atténue que le deck actif : plein volume jusqu'à mi-course,
+         * puis le même quart de cosinus que l'equal-power vers le silence.
+         * Fonction PURE (companion, internal, testée en JVM).
+         */
+        internal fun soloGain(pos: Float): Float {
+            val p = pos.coerceIn(0f, 1f)
+            return if (p <= 0.5f) 1f else cos((p - 0.5f) * 2f * HALF_PI)
+        }
+
+        /**
+         * Mélange des gains automatiques vers les gains du fader :
+         * blend 1 = tout manuel, 0 = courbe du moteur. C'est cette
+         * interpolation que parcourt la rampe de saisie/reprise
+         * ([MANUAL_RESUME_FRAMES]) — jamais de saut, dans aucun sens.
+         * Fonction PURE (companion, internal, testée en JVM).
+         */
+        internal fun blendGain(auto: Float, manual: Float, blend: Float): Float =
+            auto + (manual - auto) * blend.coerceIn(0f, 1f)
     }
 
     /** Détecteur d'attaques (kicks) sur l'enveloppe de basses d'un deck. */
@@ -343,6 +389,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
      * débloquer une écriture en cours depuis le thread appelant.
      */
     @Volatile private var liveAudioTrack: AudioTrack? = null
+
+    // ---- Pilotage manuel (panneau « Performance ») ----
+    // Écrits par le thread UI, lus une fois par bloc par la boucle audio :
+    // des primitives @Volatile suffisent (pas de synchronized dans le
+    // chemin chaud), et le sentinel -1 évite de boxer un Float?.
+    @Volatile private var manualFade = -1f      // <0 = auto ; 0..1 = fader A↔B
+    @Volatile private var manualBassKillA = false
+    @Volatile private var manualBassKillB = false
+    @Volatile private var manualLoopBeats = 0   // 0 = off ; 4 ou 8 temps
+    @Volatile private var pendingManualNudge = 0f
+    @Volatile private var transitionActive = false
 
     /** Active/coupe l'enregistrement du set (fichier M4A). */
     fun setRecorder(r: MixRecorder?) {
@@ -400,6 +457,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         running = true
         paused = false
         pendingJump = -1
+        resetManualControls()
         startSegIndex = segments.indexOfFirst { it.phaseIndex >= startPhase }
             .let { if (it < 0) 0 else it }
         currentPhaseIndex = segments[startSegIndex].phaseIndex
@@ -411,6 +469,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     fun stop() {
         running = false
         paused = false
+        resetManualControls()
         // Le thread audio peut être bloqué ~1 s dans audioTrack.write
         // (WRITE_BLOCKING, tampon volontairement large) : pause + flush le
         // débloquent tout de suite, au lieu de faire attendre le thread
@@ -459,6 +518,64 @@ class DjMixer(private val context: Context, private val listener: Listener) {
      */
     fun requestSeek(fraction: Float) {
         pendingSeek = fraction.coerceIn(0f, 1f)
+    }
+
+    // ------------------------------------------ pilotage manuel (performance)
+
+    /**
+     * Crossfader manuel A↔B. Non-null : la position remplace la
+     * progression temporelle du fondu (mêmes courbes equal-power) tant
+     * qu'une transition est en vol ; hors transition elle n'atténue que
+     * le deck actif — elle ne déclenche RIEN (pas de deck fantôme).
+     * Tant que le fader est tenu, la bascule de fin de fondu attend (le
+     * deck sortant tient sous sa boucle de sortie). null = « Auto » :
+     * reprise du pilotage automatique en rampe courte (~250 ms) depuis
+     * la position du fader, pas de saut de volume.
+     */
+    fun setManualFade(pos: Float?) {
+        manualFade = pos?.coerceIn(0f, 1f) ?: -1f
+    }
+
+    /** Kill des basses d'un deck (A = actif/sortant, B = entrant). Force
+     *  la coupe pleine par le même chemin que le bass swap automatique —
+     *  qui s'incline : le kill manuel l'emporte tant qu'il est enclenché. */
+    fun setBassKill(deckA: Boolean, on: Boolean) {
+        if (deckA) manualBassKillA = on else manualBassKillB = on
+    }
+
+    /** Boucle de sortie manuelle : les [beats] derniers temps du deck
+     *  actif tournent en boucle, calés sur la mesure (0 = reprise du flux,
+     *  avec slip). Tient le morceau en attendant de lancer la transition —
+     *  et si le passage s'épuise pendant la boucle, la boucle de sortie
+     *  automatique garde le deck en vie. */
+    fun setManualLoop(beats: Int) {
+        manualLoopBeats = if (beats == 4 || beats == 8) beats else 0
+    }
+
+    /** Nudge tempo (petite retouche momentanée) : délégué au syncNudge du
+     *  deck qu'un DJ recale — l'ENTRANT pendant une transition (le sortant
+     *  sert de référence, comme pour le beatlock automatique), le deck
+     *  actif sinon. Même borne cumulée que l'existant (±0,4 %). Posé ici,
+     *  consommé par la boucle audio au bloc suivant : le rate d'un deck
+     *  n'est jamais touché que par le thread de mix. */
+    fun nudgeTempo(deltaPct: Float) {
+        pendingManualNudge = deltaPct.coerceIn(-0.004f, 0.004f)
+    }
+
+    /** Une transition (deux decks) est-elle en vol ? Miroir de
+     *  [Listener.onTransitionChanged], pour lecture directe. */
+    val isTransitionActive: Boolean get() = transitionActive
+
+    /** Remise à zéro des commandes manuelles : elles ne survivent ni à un
+     *  stop() ni au start() d'un nouveau set — un fader ou un kill hérités
+     *  d'un run précédent rendraient le suivant muet. */
+    private fun resetManualControls() {
+        manualFade = -1f
+        manualBassKillA = false
+        manualBassKillB = false
+        manualLoopBeats = 0
+        pendingManualNudge = 0f
+        transitionActive = false
     }
 
     // ------------------------------------------------------------------ deck
@@ -997,6 +1114,20 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var echoPos = 0
         var endFadeFrames = -1L
         var blockCount = 0
+        // Pilotage manuel (panneau « Performance ») : gains du fader et
+        // rampes, locaux au run (un nouveau start() repart donc à zéro).
+        // manualBlend : 1 = fader tenu, glisse en ~250 ms vers 0 après
+        // « Auto » (et symétriquement à la saisie) — c'est lui qui évite
+        // les sauts de volume dans les deux sens.
+        var manualBlend = 0f
+        var manualPos = 0f
+        var manualGA = 1f
+        var manualGB = 0f
+        // Kill de basses manuel : cibles lissées par bloc (coupe nette = clic)
+        var killSmA = 0f
+        var killSmB = 0f
+        // Dernier état de transition annoncé à l'UI
+        var transAnnounced = false
 
         // Ouverture asynchrone du deck suivant (jamais sur le thread audio)
         class OpenResult(
@@ -1121,10 +1252,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     }
                 }
 
-                // Boucle live (bouton maintenu dans le panneau Effets ;
-                // un tap préalable double la taille de la boucle)
+                // Boucle live (bouton maintenu dans le panneau Effets ; un
+                // tap préalable double la taille de la boucle) — ou boucle
+                // de sortie manuelle du panneau « Performance » (bascule
+                // 4/8 temps) : même mécanique calée sur la mesure, le flux
+                // glisse en dessous (slip) et reprend à la désactivation.
+                // Si le passage s'épuise pendant la boucle, la boucle de
+                // sortie automatique prend le relais : le deck reste en
+                // vie, c'est le but (tenir le morceau jusqu'au mix).
+                val mLoopBeats = manualLoopBeats
                 if (PlayerCore.liveLoop.value)
                     a.startLiveLoop(PlayerCore.liveLoopBeats.value)
+                else if (mLoopBeats > 0) a.startLiveLoop(mLoopBeats)
                 else a.stopLiveLoop()
 
                 // Saut demandé alors qu'une transition est déjà chargée
@@ -1311,6 +1450,57 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     if (manualBass < 0f) manualBass else max(bassGain, manualBass)
                 val bd = b
                 val fadeActive = bd != null && fadeLenF > 0
+                // ---- Pilotage manuel du bloc (panneau « Performance ») ----
+                // États @Volatile lus UNE fois par bloc, dans des locales ;
+                // aucune allocation ici (chemin chaud).
+                val mf = manualFade
+                if (mf >= 0f) {
+                    manualPos = mf
+                    manualBlend = min(
+                        1f, manualBlend +
+                            BLOCK_FRAMES.toFloat() / MANUAL_RESUME_FRAMES
+                    )
+                } else if (manualBlend > 0f) {
+                    // « Auto » : rampe courte vers la courbe du moteur,
+                    // depuis la dernière position du fader — un retour sec
+                    // sauterait.
+                    manualBlend = max(
+                        0f, manualBlend -
+                            BLOCK_FRAMES.toFloat() / MANUAL_RESUME_FRAMES
+                    )
+                }
+                val manualOn = manualBlend > 0f
+                if (manualOn) {
+                    // Transition en vol : la position du fader remplace la
+                    // progression temporelle du fondu (equal-power). Hors
+                    // transition : rien à déclencher, le fader n'atténue
+                    // que le deck actif (plein volume jusqu'à mi-course).
+                    // Cibles atteintes en pas bornés : le changement de
+                    // mapping (une transition qui démarre sous le fader)
+                    // ne fait pas non plus de saut.
+                    val tGA = if (fadeActive) fadeGainA(manualPos)
+                    else soloGain(manualPos)
+                    val tGB = if (fadeActive) fadeGainB(manualPos) else 0f
+                    manualGA += (tGA - manualGA).coerceIn(-0.25f, 0.25f)
+                    manualGB += (tGB - manualGB).coerceIn(-0.25f, 0.25f)
+                }
+                // Kill de basses manuel : rampe rapide (~0,3 s) vers la
+                // coupe pleine, même amplitude que le bass swap auto —
+                // qu'il supplante (max) quand les deux jouent en même temps.
+                killSmA = if (manualBassKillA) min(1f, killSmA + 0.15f)
+                else max(0f, killSmA - 0.15f)
+                killSmB = if (manualBassKillB) min(1f, killSmB + 0.15f)
+                else max(0f, killSmB - 0.15f)
+                val killA = BASS_SWAP_CUT * killSmA
+                val killB = BASS_SWAP_CUT * killSmB
+                // Nudge tempo : consommé une fois par bloc, appliqué au
+                // deck qu'un DJ recale — l'entrant pendant une transition,
+                // le deck actif sinon (cf. nudgeTempo()).
+                val nudge = pendingManualNudge
+                if (nudge != 0f) {
+                    pendingManualNudge = 0f
+                    (bd ?: a).syncNudge(nudge)
+                }
                 // Filter sweep : coupure balayée sur la durée du fondu.
                 // KIND_NORMAL : passe-haut ~40 Hz -> ~6 kHz (le sortant
                 // s'amincit). KIND_DARK : passe-bas ~6 kHz -> ~150 Hz (le
@@ -1426,6 +1616,17 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             )
                         }
                     }
+                    // Crossfader manuel : la position du fader prend la
+                    // main sur les gains automatiques (blend 1 = tout
+                    // manuel ; la rampe de saisie/reprise traverse les
+                    // intermédiaires — jamais de saut). Les filtres du
+                    // fondu (sweep, ouverture de l'entrant), eux, restent
+                    // pilotés par le temps : seule la COURBE DE VOLUME est
+                    // reprise à la main.
+                    if (manualOn) {
+                        gA = blendGain(gA, manualGA, manualBlend)
+                        gB = blendGain(gB, manualGB, manualBlend)
+                    }
                     var master = 1f
                     if (endFadeFrames >= 0) {
                         master = (endFadeFrames - i).coerceAtLeast(0L).toFloat() /
@@ -1469,8 +1670,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             KIND_HARMONIC -> {
                                 // Long blend : bass swap, puis mid swap —
                                 // le sortant se vide bande par bande, façon
-                                // EQ 3 bandes d'une table de mixage.
-                                val cutA = BASS_SWAP_CUT * bassOut
+                                // EQ 3 bandes d'une table de mixage. Le
+                                // kill manuel emprunte le même chemin et
+                                // l'emporte sur la coupe automatique (max).
+                                val cutA = max(BASS_SWAP_CUT * bassOut, killA)
                                 vaL -= cutA * a.lpL
                                 vaR -= cutA * a.lpR
                                 a.midLpL += MID_ALPHA * (aL - a.midLpL)
@@ -1489,6 +1692,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 a.sweepLpR += sweepAlpha * (aR - a.sweepLpR)
                                 vaL = aL - a.sweepLpL
                                 vaR = aR - a.sweepLpR
+                                // Kill manuel : le passe-haut balayé enlève
+                                // déjà le bas du spectre — ne retrancher que
+                                // la part de basses ENCORE présente
+                                // (lp − sweepLp) ; une soustraction pleine
+                                // sur-creuserait.
+                                if (killA > 0f) {
+                                    vaL -= killA * (a.lpL - a.sweepLpL)
+                                    vaR -= killA * (a.lpR - a.sweepLpR)
+                                }
                             }
                             KIND_DARK -> {
                                 // Filter sweep passe-bas : le sortant
@@ -1497,18 +1709,31 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 // basse cohabiteraient).
                                 a.sweepLpL += sweepAlpha * (aL - a.sweepLpL)
                                 a.sweepLpR += sweepAlpha * (aR - a.sweepLpR)
-                                vaL = a.sweepLpL - BASS_SWAP_CUT * bassOut * a.lpL
-                                vaR = a.sweepLpR - BASS_SWAP_CUT * bassOut * a.lpR
+                                // Kill manuel : même soustraction one-pole,
+                                // il l'emporte sur la coupe automatique (max)
+                                val cutA = max(BASS_SWAP_CUT * bassOut, killA)
+                                vaL = a.sweepLpL - cutA * a.lpL
+                                vaR = a.sweepLpR - cutA * a.lpR
                             }
                             KIND_EQ -> {
                                 // Échange de basses classique, sans filtre :
                                 // la transition « table de mixage » sobre.
-                                val cutA = BASS_SWAP_CUT * bassOut
+                                // Kill manuel : même chemin, il l'emporte.
+                                val cutA = max(BASS_SWAP_CUT * bassOut, killA)
                                 vaL -= cutA * a.lpL
                                 vaR -= cutA * a.lpR
                             }
                             // KIND_CUT : pas de traitement spectral ici,
                             // l'echo-out agit après le mixage.
+                        }
+                        // Kill manuel des basses de l'ENTRANT : même
+                        // soustraction one-pole que le bass swap. Son
+                        // signal garde ses basses dans tous les cas (le
+                        // passe-bas d'ouverture les laisse passer), la
+                        // soustraction directe est donc juste.
+                        if (killB > 0f) {
+                            vbL -= killB * bd.lpL
+                            vbR -= killB * bd.lpR
                         }
                         // Enveloppes de kick par sous-fenêtre de 256 frames
                         subA += abs(a.lpL) + abs(a.lpR)
@@ -1523,6 +1748,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             subA = 0f
                             subB = 0f
                         }
+                    }
+                    // Kill manuel du deck actif hors fondu — et pendant une
+                    // coupe franche (KIND_CUT), qui ne fait aucun traitement
+                    // spectral : soustraction des basses one-pole, le même
+                    // chemin que le bass swap. a.lp* est tenu à jour à
+                    // chaque échantillon, fondu ou pas.
+                    if (killA > 0f && (!inFade || fadeKindF == KIND_CUT)) {
+                        vaL -= killA * a.lpL
+                        vaR -= killA * a.lpR
                     }
 
                     var l = (vaL * gA + vbL * gB) * master
@@ -1642,18 +1876,42 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 framesGlobal += BLOCK_FRAMES
                 a.advancePhase(BLOCK_FRAMES)
 
-                // Fin du crossfade : B devient le deck actif
-                if (b != null && framesGlobal >= fadeStartF + fadeLenF) {
+                // Fin du crossfade : B devient le deck actif. JAMAIS tant
+                // que le fader manuel est tenu (ou en rampe de reprise) :
+                // fermer le deck A pendant que le fader le tient audible
+                // ferait un saut — le moteur attend la remise en Auto, le
+                // deck A tenant sous sa boucle de sortie automatique.
+                if (b != null && framesGlobal >= fadeStartF + fadeLenF &&
+                    !manualOn
+                ) {
                     a.close()
                     deckA = b
                     deckB = null
                     fadeStartF = -1L
                     fadeEndF = framesGlobal
                     echoBuf = null
+                    // La boucle de sortie manuelle a rempli son office :
+                    // la laisser armée mettrait le morceau entrant en
+                    // boucle dès ses premières mesures.
+                    manualLoopBeats = 0
                     currentPhaseIndex = b.segment.phaseIndex
                     currentSegIndex = b.segIndex
                     announce(b)
                     fastForward(b)
+                }
+
+                // Début/fin de transition annoncés à l'UI (activation du
+                // crossfader manuel), différés de la latence de sortie
+                // comme announce() : l'état suit ce qu'on entend, pas ce
+                // qu'on vient de calculer.
+                val transNow = deckB != null
+                if (transNow != transAnnounced) {
+                    transAnnounced = transNow
+                    transitionActive = transNow
+                    ui.postDelayed({
+                        if (running && gen == runGeneration)
+                            listener.onTransitionChanged(transNow)
+                    }, outLatencyMs)
                 }
 
                 // Fin de set
@@ -1700,6 +1958,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             if (gen == runGeneration) {
                 liveAudioTrack = null
                 running = false
+                transitionActive = false
             }
             try {
                 audioTrack.stop()

@@ -134,6 +134,7 @@ fun PlayerScreen(
     var showQueueSheet by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
     var showFxSheet by remember { mutableStateOf(false) }
+    var showPerfSheet by remember { mutableStateOf(false) }
     var showTrackOptions by remember { mutableStateOf(false) }
     var showSuggestions by remember { mutableStateOf(false) }
     var showLyricsSheet by remember { mutableStateOf(false) }
@@ -494,6 +495,22 @@ fun PlayerScreen(
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                 }
+                // Panneau « Performance » : commandes DJ manuelles
+                // (crossfader, kills basses, boucle, nudge) par-dessus le
+                // mixage automatique. Allumé tant qu'une commande est prise.
+                val manualFadeOn by vm.manualFadeOn.collectAsStateWithLifecycle()
+                val perfKillA by vm.bassKillA.collectAsStateWithLifecycle()
+                val perfKillB by vm.bassKillB.collectAsStateWithLifecycle()
+                val perfLoop by vm.exitLoopBeats.collectAsStateWithLifecycle()
+                val perfActive = manualFadeOn || perfKillA || perfKillB ||
+                    perfLoop != 0
+                IconButton(onClick = { showPerfSheet = true }) {
+                    Icon(
+                        Icons.Rounded.GraphicEq, "Performance (contrôles manuels)",
+                        tint = if (perfActive) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
             }
         }
 
@@ -724,6 +741,10 @@ fun PlayerScreen(
     // ------------------------------------------------------- file d'attente
     if (showFxSheet) {
         FxSheet(vm, dj = mode == PlayerMode.DJ) { showFxSheet = false }
+    }
+
+    if (showPerfSheet && mode == PlayerMode.DJ) {
+        PerformanceSheet(vm) { showPerfSheet = false }
     }
 
     // Menu d'options du morceau en cours (partagé avec la bibliothèque) —
@@ -1802,6 +1823,157 @@ private fun FxSheet(vm: PlayerViewModel, dj: Boolean, onDismiss: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
             }
+        }
+    }
+}
+
+/**
+ * Panneau « Performance » : commandes DJ MANUELLES par-dessus le moteur
+ * automatique (qui reste le comportement par défaut). Crossfader A↔B —
+ * actif pendant les transitions seulement, « Auto » rend la main au
+ * moteur en douceur —, transition immédiate, nudge tempo, boucle de
+ * sortie 4/8 temps et kills de basses par deck. Tout tient sans
+ * défilement : c'est un panneau de jeu, une main sur l'écran.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PerformanceSheet(vm: PlayerViewModel, onDismiss: () -> Unit) {
+    val inTransition by vm.djTransition.collectAsStateWithLifecycle()
+    val manualFadeOn by vm.manualFadeOn.collectAsStateWithLifecycle()
+    val killA by vm.bassKillA.collectAsStateWithLifecycle()
+    val killB by vm.bassKillB.collectAsStateWithLifecycle()
+    val loopBeats by vm.exitLoopBeats.collectAsStateWithLifecycle()
+    // Position locale du fader : le moteur ne publie pas sa progression,
+    // le curseur ne bouge que sous le doigt.
+    var faderPos by remember { mutableFloatStateOf(0f) }
+    // Fermer la feuille rend la main au moteur : un fader resté saisi en
+    // arrière-plan bloquerait la fin de la transition sans que rien à
+    // l'écran ne le montre. Les kills et la boucle, eux, sont des
+    // bascules assumées : ils restent.
+    val dismiss = {
+        if (manualFadeOn) vm.setManualFade(null)
+        onDismiss()
+    }
+    ModalBottomSheet(onDismissRequest = dismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Performance",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                // Transition immédiate : le même chemin que « suivant »
+                // en DJ (fondu court, calé sur la mesure)
+                Button(onClick = { vm.mixNow() }) { Text("Mixer maintenant") }
+            }
+
+            // ------------------------------------------------- crossfader
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "A",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Slider(
+                    value = faderPos,
+                    onValueChange = {
+                        faderPos = it
+                        vm.setManualFade(it)
+                    },
+                    enabled = inTransition,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                )
+                Text(
+                    "B",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                TextButton(
+                    onClick = { vm.setManualFade(null) },
+                    enabled = manualFadeOn
+                ) { Text("Auto") }
+            }
+            Text(
+                when {
+                    manualFadeOn ->
+                        "Fader saisi : le fondu suit le doigt. « Auto » " +
+                            "rend la main au moteur, en douceur."
+                    inTransition ->
+                        "Transition en cours : saisir le fader pour " +
+                            "prendre la main sur le fondu."
+                    else ->
+                        "Le crossfader est actif pendant les transitions " +
+                            "(deux decks en vol)."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+            Spacer(Modifier.height(4.dp))
+
+            // -------------------------------------------- nudge et boucle
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Nudge : ± momentané, façon pichenette sur le plateau —
+                // le moteur résorbe la retouche de lui-même ensuite
+                OutlinedButton(onClick = { vm.nudgeTempo(-0.002f) }) {
+                    Text("− tempo")
+                }
+                OutlinedButton(onClick = { vm.nudgeTempo(+0.002f) }) {
+                    Text("+ tempo")
+                }
+                Spacer(Modifier.weight(1f))
+                // Boucle de sortie : tenir les derniers temps du morceau
+                // en attendant de lancer le mix (se coupe toute seule à
+                // la fin de la transition)
+                FilterChip(
+                    selected = loopBeats == 4,
+                    onClick = { vm.setExitLoop(if (loopBeats == 4) 0 else 4) },
+                    label = { Text("Boucle 4") }
+                )
+                FilterChip(
+                    selected = loopBeats == 8,
+                    onClick = { vm.setExitLoop(if (loopBeats == 8) 0 else 8) },
+                    label = { Text("Boucle 8") }
+                )
+            }
+
+            // ---------------------------------------------- kills basses
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = killA,
+                    onClick = { vm.setBassKill(true, !killA) },
+                    label = { Text("Kill basses A") }
+                )
+                FilterChip(
+                    selected = killB,
+                    onClick = { vm.setBassKill(false, !killB) },
+                    enabled = inTransition,
+                    label = { Text("Kill basses B") }
+                )
+                Spacer(Modifier.weight(1f))
+            }
+            Text(
+                "A = morceau en cours, B = morceau entrant. Les kills " +
+                    "priment sur l'échange de basses automatique.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
         }
     }
 }
