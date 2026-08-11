@@ -47,11 +47,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val alarmMinute = com.pulsemix.app.player.AlarmClock.minute
     val alarmMixId = com.pulsemix.app.player.AlarmClock.mixId
     val alarmRamp = com.pulsemix.app.player.AlarmClock.rampMinutes
+    val alarmProgressive = com.pulsemix.app.player.AlarmClock.progressive
 
     fun setAlarm(enabled: Boolean, hour: Int, minute: Int, mixId: String, ramp: Int) =
         com.pulsemix.app.player.AlarmClock.configure(
             getApplication(), enabled, hour, minute, mixId, ramp
         )
+
+    /** Réveil progressif : la file du réveil part du calme vers l'énergique. */
+    fun setAlarmProgressive(enabled: Boolean) =
+        com.pulsemix.app.player.AlarmClock.setProgressive(getApplication(), enabled)
 
     init {
         // Scan automatique au démarrage : rafraîchit la bibliothèque, restaure
@@ -186,6 +191,32 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Nombre de lectures du morceau (compteur persistant). */
     fun playCount(track: Track): Int =
         com.pulsemix.app.data.PlayHistory.count(track.uri)
+
+    /**
+     * Lance 50 morceaux jamais joués, mélangés (bouton « Écouter les
+     * oubliés » des statistiques). Mélange AVANT la coupe : sinon ce
+     * seraient toujours les 50 mêmes, dans l'ordre de la bibliothèque.
+     */
+    fun playForgotten() {
+        val forgotten = tracks.value
+            .filter { com.pulsemix.app.data.PlayHistory.count(it.uri) == 0 }
+            .shuffled()
+            .take(50)
+        if (forgotten.isNotEmpty()) PlayerCore.playNormal(forgotten, 0)
+    }
+
+    /** Message d'état du dernier export de passage (chemin créé, ou erreur). */
+    val segmentExportMessage = com.pulsemix.app.library.SegmentExporter.message
+
+    /**
+     * Exporte le meilleur passage du morceau en M4A dans le dossier
+     * Extraits de l'appli (découpe ffmpeg, l'original n'est pas modifié).
+     */
+    fun exportBestSegment(track: Track) {
+        viewModelScope.launch(Dispatchers.IO) {
+            com.pulsemix.app.library.SegmentExporter.export(getApplication(), track)
+        }
+    }
 
     /** Résultat du dernier export de la liste des titres. */
     val exportMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)

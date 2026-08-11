@@ -103,6 +103,12 @@ fun TrackOptionsDialogs(
                     TextButton(onClick = { segEdit = true; menuOpen = false }) {
                         Text("Définir le meilleur passage…")
                     }
+                    // Découpe ffmpeg en arrière-plan ; le chemin du fichier
+                    // créé s'affiche en message d'état dans la bibliothèque.
+                    // L'original n'est jamais modifié.
+                    TextButton(onClick = { vm.exportBestSegment(track); onClose() }) {
+                        Text("Exporter le meilleur passage…")
+                    }
                     // Titre/artiste, recherche en ligne (texte ou empreinte
                     // sonore), type, « pas épique » et jaquette vivent tous
                     // dans ce dialogue : les entrées séparées faisaient doublon.

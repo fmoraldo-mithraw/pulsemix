@@ -46,6 +46,10 @@ object AlarmClock {
     val mixId = MutableStateFlow("douce")
     val rampMinutes = MutableStateFlow(3)
 
+    /** Réveil progressif : la file du réveil réordonnée du calme (faible
+     *  energyMean) vers l'énergique, quel que soit le type de mix choisi. */
+    val progressive = MutableStateFlow(false)
+
     /** Durées de répétition proposées, en minutes. */
     val SNOOZE_CHOICES = listOf(10, 15, 20)
 
@@ -69,6 +73,7 @@ object AlarmClock {
             minute.value = p.getInt("minute", 0)
             mixId.value = p.getString("mixId", "douce") ?: "douce"
             rampMinutes.value = p.getInt("ramp", 3)
+            progressive.value = p.getBoolean("alarmProgressive", false)
             // Un réveil interrompu par la mort du processus n'a jamais rendu
             // le volume : la clé traîne encore dans les prefs. On le rend
             // maintenant — sinon la première vidéo ou le premier morceau
@@ -102,6 +107,37 @@ object AlarmClock {
             .putInt("ramp", rampMinutes.value)
             .apply()
         if (en) schedule(context) else cancel(context)
+    }
+
+    /** Active/désactive le réveil progressif (réglage indépendant du reste :
+     *  pas besoin de ré-armer l'alarme, seul l'ordre de la file change). */
+    fun setProgressive(context: Context, en: Boolean) {
+        progressive.value = en
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("alarmProgressive", en)
+            .apply()
+    }
+
+    /** File du réveil : du calme vers l'énergique si le progressif est actif. */
+    private fun wakeOrder(list: List<com.pulsemix.app.data.Track>) =
+        if (progressive.value) list.sortedBy { it.energyMean } else list
+
+    /**
+     * Même chose pour un plan DJ : les morceaux sont réordonnés par énergie
+     * croissante, redécoupés aux tailles des phases d'origine — le moteur DJ
+     * garde ainsi une structure de phases valide.
+     */
+    private fun wakePlan(plan: MixEngine.MixPlan): MixEngine.MixPlan {
+        if (!progressive.value) return plan
+        val ordered = plan.phases.flatMap { it.tracks }.sortedBy { it.energyMean }
+        var i = 0
+        val phases = plan.phases.map { ph ->
+            val end = (i + ph.tracks.size).coerceAtMost(ordered.size)
+            val slice = ordered.subList(i, end).toList()
+            i = end
+            MixEngine.Phase(ph.name, slice)
+        }
+        return MixEngine.MixPlan(plan.id, plan.name, plan.description, phases)
     }
 
     /** Prochain déclenchement : aujourd'hui si l'heure n'est pas passée. */
@@ -324,26 +360,28 @@ object AlarmClock {
                 }
                 when (val id = mixId.value) {
                     "douce" -> {
+                        // La douce va déjà du plus doux au moins doux : le
+                        // réveil progressif n'y changerait rien.
                         PlayerCore.playDouce(all, 0.35f)
                         // Aucun morceau assez doux : réveil quand même
                         if (PlayerCore.launchMessage.value != null) {
-                            PlayerCore.playNormal(all.shuffled(), 0)
+                            PlayerCore.playNormal(wakeOrder(all.shuffled()), 0)
                         }
                     }
-                    "shuffle" -> PlayerCore.playNormal(all.shuffled(), 0)
+                    "shuffle" -> PlayerCore.playNormal(wakeOrder(all.shuffled()), 0)
                     else -> {
                         val plan = withContext(Dispatchers.Default) {
                             MixEngine.proposeMixes(all, dj = true)
                                 .find { it.id == id }
                         }
                         if (plan != null) {
-                            PlayerCore.startDj(plan)
+                            PlayerCore.startDj(wakePlan(plan))
                             // Le réveil ne doit pas s'arrêter au bout du set
                             PlayerCore.setMixSpec(
                                 PlayerCore.MixSpec(plan.id, true, null, null)
                             )
                         } else {
-                            PlayerCore.playNormal(all.shuffled(), 0)
+                            PlayerCore.playNormal(wakeOrder(all.shuffled()), 0)
                         }
                     }
                 }

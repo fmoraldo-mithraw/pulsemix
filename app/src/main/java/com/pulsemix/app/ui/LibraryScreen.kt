@@ -1,8 +1,6 @@
 package com.pulsemix.app.ui
 
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -90,10 +88,10 @@ fun LibraryScreen(
     var sortReversed by rememberSaveable { mutableStateOf(false) }
     var compatOnly by rememberSaveable { mutableStateOf(false) }
     var failedOnly by rememberSaveable { mutableStateOf(false) }
-    var showStats by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<Track?>(null) }
 
-    // Sous-écrans : playlists et tags en ligne (la bibliothèque reste légère)
+    // Sous-écrans : playlists, tags en ligne, import, statistiques (et ses
+    // annexes tonalités/doublons) en ligne — la bibliothèque reste légère
     var subScreen by rememberSaveable { mutableStateOf(0) }
     if (subScreen == 1) {
         Box(modifier.fillMaxSize()) { PlaylistsScreen(vm, onBack = { subScreen = 0 }) }
@@ -105,6 +103,27 @@ fun LibraryScreen(
     }
     if (subScreen == 3) {
         Box(modifier.fillMaxSize()) { ImportUrlScreen(vm, onBack = { subScreen = 0 }) }
+        return
+    }
+    if (subScreen == 4) {
+        Box(modifier.fillMaxSize()) {
+            StatsScreen(
+                vm,
+                onBack = { subScreen = 0 },
+                onOpenKeys = { subScreen = 5 },
+                onOpenDuplicates = { subScreen = 6 }
+            )
+        }
+        return
+    }
+    // Tonalités et doublons s'ouvrent depuis les statistiques : le retour
+    // y ramène, pas à la bibliothèque.
+    if (subScreen == 5) {
+        Box(modifier.fillMaxSize()) { CamelotWheelScreen(vm, onBack = { subScreen = 4 }) }
+        return
+    }
+    if (subScreen == 6) {
+        Box(modifier.fillMaxSize()) { DuplicatesScreen(vm, onBack = { subScreen = 4 }) }
         return
     }
 
@@ -125,7 +144,7 @@ fun LibraryScreen(
             IconButton(onClick = { subScreen = 2 }) {
                 Icon(Icons.Rounded.Label, "Tags en ligne")
             }
-            IconButton(onClick = { showStats = true }) {
+            IconButton(onClick = { subScreen = 4 }) {
                 Icon(Icons.Rounded.BarChart, "Statistiques")
             }
         }
@@ -146,6 +165,17 @@ fun LibraryScreen(
         // Résultat de l'export de la liste des titres (bouton des stats)
         val exportMsg by vm.exportMessage.collectAsStateWithLifecycle()
         exportMsg?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+        // Résultat de l'export du meilleur passage (menu ⋮ d'un morceau) :
+        // la découpe tourne en arrière-plan, le chemin arrive ici.
+        val segmentMsg by vm.segmentExportMessage.collectAsStateWithLifecycle()
+        segmentMsg?.let {
             Text(
                 it,
                 style = MaterialTheme.typography.labelSmall,
@@ -414,68 +444,6 @@ fun LibraryScreen(
         TrackOptionsDialogs(vm, tracks, opt) { optionsFor = null }
     }
 
-    // ------------------------------------------------------------ statistiques
-    if (showStats) {
-        val analyzed = tracks.filter { it.analyzed && it.bpm > 0f }
-        AlertDialog(
-            onDismissRequest = { showStats = false },
-            title = { Text("Statistiques") },
-            text = {
-                Column {
-                    Text("${tracks.size} morceaux, ${analyzed.size} analysés")
-                    analyzed.takeIf { it.isNotEmpty() }?.let { list ->
-                        Text("BPM moyen : ${"%.0f".format(list.map { it.bpm }.average())}")
-                        Spacer(Modifier.height(8.dp))
-                        Text("Répartition des tempos", fontWeight = FontWeight.SemiBold)
-                        val bands = listOf(
-                            "Calme (<95)" to list.count { it.bpm < 95f },
-                            "Groove (95-115)" to list.count { it.bpm >= 95f && it.bpm < 115f },
-                            "Dance (115-135)" to list.count { it.bpm >= 115f && it.bpm < 135f },
-                            "Intense (>135)" to list.count { it.bpm >= 135f }
-                        )
-                        val maxBand = bands.maxOf { it.second }.coerceAtLeast(1)
-                        for ((label, count) in bands) {
-                            Text("$label — $count", style = MaterialTheme.typography.labelSmall)
-                            LinearProgressIndicator(
-                                progress = { count.toFloat() / maxBand },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Spacer(Modifier.height(4.dp))
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text("Tonalités les plus présentes", fontWeight = FontWeight.SemiBold)
-                        val keys = list.groupBy { it.camelot }
-                            .filterKeys { it != "--" }
-                            .entries.sortedByDescending { it.value.size }
-                            .take(5)
-                        for (e in keys) {
-                            Text(
-                                "${e.key} (${e.value.firstOrNull()?.keyName ?: ""}) — " +
-                                    "${e.value.size} morceaux",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showStats = false }) { Text("Fermer") }
-            },
-            dismissButton = {
-                // Sélecteur système « Enregistrer sous » : l'utilisateur
-                // choisit le dossier et le nom du fichier.
-                val exportLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.CreateDocument("text/plain")
-                ) { uri ->
-                    if (uri != null) vm.exportTitleList(uri)
-                    showStats = false
-                }
-                TextButton(onClick = {
-                    exportLauncher.launch("PulseMix.titres.txt")
-                }) { Text("Exporter les titres (.txt)") }
-            }
-        )
-    }
 }
 
 private fun camelotSortKey(camelot: String): Int {

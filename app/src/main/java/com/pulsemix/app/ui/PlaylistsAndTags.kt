@@ -58,9 +58,10 @@ import com.pulsemix.app.library.SongRecognizer
 import com.pulsemix.app.PlayerViewModel
 import kotlinx.coroutines.delay
 
-/** En-tête d'un sous-écran : retour + titre. */
+/** En-tête d'un sous-écran : retour + titre. Partagé par tous les
+ *  sous-écrans de la bibliothèque (playlists, tags, stats, tonalités…). */
 @Composable
-private fun SubHeader(title: String, onBack: () -> Unit) {
+fun SubHeader(title: String, onBack: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) {
             Icon(Icons.Rounded.ArrowBack, "Retour")

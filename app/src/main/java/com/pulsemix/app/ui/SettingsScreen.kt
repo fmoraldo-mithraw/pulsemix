@@ -219,6 +219,15 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
                 valueRange = 1f..10f,
                 steps = 8
             )
+            Spacer(Modifier.height(4.dp))
+            val alarmProg by vm.alarmProgressive.collectAsStateWithLifecycle()
+            SettingSwitch(
+                title = "Réveil progressif",
+                subtitle = "Du calme vers l'énergique : la file du réveil est " +
+                    "réordonnée par énergie croissante avant de jouer.",
+                checked = alarmProg,
+                onChange = { vm.setAlarmProgressive(it) }
+            )
             // Android 12 : la permission « alarmes exactes » peut être
             // révoquée — le réveil deviendrait approximatif (± 10 min).
             // Ré-évaluée à chaque retour à l'écran (resumeTick) pour que
