@@ -98,7 +98,16 @@ class AudioAnalyzer {
          * bloc) mais pas identique — c'est la vraie base d'un gain de
          * normalisation mesuré (voir [gainDbFor]).
          */
-        val loudness: Float
+        val loudness: Float,
+        /**
+         * Structure du morceau (intro/montée/temps fort/calme/outro),
+         * encodée compacte par [StructureDetector.encode]. Vide si rien de
+         * fiable n'a pu être segmenté. Calculée ici — sur les tableaux
+         * déjà en mémoire, pas de seconde passe — et non versionnée : les
+         * morceaux analysés avant l'arrivée du champ ne sont PAS réanalysés
+         * (l'UI et le DJ gardent alors leur comportement historique).
+         */
+        val structure: String
     )
 
     suspend fun analyze(
@@ -136,6 +145,23 @@ class AudioAnalyzer {
             val firstBeatMs = probeFirstBeat(context, uri, bestStartMs, bpm)
             val musicStartMs = detectMusicStart(rms, blockMs)
 
+            // Structure du morceau : le flux spectral est recalé sur la
+            // grille des blocs RMS ; hors de la fenêtre FFT (l'analyse n'en
+            // couvre qu'une partie centrale), -1 = pas de mesure.
+            val rmsArr = FloatArray(rms.size) { rms[it] }
+            val fluxOnRms = FloatArray(rms.size) { i ->
+                val midSample = i.toLong() * RMS_BLOCK + RMS_BLOCK / 2
+                val j = ((midSample - state.fftStart) / HOP).toInt()
+                if (midSample >= state.fftStart && j < state.flux.size)
+                    state.flux[j]
+                else -1f
+            }
+            val structure = StructureDetector.encode(
+                StructureDetector.detect(
+                    rmsArr, fluxOnRms, blockMs.toFloat(), bpm, durationMs, firstBeatMs
+                )
+            )
+
             Features(
                 bpm = bpm,
                 bpmConfidence = conf,
@@ -163,7 +189,8 @@ class AudioAnalyzer {
                 // RMS global : racine de la moyenne des carrés des RMS de
                 // bloc (blocs de taille égale, le résidu final est ignoré)
                 loudness = if (rms.isEmpty()) 0f
-                else sqrt(rms.sumOf { (it * it).toDouble() } / rms.size).toFloat()
+                else sqrt(rms.sumOf { (it * it).toDouble() } / rms.size).toFloat(),
+                structure = structure
             )
         }
 

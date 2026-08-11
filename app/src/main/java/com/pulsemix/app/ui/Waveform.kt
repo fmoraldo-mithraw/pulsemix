@@ -23,9 +23,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pulsemix.app.analysis.AudioDecoder
+import com.pulsemix.app.analysis.StructureDetector
 import com.pulsemix.app.data.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -140,9 +142,31 @@ object WaveformStore {
 }
 
 /**
+ * Section de structure projetée en fractions 0..1 de la durée du morceau
+ * (le dessin de l'onde ne connaît pas les millisecondes).
+ */
+data class SectionSpan(
+    val start: Float,
+    val end: Float,
+    val kind: StructureDetector.SectionKind
+)
+
+/** Le champ Track.structure en fractions de la durée, pour le dessin. */
+private fun sectionSpans(t: Track?): List<SectionSpan> {
+    if (t == null || t.structure.isEmpty() || t.durationMs <= 0L) return emptyList()
+    val d = t.durationMs.toFloat()
+    return StructureDetector.decode(t.structure).map {
+        SectionSpan(it.startMs / d, it.endMs / d, it.kind)
+    }
+}
+
+/**
  * Dessin d'une forme d'onde : barres en miroir autour de l'axe central,
  * partie déjà jouée colorée, passage fort surligné, zones de transition
- * marquées, tête de lecture.
+ * marquées, tête de lecture. Quand la structure du morceau est connue,
+ * les barres non jouées prennent la teinte de leur section (temps fort
+ * saturé, montée en dégradé, intro/calme/outro atténués) et un liseré fin
+ * en bas tient lieu de légende ; sans structure, rendu historique.
  */
 @Composable
 fun WaveformView(
@@ -150,6 +174,7 @@ fun WaveformView(
     playhead: Float?,
     segment: ClosedFloatingPointRange<Float>? = null,
     transitions: List<ClosedFloatingPointRange<Float>> = emptyList(),
+    structure: List<SectionSpan> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val played = MaterialTheme.colorScheme.primary
@@ -157,6 +182,26 @@ fun WaveformView(
     val segColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f)
     val transColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)
     val headColor = MaterialTheme.colorScheme.primary
+    // Teintes de structure : le temps fort tire vers primary, la montée s'y
+    // dégrade, le reste s'atténue. `null` = hors structure -> `idle`.
+    val dropTint = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+    val calmTint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.20f)
+    val breakEdge = MaterialTheme.colorScheme.secondary.copy(alpha = 0.60f)
+    fun tintAt(frac: Float): Color? {
+        for (s in structure) {
+            if (frac < s.start || frac >= s.end) continue
+            return when (s.kind) {
+                StructureDetector.SectionKind.DROP -> dropTint
+                StructureDetector.SectionKind.BUILD -> {
+                    val t = ((frac - s.start) / (s.end - s.start))
+                        .coerceIn(0f, 1f)
+                    played.copy(alpha = 0.25f + 0.30f * t)
+                }
+                else -> calmTint
+            }
+        }
+        return null
+    }
 
     Box(modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
@@ -193,7 +238,8 @@ fun WaveformView(
                     val x = k * step + step / 2f
                     val amp = env[k] * (h / 2f - 1f)
                     val frac = (k + 0.5f) / n
-                    val c = if (playhead != null && frac <= playhead) played else idle
+                    val c = if (playhead != null && frac <= playhead) played
+                    else tintAt(frac) ?: idle
                     drawLine(
                         c,
                         Offset(x, mid - amp),
@@ -203,6 +249,26 @@ fun WaveformView(
                 }
             } else {
                 drawLine(idle, Offset(0f, mid), Offset(w, mid), strokeWidth = 2f)
+            }
+            // Liseré de structure : un trait fin en bas, une teinte par
+            // section — la légende tient là (plus saturé = plus fort), et
+            // les frontières restent lisibles même sur la partie jouée.
+            if (structure.isNotEmpty()) {
+                val lh = 3f
+                for (s in structure) {
+                    val x0 = s.start.coerceIn(0f, 1f) * w
+                    val x1 = s.end.coerceIn(0f, 1f) * w
+                    if (x1 <= x0) continue
+                    val c = when (s.kind) {
+                        StructureDetector.SectionKind.DROP ->
+                            played.copy(alpha = 0.90f)
+                        StructureDetector.SectionKind.BUILD ->
+                            played.copy(alpha = 0.50f)
+                        StructureDetector.SectionKind.BREAK -> breakEdge
+                        else -> idle
+                    }
+                    drawRect(c, topLeft = Offset(x0, h - lh), size = Size(x1 - x0, lh))
+                }
             }
             // Tête de lecture
             playhead?.let { p ->
@@ -235,6 +301,9 @@ fun WaveformPanel(
     LaunchedEffect(next?.uri) {
         next?.uri?.let { envNext = WaveformStore.load(context, it) }
     }
+    // Sections décodées une fois par morceau, pas à chaque frame de dessin
+    val spans = remember(track?.uri, track?.structure) { sectionSpans(track) }
+    val spansNext = remember(next?.uri, next?.structure) { sectionSpans(next) }
 
     // Durée approximative des fondus pour marquer les zones de transition
     val fadeMs = 10_000f
@@ -265,6 +334,7 @@ fun WaveformPanel(
             playhead = playhead,
             segment = segRange,
             transitions = trans,
+            structure = spans,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
@@ -299,6 +369,7 @@ fun WaveformPanel(
                 playhead = null,
                 segment = segN,
                 transitions = transN,
+                structure = spansNext,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(30.dp)

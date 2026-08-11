@@ -277,7 +277,12 @@ object LibraryScanner {
                                         // — pas de bump de FEATURES_VERSION,
                                         // les autres gardent l'ancienne
                                         // formule (gainDb = 0).
-                                        gainDb = AudioAnalyzer.gainDbFor(features.loudness)
+                                        gainDb = AudioAnalyzer.gainDbFor(features.loudness),
+                                        // Segmentation en sections : comme le
+                                        // gain mesuré, seuls les morceaux qui
+                                        // passent par l'analyse l'obtiennent —
+                                        // les anciens restent sans structure.
+                                        structure = features.structure
                                     )
                                 } else {
                                     Track(

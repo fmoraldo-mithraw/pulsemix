@@ -70,7 +70,15 @@ data class Track(
      * analysé avant l'arrivée du champ, pas de réanalyse forcée) : les
      * lecteurs retombent alors sur l'ancienne formule à base d'energyMean.
      */
-    val gainDb: Float = 0f
+    val gainDb: Float = 0f,
+    /**
+     * Structure du morceau (intro/montée/temps fort/calme/outro), forme
+     * compacte « KIND:startMs:endMs;… » de StructureDetector. Vide =
+     * analysé avant l'arrivée du champ (pas de réanalyse forcée) : la
+     * forme d'onde n'est pas colorée et le moteur DJ garde son calage
+     * historique.
+     */
+    val structure: String = ""
 )
 
 /**
@@ -228,6 +236,7 @@ class TrackStore(context: Context) {
             o.put("featuresVersion", t.featuresVersion)
             o.put("notEpic", t.notEpic)
             o.put("gainDb", t.gainDb.toDouble())
+            o.put("structure", t.structure)
             return o
         }
 
@@ -260,7 +269,8 @@ class TrackStore(context: Context) {
             lowMidRatio = o.optDouble("lowMidRatio", 0.0).toFloat(),
             featuresVersion = o.optInt("featuresVersion", 0),
             notEpic = o.optBoolean("notEpic", false),
-            gainDb = o.optDouble("gainDb", 0.0).toFloat()
+            gainDb = o.optDouble("gainDb", 0.0).toFloat(),
+            structure = o.optString("structure", "")
         )
     }
 

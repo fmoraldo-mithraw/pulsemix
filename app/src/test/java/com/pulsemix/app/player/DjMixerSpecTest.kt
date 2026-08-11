@@ -1,5 +1,6 @@
 package com.pulsemix.app.player
 
+import com.pulsemix.app.analysis.StructureDetector
 import com.pulsemix.app.data.Track
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -130,5 +131,83 @@ class DjMixerSpecTest {
         )
         assertEquals(DjMixer.FADE_NORMAL_S, s, 1e-9)
         assertEquals(DjMixer.KIND_EQ, kind)
+    }
+
+    // --------------------------------------------------- snapEndToStructure
+    // La fin de passage d'un deck se cale sur une frontière de section
+    // (idéalement la fin d'un temps fort) à ± une phrase. À 120 BPM sur un
+    // morceau long, la phrase vaut 16 temps = 8 s.
+
+    private fun section(start: Long, end: Long, kind: StructureDetector.SectionKind) =
+        StructureDetector.Section(start, end, kind)
+
+    @Test
+    fun `sans structure ou sans bpm - fin inchangee`() {
+        assertEquals(
+            90_000L,
+            DjMixer.snapEndToStructure(90_000L, 30_000L, 128f, 240_000L, emptyList())
+        )
+        val s = listOf(section(30_000L, 92_000L, StructureDetector.SectionKind.DROP))
+        assertEquals(
+            90_000L,
+            DjMixer.snapEndToStructure(90_000L, 30_000L, 0f, 240_000L, s)
+        )
+    }
+
+    @Test
+    fun `fin calee sur la fin du temps fort la plus proche`() {
+        val s = listOf(
+            section(32_000L, 96_000L, StructureDetector.SectionKind.DROP),
+            section(96_000L, 112_000L, StructureDetector.SectionKind.BREAK)
+        )
+        // 91 s : la fin du DROP (96 s) est à 5 s, dans la fenêtre de ± 8 s
+        assertEquals(
+            96_000L,
+            DjMixer.snapEndToStructure(91_000L, 32_000L, 120f, 240_000L, s)
+        )
+    }
+
+    @Test
+    fun `le temps fort l emporte sur une frontiere plus proche`() {
+        // Fin de BREAK à 2 s, fin de DROP à 6 s : le DJ sort sur la fin du
+        // temps fort, pas sur la frontière la plus proche.
+        val s = listOf(
+            section(82_000L, 88_000L, StructureDetector.SectionKind.BREAK),
+            section(88_000L, 96_000L, StructureDetector.SectionKind.DROP)
+        )
+        assertEquals(
+            96_000L,
+            DjMixer.snapEndToStructure(90_000L, 30_000L, 120f, 240_000L, s)
+        )
+    }
+
+    @Test
+    fun `hors fenetre d une phrase - fin inchangee`() {
+        val s = listOf(section(32_000L, 106_000L, StructureDetector.SectionKind.DROP))
+        // 106 s est à 16 s de la fin calculée : trop loin, on ne bouge pas
+        assertEquals(
+            90_000L,
+            DjMixer.snapEndToStructure(90_000L, 32_000L, 120f, 240_000L, s)
+        )
+    }
+
+    @Test
+    fun `jamais sous 20 s de passage`() {
+        // La seule frontière proche raccourcirait le passage à 16 s
+        val s = listOf(section(40_000L, 86_000L, StructureDetector.SectionKind.DROP))
+        assertEquals(
+            92_000L,
+            DjMixer.snapEndToStructure(92_000L, 70_000L, 120f, 240_000L, s)
+        )
+    }
+
+    @Test
+    fun `jamais au dela de la fin du morceau`() {
+        // Frontière au-delà de durationMs (structure corrompue) : ignorée
+        val s = listOf(section(200_000L, 241_000L, StructureDetector.SectionKind.DROP))
+        assertEquals(
+            236_000L,
+            DjMixer.snapEndToStructure(236_000L, 100_000L, 120f, 240_000L, s)
+        )
     }
 }

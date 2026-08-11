@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.net.Uri
 import com.pulsemix.app.analysis.AudioDecoder
+import com.pulsemix.app.analysis.StructureDetector
 import com.pulsemix.app.data.Track
 import com.pulsemix.app.mix.MixEngine
 import java.util.concurrent.ArrayBlockingQueue
@@ -68,6 +69,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Durée minimale d'un passage en mode DJ : en dessous, on n'a pas
         // le temps d'apprécier le morceau entre deux transitions.
         const val MIN_SEGMENT_MS = 60_000L
+        // Calage sur la structure : la frontière de section retenue ne
+        // raccourcit jamais le passage sous ce plancher (déjà les fondus
+        // mangent ~30 s à eux deux).
+        const val SNAP_MIN_PLAY_MS = 20_000L
         const val HALF_PI = (Math.PI / 2).toFloat()
         // One-pole ~120 Hz à 44,1 kHz pour l'extraction des basses
         const val BASS_ALPHA = 0.017f
@@ -240,6 +245,56 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 ushr 1) % pool.size
             if (pool[idx].second == lastKind) idx = (idx + 1) % pool.size
             return pool[idx]
+        }
+
+        /**
+         * Cale la fin de passage sur une frontière de section quand le
+         * morceau a une structure détectée : un DJ sort sur une fin de
+         * phrase — idéalement la fin d'un temps fort — pas sur un point
+         * arbitraire au milieu d'une section. La frontière est cherchée à
+         * ± une phrase autour de la fin calculée ; dans cette fenêtre, une
+         * fin de temps fort (DROP) l'emporte toujours sur toute autre
+         * frontière, même plus proche. Sans structure (ancienne analyse),
+         * sans BPM, ou si aucune frontière ne convient, la fin reste telle
+         * quelle : le comportement historique du moteur ne bouge pas.
+         *
+         * Fonction PURE (companion, internal, testée en JVM) comme
+         * fadeSpec — appelée à l'ouverture d'un deck, jamais dans la
+         * boucle audio par bloc.
+         *
+         * @param endMs fin de passage calculée (ancre + passage arrondi).
+         * @param anchorMs début du passage fort : la frontière retenue ne
+         *   doit pas raccourcir le passage sous [SNAP_MIN_PLAY_MS].
+         */
+        internal fun snapEndToStructure(
+            endMs: Long,
+            anchorMs: Long,
+            bpm: Float,
+            durationMs: Long,
+            sections: List<StructureDetector.Section>
+        ): Long {
+            if (sections.isEmpty() || bpm <= 0f) return endMs
+            val phraseMs = Math.round(StructureDetector.phraseMs(bpm, durationMs))
+            if (phraseMs <= 0L) return endMs
+            val floorMs = anchorMs + SNAP_MIN_PLAY_MS
+            var best = endMs
+            var bestScore = Long.MAX_VALUE
+            for (s in sections) {
+                val b = s.endMs
+                if (b < floorMs || b > durationMs) continue
+                val d = abs(b - endMs)
+                if (d > phraseMs) continue
+                // d <= phrase pour tous les candidats : « d + phrase + 1 »
+                // classe toute frontière ordinaire derrière n'importe
+                // quelle fin de temps fort de la fenêtre.
+                val score = if (s.kind == StructureDetector.SectionKind.DROP) d
+                else d + phraseMs + 1
+                if (score < bestScore) {
+                    bestScore = score
+                    best = b
+                }
+            }
+            return best
         }
     }
 
@@ -669,9 +724,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // naturellement sous le fondu d'entrée (pas de boucle de début :
             // essayée, jugée décevante). À l'autre bout, la boucle de sortie
             // (8 derniers battements) prend le relais sous le fondu de sortie.
+            // Quand le morceau a une structure détectée, la fin de passage
+            // est calée sur la frontière de section la plus proche (fin d'un
+            // temps fort de préférence) : la transition part d'une vraie fin
+            // de phrase. Structure vide (ancienne analyse) : rien ne change.
             val end = if (playToEnd && track.durationMs > anchor)
                 track.durationMs
-            else min(anchor + segMs, track.durationMs)
+            else snapEndToStructure(
+                min(anchor + segMs, track.durationMs), anchor, track.bpm,
+                track.durationMs,
+                if (track.structure.isEmpty()) emptyList()
+                else StructureDetector.decode(track.structure)
+            )
             startMs = when {
                 // Déplacement manuel : au moins 10 s à jouer après le point
                 // visé, sinon le deck n'aurait pas de quoi tenir le fondu
