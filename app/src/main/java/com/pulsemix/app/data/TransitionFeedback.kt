@@ -55,8 +55,10 @@ object TransitionFeedback {
         trim()
     }
 
+    // containsKey explicite : sur une ConcurrentHashMap, `in` résout vers
+    // contains(value) — sémantique piégeuse promue erreur par le compilateur
     fun isBad(fromUri: String, toUri: String): Boolean =
-        key(fromUri, toUri) in bad
+        bad.containsKey(key(fromUri, toUri))
 
     /** Retire les marquages les plus anciens au-delà du plafond. */
     private fun trim() {
