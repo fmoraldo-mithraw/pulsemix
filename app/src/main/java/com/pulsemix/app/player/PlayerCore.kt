@@ -475,6 +475,24 @@ object PlayerCore {
                 progress.value = p
             }
 
+            override fun onSetEnding(remainingMs: Long) {
+                // Fausse alerte : un saut en arrière a relancé le set
+                // pendant le décompte — on le retire sans le « supprimer »
+                // (la vraie fin, plus tard, doit encore enchaîner).
+                if (remainingMs < 0) {
+                    clearAutoNext()
+                    return
+                }
+                // Dernières secondes du set : lancer le décompte
+                // d'enchaînement PENDANT que le moteur joue encore (après
+                // l'arrêt, un processus en arrière-plan peut être gelé
+                // avant la fin d'un décompte). onStopped reste le filet.
+                if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+                startAutoNext(
+                    ((remainingMs + 999) / 1_000L).toInt().coerceIn(1, 15)
+                )
+            }
+
             override fun onTransitionChanged(active: Boolean) {
                 djTransition.value = active
                 // La boucle de sortie manuelle « tient » le morceau
@@ -571,6 +589,22 @@ object PlayerCore {
                         (CROSSFADE_MS + CROSSFADE_LEAD_MS + PREARM_AHEAD_MS)
                     ) {
                         prepareTailAhead()
+                    }
+                    // Fin de mix imminente (dernier morceau de la file) :
+                    // le décompte d'enchaînement démarre PENDANT les
+                    // dernières secondes, tant que la lecture tourne — le
+                    // service reste au premier plan et le processus vivant,
+                    // c'est ce qui fait marcher l'enchaînement écran éteint.
+                    // (Après l'arrêt, STATE_ENDED sert encore de filet.)
+                    if (mode.value == PlayerMode.MIX && isPlaying.value &&
+                        d > 0 && !exo.hasNextMediaItem()
+                    ) {
+                        val remain = d - exo.currentPosition
+                        if (remain in 1..AUTO_NEXT_LEAD_MS) {
+                            startAutoNext(
+                                ((remain + 999) / 1_000L).toInt().coerceIn(1, 15)
+                            )
+                        }
                     }
                 }
                 // Minuterie de sommeil : fondu sur les 30 dernières secondes,
@@ -684,7 +718,7 @@ object PlayerCore {
     // ------------------------------------------------------------ lancements
 
     fun playNormal(tracks: List<Track>, startIndex: Int = 0) {
-        cancelAutoNext()
+        resetAutoNextForLaunch()
         stopTail()
         if (tracks.isEmpty()) return
         launchMessage.value = null
@@ -704,7 +738,7 @@ object PlayerCore {
     }
 
     fun playDouce(all: List<Track>, softness: Float) {
-        cancelAutoNext()
+        resetAutoNextForLaunch()
         stopTail()
         val soft = MixEngine.softSelection(all, softness)
         if (soft.isEmpty()) {
@@ -728,7 +762,7 @@ object PlayerCore {
     }
 
     fun startMix(mixPlan: MixEngine.MixPlan) {
-        cancelAutoNext()
+        resetAutoNextForLaunch()
         stopTail()
         if (mixPlan.phases.sumOf { it.tracks.size } == 0) {
             launchMessage.value = "Ce plan ne contient aucun morceau : rien à lancer."
@@ -762,7 +796,7 @@ object PlayerCore {
     }
 
     fun startDj(mixPlan: MixEngine.MixPlan, fromPhase: Int = 0, rehearsal: Boolean = false) {
-        cancelAutoNext()
+        resetAutoNextForLaunch()
         stopTail()
         if (mixPlan.phases.isEmpty()) return
         // Le moteur DJ ne joue que les morceaux analysés (BPM connu) : un
@@ -1236,6 +1270,14 @@ object PlayerCore {
      * n'a plus rien à attendre.
      */
     private const val PREARM_AHEAD_MS = 13_000L
+
+    /**
+     * Avance du pré-déclenchement de l'enchaînement automatique sur la fin
+     * du DERNIER morceau d'un mix : le décompte et la régénération du plan
+     * se font pendant que la lecture tourne encore — indispensable pour
+     * que l'enchaînement survive écran éteint / appli en arrière-plan.
+     */
+    private const val AUTO_NEXT_LEAD_MS = 12_000L
 
     /**
      * En deçà de ce reste, on ne lance plus de fondu de fin : le temps de
@@ -1820,7 +1862,7 @@ object PlayerCore {
 
     /** Pré-écoute du « meilleur passage » d'un morceau. */
     fun playPreview(t: Track) {
-        cancelAutoNext()
+        resetAutoNextForLaunch()
         stopTail()
         stopDjIfNeeded()
         mode.value = PlayerMode.NORMAL
@@ -2303,7 +2345,9 @@ object PlayerCore {
         val planId: String,
         val dj: Boolean,
         val targetMinutes: Int?,
-        val genre: String?
+        val genre: String?,
+        /** Morceau-graine du mix « comme ce morceau » (pour le régénérer). */
+        val seedUri: String? = null
     )
 
     private var mixSpec: MixSpec? = null
@@ -2343,58 +2387,148 @@ object PlayerCore {
         }
     }
 
-    /** Annule un enchaînement en cours (l'utilisateur reprend la main). */
-    fun cancelAutoNext() {
+    /**
+     * L'utilisateur a annulé l'enchaînement de CETTE fin de mix : ne pas le
+     * redéclencher quand la lecture s'arrête pour de bon (le pré-déclenchement
+     * pendant les dernières secondes et l'arrêt final passeraient chacun par
+     * startAutoNext sinon). Réarmé à chaque nouveau lancement.
+     */
+    private var autoNextSuppressed = false
+
+    /** Défait un décompte en cours sans le « suppression » utilisateur :
+     *  pour les lancements internes (le nouveau mix reprend la main). */
+    private fun clearAutoNext() {
         autoJob?.cancel()
         autoJob = null
         autoNextIn.value = null
     }
 
+    /** Annule un enchaînement en cours (l'utilisateur reprend la main). */
+    fun cancelAutoNext() {
+        autoNextSuppressed = true
+        clearAutoNext()
+    }
+
+    /** Toute nouvelle lecture repart d'un état d'enchaînement neuf : le
+     *  décompte en cours meurt et une annulation passée ne vaut plus. */
+    private fun resetAutoNextForLaunch() {
+        autoNextSuppressed = false
+        clearAutoNext()
+    }
+
     /**
-     * Fin d'un mix : décompte 3-2-1 à l'écran, puis un nouveau mix du même
-     * type. Le plan se construit pendant le décompte, pour enchaîner sans
-     * blanc. Si rien ne peut être construit, on s'arrête simplement.
+     * Fin d'un mix : décompte à l'écran, puis un nouveau mix du même type.
+     *
+     * Appelé de préférence PENDANT les dernières secondes du dernier
+     * morceau ([seconds] calé sur ce qu'il reste à jouer) : la lecture
+     * tourne encore, donc le service média est toujours au premier plan et
+     * le processus vivant — c'est ce qui fait marcher l'enchaînement écran
+     * éteint ou appli en arrière-plan. Une fois la lecture arrêtée, plus
+     * rien ne garantit qu'un décompte survive (gel des applis en cache,
+     * restrictions de redémarrage) : l'appel depuis l'arrêt final ne sert
+     * que de filet quand le pré-déclenchement n'a pas pu avoir lieu. Un
+     * réveil (wakelock) borné couvre le décompte quand l'écran est éteint.
+     *
+     * Le plan se construit pendant le décompte, pour enchaîner sans blanc.
+     * Si rien ne peut être construit, on s'arrête simplement.
      */
-    private fun startAutoNext() {
+    private fun startAutoNext(seconds: Int = 3) {
         val spec = mixSpec ?: return
+        if (autoNextSuppressed) return
         if (autoJob?.isActive == true) return
+        // Réveil borné : le Handler et les delay() continuent de tourner
+        // écran éteint le temps du décompte et du lancement.
+        val wake = try {
+            (appContext.getSystemService(Context.POWER_SERVICE)
+                as android.os.PowerManager)
+                .newWakeLock(
+                    android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                    "pulsemix:autonext"
+                )
+                .apply { acquire(seconds * 1_000L + 20_000L) }
+        } catch (_: Exception) {
+            null
+        }
         autoJob = autoScope.launch {
-            val store = try {
-                com.pulsemix.app.Graph.store
-            } catch (_: Exception) {
+            try {
+                val store = try {
+                    com.pulsemix.app.Graph.store
+                } catch (_: Exception) {
+                    autoNextIn.value = null
+                    return@launch
+                }
+                // Le plan se prépare pendant que le décompte tourne
+                val building = async {
+                    val all = store.tracks.value
+                    nextMixPlan(all, spec)
+                }
+                for (n in seconds.coerceIn(1, 30) downTo 1) {
+                    autoNextIn.value = n
+                    delay(1_000)
+                }
+                val next = try {
+                    building.await()
+                } catch (_: Exception) {
+                    null
+                }
                 autoNextIn.value = null
-                return@launch
-            }
-            // Le plan se prépare pendant que le décompte tourne
-            val building = async {
-                val all = store.tracks.value
-                MixEngine.proposeMixes(
-                    all, spec.dj, spec.targetMinutes, spec.genre
-                ).firstOrNull { it.id == spec.planId }
-            }
-            for (n in 3 downTo 1) {
-                autoNextIn.value = n
-                delay(1_000)
-            }
-            val next = try {
-                building.await()
-            } catch (_: Exception) {
-                null
-            }
-            autoNextIn.value = null
-            // Lancer la lecture appelle cancelAutoNext() : on se retire
-            // d'abord, sinon la coroutine s'annulerait elle-même.
-            autoJob = null
-            withContext(Dispatchers.Main) {
-                if (next != null) {
-                    if (spec.dj) startDj(next) else startMix(next)
-                } else {
-                    launchMessage.value =
-                        "Impossible d'enchaîner : plus assez de morceaux " +
-                        "pour un nouveau « ${spec.planId} »."
+                // Lancer la lecture appelle clearAutoNext() : on se retire
+                // d'abord, sinon la coroutine s'annulerait elle-même.
+                autoJob = null
+                withContext(Dispatchers.Main) {
+                    // Le décompte a été déclenché EN AVANCE, pendant les
+                    // dernières secondes : au moment de lancer, vérifier que
+                    // la fin est toujours d'actualité. Un seek en arrière ou
+                    // une pause dans l'intervalle rend l'enchaînement caduc
+                    // — la vraie fin, plus tard, redéclenchera son décompte.
+                    val stillEnding = if (spec.dj) {
+                        !mixer.isRunning || isPlaying.value
+                    } else {
+                        exo.playbackState == Player.STATE_ENDED ||
+                            (isPlaying.value && exo.duration > 0 &&
+                                !exo.hasNextMediaItem() &&
+                                exo.duration - exo.currentPosition <=
+                                AUTO_NEXT_LEAD_MS + 2_000L)
+                    }
+                    if (!stillEnding) return@withContext
+                    if (next != null) {
+                        if (spec.dj) startDj(next) else startMix(next)
+                    } else {
+                        launchMessage.value =
+                            "Impossible d'enchaîner : plus assez de morceaux " +
+                            "pour un nouveau « ${spec.planId} »."
+                    }
+                }
+            } finally {
+                try {
+                    wake?.release()
+                } catch (_: Exception) {
                 }
             }
         }
+    }
+
+    /**
+     * Le mix suivant pour [spec] : idéalement le même type de plan, sinon
+     * N'IMPORTE quel plan proposable — un mix différent vaut mieux que le
+     * silence (le plan d'origine peut ne plus être generable : conditions
+     * d'effectifs, mix « similaire » ou édité jamais régénérés).
+     */
+    private fun nextMixPlan(
+        all: List<Track>,
+        spec: MixSpec
+    ): MixEngine.MixPlan? {
+        // Mix « comme ce morceau » : on repart du même morceau-graine.
+        if (spec.planId == "similar") {
+            val seed = spec.seedUri?.let { u -> all.firstOrNull { it.uri == u } }
+            val plan = seed?.let { MixEngine.similarPlan(all, it, dj = spec.dj) }
+            if (plan != null) return plan
+        }
+        val proposals = MixEngine.proposeMixes(
+            all, spec.dj, spec.targetMinutes, spec.genre
+        )
+        return proposals.firstOrNull { it.id == spec.planId }
+            ?: proposals.firstOrNull()
     }
 
     /** Coupe la lecture en cours (réveil arrêté / répété). */

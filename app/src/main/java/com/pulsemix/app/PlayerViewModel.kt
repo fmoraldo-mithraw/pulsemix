@@ -170,6 +170,15 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun startSimilar(seed: Track, djMode: Boolean) {
         viewModelScope.launch(Dispatchers.Default) {
             val plan = MixEngine.similarPlan(tracks.value, seed, dj = djMode)
+            // Mémorisé AVEC le morceau-graine : en fin de mix,
+            // l'enchaînement automatique en régénère un de la même veine.
+            if (plan != null) {
+                PlayerCore.setMixSpec(
+                    PlayerCore.MixSpec(
+                        plan.id, djMode, null, null, seedUri = seed.uri
+                    )
+                )
+            }
             withContext(Dispatchers.Main) {
                 when {
                     // Rien ne se passait en silence : dire pourquoi.

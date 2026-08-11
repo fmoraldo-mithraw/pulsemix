@@ -47,6 +47,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         /** Une transition (deux decks en vol) démarre ou se termine —
          *  pilote l'activation du crossfader du panneau « Performance ». */
         fun onTransitionChanged(active: Boolean) {}
+        /** Le DERNIER passage du set entre dans ses ultimes secondes :
+         *  c'est le moment de préparer l'enchaînement automatique, PENDANT
+         *  que la lecture tourne encore (le processus est vivant et le
+         *  service au premier plan — après l'arrêt, plus rien ne garantit
+         *  qu'un décompte survive en arrière-plan). */
+        fun onSetEnding(remainingMs: Long) {}
     }
 
     private data class Segment(val track: Track, val phaseIndex: Int)
@@ -72,6 +78,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Durée minimale d'un passage en mode DJ : en dessous, on n'a pas
         // le temps d'apprécier le morceau entre deux transitions.
         const val MIN_SEGMENT_MS = 60_000L
+        // Avance de l'annonce de fin de set (onSetEnding) : assez pour un
+        // décompte visible ET pour régénérer le mix suivant pendant que la
+        // lecture tourne encore.
+        const val SET_ENDING_LEAD_S = 12L
         // Calage sur la structure : la frontière de section retenue ne
         // raccourcit jamais le passage sous ce plancher (déjà les fondus
         // mangent ~30 s à eux deux).
@@ -1142,6 +1152,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             java.util.concurrent.atomic.AtomicReference<OpenResult?>(null)
         var opening = false
         var failedForSeg = -1
+        // Fin de set annoncée une seule fois (dernier passage, dernières
+        // secondes) — désarmée si un saut ramène en arrière dans le plan.
+        var setEndingSent = false
 
         // Renfort dynamique des basses (sur le signal mixé)
         var mixLpL = 0f
@@ -1349,6 +1362,26 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         a.remainingOut <= 0L && endFadeFrames < 0
                     ) {
                         endFadeFrames = OUT_SR / 2L // fondu de fin : 0,5 s
+                    }
+                    // Rien après ce passage : le set se termine. Prévenu
+                    // AVANT l'arrêt (différé de la latence de sortie, comme
+                    // announce) — l'enchaînement automatique doit démarrer
+                    // pendant que le son tourne encore.
+                    if (nextIdx >= segments.size && !setEndingSent &&
+                        a.remainingOut <= SET_ENDING_LEAD_S * OUT_SR
+                    ) {
+                        setEndingSent = true
+                        val remMs = a.remainingOut * 1000L / OUT_SR
+                        ui.postDelayed({
+                            if (gen == runGeneration) listener.onSetEnding(remMs)
+                        }, outLatencyMs)
+                    } else if (nextIdx < segments.size && setEndingSent) {
+                        // Un saut est revenu en arrière : le set continue,
+                        // l'annonce de fin était une fausse alerte (-1).
+                        setEndingSent = false
+                        ui.post {
+                            if (gen == runGeneration) listener.onSetEnding(-1L)
+                        }
                     }
                     // Saut demandé au-delà du dernier morceau : rien à jouer
                     // ensuite — le désarmer plutôt que le retraiter sans fin.

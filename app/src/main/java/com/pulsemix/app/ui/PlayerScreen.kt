@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -192,15 +193,22 @@ fun PlayerScreen(
         }
 
         // Fin d'un mix : décompte avant l'enchaînement sur un mix du même
-        // type. Un tap arrête là — sans ça, la seule échappatoire serait de
-        // laisser démarrer le suivant pour le couper aussitôt.
+        // type. Il démarre pendant les dernières secondes du dernier
+        // morceau (la lecture ne s'arrête jamais, même écran éteint). Un
+        // tap arrête là — sans ça, la seule échappatoire serait de laisser
+        // démarrer le suivant pour le couper aussitôt.
         val autoNextIn by vm.autoNextIn.collectAsStateWithLifecycle()
         autoNextIn?.let { n ->
             Spacer(Modifier.height(12.dp))
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { vm.cancelAutoNext() },
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    )
+                    .clickable { vm.cancelAutoNext() }
+                    .padding(vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -210,7 +218,7 @@ fun PlayerScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    "Mix terminé — on enchaîne (touche pour rester ici)",
+                    "Fin du mix — le suivant arrive (touche pour arrêter là)",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
