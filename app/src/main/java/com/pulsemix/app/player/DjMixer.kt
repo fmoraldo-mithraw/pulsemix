@@ -134,6 +134,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     private val ui = Handler(Looper.getMainLooper())
 
     @Volatile private var running = false
+    /**
+     * Génération du run : chaque start() l'incrémente et le thread de mix
+     * capture sa valeur. Un thread dont le join() a expiré au stop() ne
+     * peut plus ni reprendre quand un nouveau start() remet `running` à
+     * vrai (deux boucles, deux AudioTrack), ni faire aboutir ses
+     * callbacks différés sur le set suivant.
+     */
+    @Volatile private var runGeneration = 0
     @Volatile private var paused = false
     @Volatile private var pendingJump = -1
     // Position visée par la barre de progression (-1 = aucune)
@@ -205,7 +213,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         startSegIndex = segments.indexOfFirst { it.phaseIndex >= startPhase }
             .let { if (it < 0) 0 else it }
         currentPhaseIndex = segments[startSegIndex].phaseIndex
-        mixThread = thread(name = "DjMixer", priority = Thread.MAX_PRIORITY) { runMix() }
+        runGeneration++
+        val gen = runGeneration
+        mixThread = thread(name = "DjMixer", priority = Thread.MAX_PRIORITY) { runMix(gen) }
     }
 
     fun stop() {
@@ -707,7 +717,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     // ------------------------------------------------------------- mix loop
 
-    private fun runMix() {
+    private fun runMix(gen: Int) {
         // Priorité temps-réel audio : Thread.MAX_PRIORITY (Java) n'influence
         // pas l'ordonnanceur Linux — écran verrouillé, le CPU ralentit et le
         // thread se faisait voler des cycles (saccades).
@@ -852,11 +862,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             announce(deckA)
             fastForward(deckA)
 
-            while (running) {
+            while (running && gen == runGeneration) {
                 // Pause (miroir du bouton play/pause et du Bluetooth)
                 if (paused) {
                     audioTrack.pause()
-                    while (paused && running) Thread.sleep(40)
+                    while (paused && running && gen == runGeneration) Thread.sleep(40)
                     if (!running) break
                     audioTrack.play()
                 }
@@ -1423,7 +1433,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     endFadeFrames -= BLOCK_FRAMES
                     if (endFadeFrames <= 0) break
                 }
-                if (na == 0 && deckB == null && a.segIndex + 1 >= segments.size) break
+                if (na == 0 && deckB == null &&
+                    (a.segIndex + 1 >= segments.size ||
+                        (!opening && failedForSeg == a.segIndex))
+                ) break
 
                 // Progression (toutes les ~0,7 s)
                 blockCount++
@@ -1455,9 +1468,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // `running` encore vrai = la boucle est sortie d'elle-même :
             // le set est allé à son terme (un stop() manuel l'aurait mis
             // à false avant). C'est ce qui déclenche l'enchaînement.
-            val natural = running
+            val natural = running && gen == runGeneration
             running = false
-            ui.post { listener.onStopped(natural) }
+            ui.post {
+                // Un nouveau set a démarré entre-temps : cette fin ne le
+                // concerne pas — la livrer mettait le set suivant en pause.
+                if (gen == runGeneration) listener.onStopped(natural)
+            }
         }
     }
 
@@ -1479,9 +1496,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     private fun announce(deck: Deck) {
         val t = deck.track
         val p = deck.segment.phaseIndex
+        val gen = runGeneration
         // Retardé de la latence du tampon de sortie : le morceau annoncé
-        // est celui qu'on entend, pas celui qu'on vient de calculer.
-        ui.postDelayed({ listener.onTrackChanged(t, p) }, outLatencyMs)
+        // est celui qu'on entend, pas celui qu'on vient de calculer. À la
+        // livraison, le set a pu être arrêté (et un autre mode lancé) :
+        // l'annonce d'un set mort écrasait le morceau courant du nouveau.
+        ui.postDelayed({
+            if (running && gen == runGeneration) listener.onTrackChanged(t, p)
+        }, outLatencyMs)
     }
 
     /**

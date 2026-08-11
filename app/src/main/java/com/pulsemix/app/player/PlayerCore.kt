@@ -343,6 +343,9 @@ object PlayerCore {
 
         mixer = DjMixer(appContext, object : DjMixer.Listener {
             override fun onTrackChanged(track: Track, phaseIndex: Int) {
+                // Annonce d'un set déjà arrêté (elle voyage ~1 s en différé) :
+                // ne pas écraser l'état d'un autre mode lancé entre-temps.
+                if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
                 prevDjUri = currentTrack.value?.uri
                 currentTrack.value = track
                 currentPhase.value = phaseIndex
@@ -434,6 +437,11 @@ object PlayerCore {
                     if (crossfade.value && d > 0 && isPlaying.value &&
                         exo.hasNextMediaItem() && exoTail == null &&
                         currentTrack.value?.uri != crossfadedFrom &&
+                        // Le morceau doit être PLUS LONG que la fenêtre :
+                        // sinon un titre de 12 s sous un fondu de 10 s
+                        // partait en fondu dès sa première seconde et
+                        // n'était entendu que comme queue du suivant.
+                        d > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
                         d - exo.currentPosition in
                         MIN_AUTO_CROSSFADE_REMAIN_MS..(CROSSFADE_MS + CROSSFADE_LEAD_MS)
                     ) {
@@ -523,7 +531,9 @@ object PlayerCore {
                     trebleExtraDb != 5f * trebleLevel.value ||
                     bassBoostExtraDb != 5f * bassLevel.value ||
                     exoSpeed != 1f + 0.08f * speedLevel.value ||
-                    mode.value == PlayerMode.DJ
+                    // DJ : seulement tant qu'un set tourne vraiment — mode
+                    // DJ au repos, ce réveil 2×/s ne servait qu'à la batterie
+                    (mode.value == PlayerMode.DJ && mixer.isRunning)
                 ) {
                     handler.postDelayed(this, 500)
                 } else {
@@ -647,6 +657,10 @@ object PlayerCore {
             return
         }
         launchMessage.value = null
+        // L'ancien set d'abord : son arrêt différé (posté sur le main
+        // looper) arrivait APRÈS le lancement du nouveau et le mettait en
+        // pause — coupé ici, ses callbacks périmés sont jetés par le mixer.
+        stopDjIfNeeded()
         mode.value = PlayerMode.DJ
         plan = mixPlan
         planName.value = mixPlan.name + " (DJ)"
@@ -2174,6 +2188,20 @@ object PlayerCore {
 
     fun releaseAll() {
         if (!initialized) return
+        // Tout ce qui vit à côté du lecteur principal doit partir avec lui :
+        // queue de fondu (second lecteur + égaliseur), queue pré-armée,
+        // égaliseur principal, réveils du ticker — sans ça, des AudioEffect
+        // et des instances ExoPlayer fuyaient, avec du son fantôme possible
+        // après fermeture.
+        stopTail()
+        releasePrepared()
+        try {
+            eqExo?.release()
+        } catch (_: Exception) {
+        }
+        eqExo = null
+        handler.removeCallbacksAndMessages(null)
+        tickerRunning = false
         mixer.stop()
         exo.release()
         initialized = false

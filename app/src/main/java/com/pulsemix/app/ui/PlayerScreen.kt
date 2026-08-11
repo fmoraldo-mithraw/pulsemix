@@ -123,7 +123,10 @@ fun PlayerScreen(
     var showDouceDialog by remember { mutableStateOf(false) }
     var showMixSheet by remember { mutableStateOf(false) }
     var mixSheetDj by remember { mutableStateOf(false) }
-    var showDeleteDialog by remember { mutableStateOf(false) }
+    // Le morceau à supprimer est FIGÉ à l'ouverture du dialogue : viser le
+    // morceau courant « en direct » supprimait le suivant si la lecture
+    // enchaînait pendant que le dialogue était ouvert — action définitive.
+    var deleteTarget by remember { mutableStateOf<com.pulsemix.app.data.Track?>(null) }
     var showQueueSheet by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
     var showFxSheet by remember { mutableStateOf(false) }
@@ -375,7 +378,7 @@ fun PlayerScreen(
             ) { Icon(Icons.Rounded.SkipNext, "Suivant") }
 
             IconButton(
-                onClick = { if (track != null) showDeleteDialog = true },
+                onClick = { deleteTarget = track },
                 enabled = track != null
             ) {
                 Icon(
@@ -484,10 +487,10 @@ fun PlayerScreen(
     }
 
     // -------------------------------------------------- confirmation suppression
-    val toDelete = track
-    if (showDeleteDialog && toDelete != null) {
+    val toDelete = deleteTarget
+    if (toDelete != null) {
         AlertDialog(
-            onDismissRequest = { showDeleteDialog = false },
+            onDismissRequest = { deleteTarget = null },
             title = { Text("Supprimer ce morceau ?") },
             text = {
                 Text(
@@ -498,11 +501,11 @@ fun PlayerScreen(
             confirmButton = {
                 Button(onClick = {
                     vm.deleteTrack(toDelete)
-                    showDeleteDialog = false
+                    deleteTarget = null
                 }) { Text("Supprimer") }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("Annuler") }
+                TextButton(onClick = { deleteTarget = null }) { Text("Annuler") }
             }
         )
     }
@@ -657,6 +660,19 @@ fun PlayerScreen(
                             listState.scrollToItem((currentIndex - 1).coerceAtLeast(0))
                         }
                     }
+                    // Clés par OCCURRENCE : l'URI seul plantait la liste dès
+                    // qu'une même chanson figurait deux fois dans la file
+                    // (clés dupliquées) ; l'index seul empêchait le nœud de
+                    // suivre l'élément pendant un glisser. L'URI, suffixé
+                    // seulement pour les doublons, donne les deux.
+                    val queueKeys = remember(queue) {
+                        val seen = HashMap<String, Int>()
+                        queue.map { t ->
+                            val n = (seen[t.uri] ?: 0) + 1
+                            seen[t.uri] = n
+                            if (n == 1) t.uri else "${t.uri}#$n"
+                        }
+                    }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.heightIn(max = 480.dp)
@@ -664,7 +680,7 @@ fun PlayerScreen(
                         // key : pendant un glisser, la ligne déménage dans la
                         // liste — le nœud (et le doigt posé dessus) doit
                         // suivre l'ÉLÉMENT, pas rester à la position.
-                        itemsIndexed(queue, key = { _, t -> t.uri }) { i, t ->
+                        itemsIndexed(queue, key = { i, _ -> queueKeys[i] }) { i, t ->
                             val isCurrent = i == currentIndex
                             // Déjà passé : estompé, pour que l'œil trouve tout
                             // de suite où en est la lecture.
