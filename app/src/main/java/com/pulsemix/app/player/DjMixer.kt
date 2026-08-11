@@ -426,11 +426,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     ) {
         val track: Track = segment.track
 
-        // Normalisation du volume : atténue/renforce vers un niveau commun
-        val gain: Float =
-            if (PlayerCore.normalizeVolume.value && track.energyMean > 0.01f)
+        // Normalisation du volume : atténue/renforce vers un niveau commun.
+        // Gain MESURÉ à l'analyse (gainDb != 0) de préférence, formule
+        // historique par energyMean sinon — mêmes bornes DJ dans les deux cas.
+        val gain: Float = when {
+            !PlayerCore.normalizeVolume.value -> 1f
+            track.gainDb != 0f ->
+                com.pulsemix.app.analysis.AudioAnalyzer.gainFactor(track.gainDb)
+                    .coerceIn(0.6f, 1.6f)
+            track.energyMean > 0.01f ->
                 (0.18f / track.energyMean).coerceIn(0.6f, 1.6f)
-            else 1f
+            else -> 1f
+        }
 
         @Volatile var closed = false
         @Volatile var decoderDone = false

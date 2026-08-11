@@ -103,6 +103,25 @@ object PlayerCore {
     val djRecording = MutableStateFlow(false)
 
     /**
+     * Mémoire de set DJ : message « set sauvegardé » (playlist + tracklist)
+     * à afficher après la fin d'un set, null sinon.
+     */
+    val lastSetSavedMessage = MutableStateFlow<String?>(null)
+
+    /** Un morceau joué pendant le set DJ en cours (horodatage relatif). */
+    private class SetEntry(
+        val uri: String,
+        val title: String,
+        val artist: String,
+        val tOffsetMs: Long
+    )
+
+    /** Journal du set DJ en cours (vidé par [flushDjSetLog]). */
+    private val djSetLog = ArrayList<SetEntry>()
+    private var djSetStartMs = 0L
+    private var djSetRehearsal = false
+
+    /**
      * Boosts progressifs (boutons) : basses et vitesse, par crans -3..+3.
      * Tap = +1 cran (retour à 0 après le max) ; appui long + glisser =
      * réglage fin, y compris en négatif (ralentir, couper les basses).
@@ -354,6 +373,19 @@ object PlayerCore {
                 currentIndex.value = queue.value.indexOfFirst { it.uri == track.uri }
                 nextTrack.value = djNextAfter(track.uri)
                 recordHistory(track.uri)
+                // Mémoire de set : chaque morceau annoncé rejoint le journal
+                // avec son décalage depuis le début du set. Pas en mode
+                // répétition — on n'y entend que des bouts de jonctions.
+                if (!djSetRehearsal) {
+                    synchronized(djSetLog) {
+                        djSetLog.add(
+                            SetEntry(
+                                track.uri, track.title, track.artist,
+                                System.currentTimeMillis() - djSetStartMs
+                            )
+                        )
+                    }
+                }
                 // Différé : le changement de piste DJ tombe en pleine
                 // transition battue, pas le moment d'aller peindre des widgets.
                 scheduleHousekeeping()
@@ -387,6 +419,9 @@ object PlayerCore {
                     exo.stop()
                     isPlaying.value = false
                 }
+                // Mémoire de set : le set est fini, son journal part en
+                // tracklist + playlist (si assez de morceaux joués).
+                flushDjSetLog()
                 djRecording.value = false
                 try {
                     eqDj?.release()
@@ -673,6 +708,13 @@ object PlayerCore {
         // looper) arrivait APRÈS le lancement du nouveau et le mettait en
         // pause — coupé ici, ses callbacks périmés sont jetés par le mixer.
         stopDjIfNeeded()
+        // Mémoire de set : le journal de l'ancien set est sauvegardé TOUT DE
+        // SUITE — son onStopped différé sera jeté par le mixer (génération
+        // périmée) dès que le nouveau set démarre, et arriverait de toute
+        // façon après la remise à zéro ci-dessous.
+        flushDjSetLog()
+        djSetStartMs = System.currentTimeMillis()
+        djSetRehearsal = rehearsal
         mode.value = PlayerMode.DJ
         plan = mixPlan
         planName.value = mixPlan.name + " (DJ)"
@@ -727,6 +769,62 @@ object PlayerCore {
             } catch (_: Exception) {
             }
         }
+    }
+
+    /**
+     * Mémoire de set DJ : si le set qui se termine a joué au moins 3
+     * morceaux, écrit une tracklist texte « HH:MM:SS — Artiste - Titre »
+     * dans le dossier des enregistrements (Mixes, le même que les M4A de
+     * [toggleDjRecording]) et sauvegarde la playlist « Set du <date>
+     * <heure> ». Le journal est vidé dans tous les cas : un second appel
+     * (onStopped après un flush anticipé) ne fait rien.
+     */
+    private fun flushDjSetLog() {
+        val startMs = djSetStartMs
+        val entries: List<SetEntry> = synchronized(djSetLog) {
+            val copy = ArrayList(djSetLog)
+            djSetLog.clear()
+            copy
+        }
+        // Moins de 3 morceaux : un test ou un faux départ, pas un set
+        if (entries.size < 3) return
+        // Secondes incluses : PlaylistStore.save remplace par nom, deux
+        // sets démarrés dans la même minute ne doivent pas s'écraser.
+        val stamp = java.text.SimpleDateFormat(
+            "dd/MM/yyyy HH:mm:ss", java.util.Locale.FRANCE
+        ).format(java.util.Date(startMs))
+        val name = "Set du $stamp"
+        // La playlist rejoue le set tel quel : les URIs, dans l'ordre joué
+        com.pulsemix.app.data.PlaylistStore.save(name, entries.map { it.uri })
+        // La tracklist, elle, est un fichier texte partageable
+        ioScope.launch {
+            val fileName = "PulseMix-set-${startMs / 1000}.txt"
+            try {
+                val dir = appContext.getExternalFilesDir("Mixes")
+                    ?: appContext.filesDir
+                java.io.File(dir, fileName).writeText(buildString {
+                    for (e in entries) {
+                        append(clockOffset(e.tOffsetMs)).append(" — ")
+                        if (e.artist.isNotBlank()) append(e.artist).append(" - ")
+                        append(e.title).append('\n')
+                    }
+                })
+                lastSetSavedMessage.value =
+                    "Set sauvegardé : playlist « $name » et tracklist $fileName."
+            } catch (_: Exception) {
+                // La playlist, au moins, est déjà sauvegardée
+                lastSetSavedMessage.value = "Set sauvegardé : playlist « $name »."
+            }
+        }
+    }
+
+    /** Décalage depuis le début du set → « HH:MM:SS » (tracklist). */
+    private fun clockOffset(ms: Long): String {
+        val s = ms.coerceAtLeast(0L) / 1000
+        return String.format(
+            java.util.Locale.US, "%02d:%02d:%02d",
+            s / 3600, (s % 3600) / 60, s % 60
+        )
     }
 
     /** Marque la transition qui vient de se produire comme ratée. */
@@ -1544,7 +1642,16 @@ object PlayerCore {
     /** Gain de normalisation (atténue les morceaux masterisés fort). */
     private fun normGain(t: Track?): Float {
         if (!normalizeVolume.value) return 1f
-        val e = t?.energyMean ?: return 1f
+        t ?: return 1f
+        // Gain MESURÉ à l'analyse (RMS global → dB, voir gainDbFor) : plus
+        // juste que l'approximation par energyMean. Seuls les morceaux
+        // passés par l'analyse récente le portent (gainDb != 0) ; les
+        // autres restent sur la formule historique ci-dessous.
+        if (t.gainDb != 0f) {
+            return com.pulsemix.app.analysis.AudioAnalyzer.gainFactor(t.gainDb)
+                .coerceIn(0.3f, 1.2f)
+        }
+        val e = t.energyMean
         if (e <= 0.01f) return 1f
         return (0.18f / e).coerceIn(0.45f, 1f)
     }

@@ -45,6 +45,29 @@ class AudioAnalyzer {
 
         val KRUMHANSL_MAJOR = doubleArrayOf(6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
         val KRUMHANSL_MINOR = doubleArrayOf(6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
+
+        /** Niveau cible de la normalisation de volume (RMS linéaire). Le
+         *  même 0,18 que les formules historiques de PlayerCore.normGain et
+         *  DjMixer.Deck.gain : le gain mesuré vise le même niveau perçu. */
+        const val LOUDNESS_TARGET = 0.18f
+
+        /**
+         * Gain de normalisation MESURÉ (ReplayGain maison), en dB : ce qu'il
+         * faut appliquer pour ramener [loudness] (RMS global linéaire 0..1)
+         * au niveau cible. Borné à ±8 dB — au-delà, on remonte du bruit de
+         * fond ou on écrase un master, plus de la correction. 0 = « pas de
+         * mesure » (morceau trop silencieux pour être fiable, ou analysé
+         * avant l'arrivée du champ) : les lecteurs retombent alors sur
+         * l'ancienne formule à base d'energyMean.
+         */
+        fun gainDbFor(loudness: Float, target: Float = LOUDNESS_TARGET): Float {
+            if (loudness <= 0.01f) return 0f
+            return (20f * kotlin.math.log10(target / loudness)).coerceIn(-8f, 8f)
+        }
+
+        /** dB → facteur linéaire (10^(dB/20)). Les bornes restent aux appelants. */
+        fun gainFactor(gainDb: Float): Float =
+            Math.pow(10.0, gainDb / 20.0).toFloat()
     }
 
     data class Features(
@@ -68,7 +91,14 @@ class AudioAnalyzer {
         /** Part de son tenu (0..1) : nappes, chœurs et cuivres contre percussions. */
         val sustainRatio: Float,
         /** Part de l'énergie entre 180 et 1200 Hz : voix massées et cuivres. */
-        val lowMidRatio: Float
+        val lowMidRatio: Float,
+        /**
+         * RMS global du morceau, linéaire 0..1 : sqrt(moyenne des carrés)
+         * sur TOUT le fichier. Proche d'[energyMean] (moyenne des RMS de
+         * bloc) mais pas identique — c'est la vraie base d'un gain de
+         * normalisation mesuré (voir [gainDbFor]).
+         */
+        val loudness: Float
     )
 
     suspend fun analyze(
@@ -129,7 +159,11 @@ class AudioAnalyzer {
                 lowMidRatio = if (state.centroidDen > 0.0)
                     (state.lowMidNum / state.centroidDen)
                         .coerceIn(0.0, 1.0).toFloat()
-                else 0f
+                else 0f,
+                // RMS global : racine de la moyenne des carrés des RMS de
+                // bloc (blocs de taille égale, le résidu final est ignoré)
+                loudness = if (rms.isEmpty()) 0f
+                else sqrt(rms.sumOf { (it * it).toDouble() } / rms.size).toFloat()
             )
         }
 

@@ -671,6 +671,55 @@ object MixEngine {
         )
     }
 
+    // --------------------------------------------------------- « et ensuite ? »
+
+    /**
+     * Les 5 meilleurs candidats pour enchaîner après [current] : mêmes
+     * ingrédients que [similarPlan] (tempo double/moitié admis, roue
+     * Camelot, continuité d'énergie), mais en fonction PURE — les pénalités
+     * d'historique ([penalize], 0..1 et plus = à éviter) et les paires
+     * marquées ratées ([isBadPair]) sont INJECTÉES au lieu de lire les
+     * singletons, pour être testable en JVM. Les morceaux exclus des mix ne
+     * sont jamais proposés ; notEpic ne concerne que le mix Épique et est
+     * ignoré ici.
+     */
+    fun suggestNext(
+        current: Track,
+        all: List<Track>,
+        penalize: (String) -> Float = { 0f },
+        isBadPair: (String, String) -> Boolean = { _, _ -> false }
+    ): List<Track> {
+        val candidates = all.filter {
+            it.analyzed && it.bpm > 0f && !it.excluded &&
+                it.uri != current.uri && !isBadPair(current.uri, it.uri)
+        }
+        if (candidates.isEmpty()) return emptyList()
+        val ref = if (current.bpm > 0f) current.bpm else 120f
+
+        fun score(t: Track): Float {
+            // Écart de tempo relatif, double/moitié admis (comme similarPlan)
+            val bpmDist = minOf(
+                abs(t.bpm - ref),
+                abs(t.bpm * 2f - ref),
+                abs(t.bpm / 2f - ref)
+            ) / ref
+            val harmonic = camelotScore(current.camelot, t.camelot)
+            // Continuité d'énergie : même échelle que cost() (0,15 ≈ un
+            // grand écart d'ambiance), bornée pour qu'un cas extrême
+            // n'écrase pas tout le reste du score
+            val energy = (abs(t.energyMean - current.energyMean) / 0.15f)
+                .coerceAtMost(3f)
+            return 1.5f * harmonic - 2.5f * bpmDist - 1.2f * energy -
+                1.5f * penalize(t.uri)
+        }
+
+        // Scores figés avant le tri : un sélecteur instable (pénalité
+        // recalculée à chaque comparaison) est un crash TimSort assuré
+        val scores = HashMap<String, Float>(candidates.size)
+        for (c in candidates) scores[c.uri] = score(c)
+        return candidates.sortedByDescending { scores[it.uri] }.take(5)
+    }
+
     private fun phaseOrNull(name: String, tracks: List<Track>): Phase? =
         if (tracks.isEmpty()) null else Phase(name, tracks)
 

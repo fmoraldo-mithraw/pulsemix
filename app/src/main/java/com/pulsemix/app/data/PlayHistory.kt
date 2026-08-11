@@ -51,6 +51,14 @@ object PlayHistory {
     fun count(uri: String): Int = counts[uri] ?: 0
 
     /**
+     * Dernière lecture du morceau (ms epoch), null si jamais vu. Persistant
+     * (mis à jour par [record]) — mais borné à [MAX] entrées : un morceau
+     * pas joué depuis très longtemps peut avoir été purgé, ce qui revient
+     * au même pour les règles « pas joué depuis N jours ».
+     */
+    fun lastPlayed(uri: String): Long? = map[uri]
+
+    /**
      * 0 = dans la norme, → 1 = beaucoup trop joué par rapport au reste de
      * la bibliothèque. Le malus démarre à 1,5× la moyenne des morceaux
      * joués et sature à 4× : un morceau sur-joué laisse la place aux

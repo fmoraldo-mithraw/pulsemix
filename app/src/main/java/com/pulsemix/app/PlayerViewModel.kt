@@ -59,6 +59,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         com.pulsemix.app.player.AlarmClock.setProgressive(getApplication(), enabled)
 
     init {
+        // Playlists intelligentes : chargement des règles persistées
+        // (idempotent, le ViewModel peut être recréé à la rotation).
+        com.pulsemix.app.data.SmartPlaylists.init(getApplication())
         // Scan automatique au démarrage : rafraîchit la bibliothèque, restaure
         // les sauvegardes des dossiers si besoin et les maintient à jour.
         viewModelScope.launch {
@@ -745,4 +748,78 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Nombre de morceaux « doux » pour un seuil de douceur donné (aperçu du dialogue). */
     fun softCount(softness: Float): Int =
         MixEngine.softSelection(tracks.value, softness).size
+
+    // ------------------------------------------------------ mémoire de set
+
+    /** Message « set sauvegardé » (playlist + tracklist) après un set DJ. */
+    val lastSetSavedMessage = PlayerCore.lastSetSavedMessage
+
+    fun clearLastSetSavedMessage() {
+        PlayerCore.lastSetSavedMessage.value = null
+    }
+
+    // --------------------------------------------- playlists intelligentes
+
+    val smartPlaylists = com.pulsemix.app.data.SmartPlaylists.playlists
+
+    fun addSmartPlaylist(name: String, rule: com.pulsemix.app.data.Rule) =
+        com.pulsemix.app.data.SmartPlaylists.add(name, rule)
+
+    fun removeSmartPlaylist(name: String) =
+        com.pulsemix.app.data.SmartPlaylists.remove(name)
+
+    /**
+     * Évalue la règle sur la bibliothèque du moment et lance la sélection.
+     * Hors du thread UI : la bibliothèque peut être grande.
+     */
+    fun playSmartPlaylist(name: String) {
+        val sp = smartPlaylists.value.firstOrNull { it.name == name } ?: return
+        viewModelScope.launch(Dispatchers.Default) {
+            val list = com.pulsemix.app.data.SmartPlaylists.evaluate(
+                sp.rule, tracks.value, System.currentTimeMillis()
+            ) { uri -> com.pulsemix.app.data.PlayHistory.lastPlayed(uri) }
+            withContext(Dispatchers.Main) {
+                if (list.isEmpty()) {
+                    PlayerCore.launchMessage.value =
+                        "« $name » : aucun morceau ne remplit la règle."
+                } else {
+                    PlayerCore.playNormal(list, 0)
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------ « et ensuite ? »
+
+    /**
+     * Les 5 morceaux qui enchaîneraient le mieux après [current] : score
+     * harmonique + tempo + énergie, moins la sur-écoute (PlayHistory), et
+     * jamais une paire marquée ratée (TransitionFeedback).
+     */
+    suspend fun suggestionsFor(current: Track): List<Track> =
+        withContext(Dispatchers.Default) {
+            MixEngine.suggestNext(
+                current, tracks.value,
+                penalize = { uri ->
+                    com.pulsemix.app.data.PlayHistory.overplayPenalty(uri)
+                },
+                isBadPair = { from, to ->
+                    com.pulsemix.app.data.TransitionFeedback.isBad(from, to)
+                }
+            )
+        }
+
+    // ------------------------------------------------------------- paroles
+
+    /** État des paroles du morceau demandé (Idle/Loading/Loaded/None). */
+    val lyricsState = com.pulsemix.app.library.Lyrics.state
+
+    /** Charge les paroles (.lrc local, cache, puis lrclib.net). */
+    fun loadLyrics(track: Track) {
+        viewModelScope.launch(Dispatchers.IO) {
+            com.pulsemix.app.library.Lyrics.load(getApplication(), track)
+        }
+    }
+
+    fun clearLyrics() = com.pulsemix.app.library.Lyrics.clear()
 }

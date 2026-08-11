@@ -63,7 +63,14 @@ data class Track(
      * Jamais dans le mix Épique, quoi qu'en disent son nom ou son profil
      * sonore — et jamais comme référence de ce que l'épique sonne.
      */
-    val notEpic: Boolean = false
+    val notEpic: Boolean = false,
+    /**
+     * Gain de normalisation MESURÉ (dB, ±8), calculé à l'analyse depuis le
+     * RMS global (voir AudioAnalyzer.gainDbFor). 0 = pas de mesure (morceau
+     * analysé avant l'arrivée du champ, pas de réanalyse forcée) : les
+     * lecteurs retombent alors sur l'ancienne formule à base d'energyMean.
+     */
+    val gainDb: Float = 0f
 )
 
 /**
@@ -220,6 +227,7 @@ class TrackStore(context: Context) {
             o.put("lowMidRatio", t.lowMidRatio.toDouble())
             o.put("featuresVersion", t.featuresVersion)
             o.put("notEpic", t.notEpic)
+            o.put("gainDb", t.gainDb.toDouble())
             return o
         }
 
@@ -251,7 +259,8 @@ class TrackStore(context: Context) {
             sustainRatio = o.optDouble("sustainRatio", 0.0).toFloat(),
             lowMidRatio = o.optDouble("lowMidRatio", 0.0).toFloat(),
             featuresVersion = o.optInt("featuresVersion", 0),
-            notEpic = o.optBoolean("notEpic", false)
+            notEpic = o.optBoolean("notEpic", false),
+            gainDb = o.optDouble("gainDb", 0.0).toFloat()
         )
     }
 

@@ -270,7 +270,14 @@ object LibraryScanner {
                                         dynamicSpread = features.dynamicSpread,
                                         sustainRatio = features.sustainRatio,
                                         lowMidRatio = features.lowMidRatio,
-                                        featuresVersion = AudioAnalyzer.FEATURES_VERSION
+                                        featuresVersion = AudioAnalyzer.FEATURES_VERSION,
+                                        // Gain de normalisation MESURÉ (RMS
+                                        // global) : seuls les morceaux qui
+                                        // passent par l'analyse l'obtiennent
+                                        // — pas de bump de FEATURES_VERSION,
+                                        // les autres gardent l'ancienne
+                                        // formule (gainDb = 0).
+                                        gainDb = AudioAnalyzer.gainDbFor(features.loudness)
                                     )
                                 } else {
                                     Track(

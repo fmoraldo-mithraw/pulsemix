@@ -29,7 +29,9 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Audiotrack
+import androidx.compose.material.icons.rounded.Notes
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.FilterAlt
@@ -89,6 +91,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -100,6 +103,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pulsemix.app.PlayerViewModel
 import com.pulsemix.app.data.Track
+import com.pulsemix.app.library.Lyrics
 import com.pulsemix.app.mix.MixEngine
 import com.pulsemix.app.player.PlayerMode
 
@@ -131,6 +135,8 @@ fun PlayerScreen(
     var showSleepDialog by remember { mutableStateOf(false) }
     var showFxSheet by remember { mutableStateOf(false) }
     var showTrackOptions by remember { mutableStateOf(false) }
+    var showSuggestions by remember { mutableStateOf(false) }
+    var showLyricsSheet by remember { mutableStateOf(false) }
     val sleepRemaining by vm.sleepRemainingMs.collectAsStateWithLifecycle()
 
     // Pas de défilement vertical : tout l'écran lecteur tient à l'écran
@@ -448,6 +454,19 @@ fun PlayerScreen(
                     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
             }
+            // Paroles synchronisées du morceau en cours
+            IconButton(
+                onClick = { showLyricsSheet = true },
+                enabled = track != null
+            ) {
+                Icon(
+                    Icons.Rounded.Notes, "Paroles",
+                    tint = if (showLyricsSheet) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface.copy(
+                        alpha = if (track != null) 0.6f else 0.25f
+                    )
+                )
+            }
             // Menu du morceau en cours (le même que dans la bibliothèque)
             IconButton(
                 onClick = { showTrackOptions = true },
@@ -474,6 +493,142 @@ fun PlayerScreen(
                         Icons.Rounded.ThumbDown, "Transition ratée",
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
+                }
+            }
+        }
+
+        // ------------------------------------------------ « set sauvegardé »
+        // Après un set DJ enregistré : dire où il est parti (playlist +
+        // tracklist), avec un OK pour l'acquitter.
+        val setSavedMsg by vm.lastSetSavedMessage.collectAsStateWithLifecycle()
+        setSavedMsg?.let { msg ->
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    msg,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { vm.clearLastSetSavedMessage() }) {
+                    Text("OK")
+                }
+            }
+        }
+
+        // ------------------------------------------------- « et ensuite ? »
+        // Suggestions d'enchaînement (hors DJ : le set y est déjà décidé).
+        if ((mode == PlayerMode.NORMAL || mode == PlayerMode.MIX) && track != null) {
+            TextButton(onClick = { showSuggestions = !showSuggestions }) {
+                Text(
+                    "Et ensuite ?",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (showSuggestions) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
+            if (showSuggestions) {
+                var suggestions by remember { mutableStateOf<List<Track>?>(null) }
+                var added by remember { mutableStateOf(setOf<String>()) }
+                // À l'ouverture, puis à chaque changement de morceau tant que
+                // la section reste ouverte.
+                LaunchedEffect(track?.uri) {
+                    suggestions = null
+                    added = emptySet()
+                    track?.let { suggestions = vm.suggestionsFor(it) }
+                }
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Ça enchaînerait bien :",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { showSuggestions = false },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Close, "Fermer",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                        .copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                        val sugg = suggestions
+                        when {
+                            sugg == null -> Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "Recherche…",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                            sugg.isEmpty() -> Text(
+                                "Aucune suggestion : pas assez de morceaux analysés.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.6f),
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                            else -> for (s in sugg) {
+                                val done = added.contains(s.uri)
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            s.title,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                                .copy(alpha = if (done) 0.35f else 1f)
+                                        )
+                                        Text(
+                                            listOfNotNull(
+                                                s.artist.takeIf { it.isNotBlank() },
+                                                "${s.bpm} BPM · ${s.camelot}"
+                                            ).joinToString(" — "),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                                .copy(alpha = if (done) 0.3f else 0.6f)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            vm.playNext(s)
+                                            added = added + s.uri
+                                        },
+                                        enabled = !done,
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.Add, "Jouer ensuite",
+                                            tint = if (done)
+                                                MaterialTheme.colorScheme.onSurface
+                                                    .copy(alpha = 0.25f)
+                                            else MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -822,6 +977,112 @@ fun PlayerScreen(
         )
     }
 
+    // ------------------------------------------------- feuille des paroles
+    if (showLyricsSheet) {
+        val lyrics by vm.lyricsState.collectAsStateWithLifecycle()
+        // Chargées à l'ouverture, rechargées si le morceau change pendant
+        // que la feuille est ouverte.
+        LaunchedEffect(track?.uri) {
+            track?.let { vm.loadLyrics(it) }
+        }
+        ModalBottomSheet(onDismissRequest = {
+            showLyricsSheet = false
+            vm.clearLyrics()
+        }) {
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Paroles",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = {
+                        showLyricsSheet = false
+                        vm.clearLyrics()
+                    }) {
+                        Icon(
+                            Icons.Rounded.Close, "Fermer",
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                when (val st = lyrics) {
+                    is Lyrics.State.Loaded -> {
+                        val lines = st.lines
+                        // Toutes les lignes à 0 ms = paroles non
+                        // synchronisées : rien à surligner ni à suivre.
+                        // En DJ non plus : la progression est celle du
+                        // SEGMENT joué par le deck, pas du morceau entier
+                        // — le calage serait faux.
+                        val synced = lines.any { it.first > 0L } &&
+                            mode != PlayerMode.DJ
+                        val durMs = track?.durationMs ?: 0L
+                        val posMs = (progress * durMs).toLong()
+                        val currentLine =
+                            if (synced) lines.indexOfLast { it.first <= posMs }
+                            else -1
+                        val listState = rememberLazyListState()
+                        // Suivi throttlé : on ne défile que quand la ligne
+                        // courante change, jamais à chaque tick de position.
+                        LaunchedEffect(currentLine) {
+                            if (currentLine >= 0) {
+                                listState.animateScrollToItem(
+                                    (currentLine - 2).coerceAtLeast(0)
+                                )
+                            }
+                        }
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.heightIn(max = 480.dp)
+                        ) {
+                            itemsIndexed(lines) { i, line ->
+                                val isCurrent = i == currentLine
+                                Text(
+                                    line.second,
+                                    style = if (isCurrent)
+                                        MaterialTheme.typography.titleMedium
+                                    else MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (isCurrent) FontWeight.Bold
+                                    else null,
+                                    color = if (isCurrent)
+                                        MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface
+                                        .copy(alpha = 0.7f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 3.dp)
+                                )
+                            }
+                            item { Spacer(Modifier.height(24.dp)) }
+                        }
+                    }
+                    is Lyrics.State.None -> {
+                        Text(
+                            "Pas de paroles trouvées.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                                .copy(alpha = 0.7f)
+                        )
+                        Spacer(Modifier.height(24.dp))
+                    }
+                    else -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text("Recherche des paroles…")
+                        }
+                        Spacer(Modifier.height(24.dp))
+                    }
+                }
+            }
+        }
+    }
+
     // ----------------------------------------------------- feuille des mix
     if (showMixSheet) {
         // Plans figés à l'ouverture et calculés en arrière-plan : pas de
@@ -947,6 +1208,12 @@ fun PlayerScreen(
                                         plan, mixSheetDj, targetMin, selectedGenre
                                     )
                                     showMixSheet = false
+                                },
+                                onStartEdited = { edited, dj ->
+                                    vm.startMix(
+                                        edited, dj, targetMin, selectedGenre
+                                    )
+                                    showMixSheet = false
                                 }
                             )
                             Spacer(Modifier.height(10.dp))
@@ -968,15 +1235,221 @@ private fun removeTrackFromPlan(plan: MixEngine.MixPlan, track: Track): MixEngin
         }
     )
 
+// -------------------------------------------------- éditeur de plan de mix
+
+/** Écart de tempo relatif ≤ 8 % (les deux BPM connus). */
+private fun bpmClose(a: Float, b: Float): Boolean =
+    a > 0f && b > 0f && kotlin.math.abs(a - b) / a <= 0.08f
+
+/**
+ * Qualité d'une transition a → b, fonction PURE :
+ *  2 (vert)   = tonalité compatible (Camelot ≥ 0,8) ET tempo proche
+ *               (écart relatif ≤ 8 %, double/moitié admis) ;
+ *  1 (orange) = l'un des deux seulement ;
+ *  0 (rouge)  = aucun.
+ */
+private fun transitionQuality(a: Track, b: Track): Int {
+    val keyOk = MixEngine.camelotScore(a.camelot, b.camelot) >= 0.8f
+    val bpmOk = bpmClose(a.bpm, b.bpm) ||
+        bpmClose(a.bpm, b.bpm * 2f) ||
+        bpmClose(a.bpm, b.bpm / 2f)
+    return when {
+        keyOk && bpmOk -> 2
+        keyOk || bpmOk -> 1
+        else -> 0
+    }
+}
+
+/**
+ * Reconstruit un plan à partir de la liste aplatie éditée. Tant que chaque
+ * phase reste d'un seul tenant, les phases d'origine sont reconstituées
+ * (avec leurs tailles restantes) ; un réordonnancement à travers les phases
+ * donne une seule phase « Mix modifié » — plus simple et honnête.
+ */
+private fun rebuildPlan(
+    plan: MixEngine.MixPlan,
+    entries: List<Pair<String, Track>>
+): MixEngine.MixPlan {
+    val runs = ArrayList<Pair<String, MutableList<Track>>>()
+    for ((phase, t) in entries) {
+        val last = runs.lastOrNull()
+        if (last != null && last.first == phase) last.second.add(t)
+        else runs.add(phase to mutableListOf(t))
+    }
+    val names = runs.map { it.first }
+    val phases =
+        if (names.size == names.distinct().size)
+            runs.map { MixEngine.Phase(it.first, it.second) }
+        else listOf(MixEngine.Phase("Mix modifié", entries.map { it.second }))
+    return MixEngine.MixPlan(plan.id, plan.name, plan.description, phases)
+}
+
+/**
+ * Édition d'un plan proposé : morceaux supprimables (croix), déplaçables
+ * (▲▼), et entre deux morceaux un badge ● vert/orange/rouge sur la qualité
+ * de la transition. Lancement direct en mix ou en DJ.
+ */
+@Composable
+private fun MixPlanEditorDialog(
+    plan: MixEngine.MixPlan,
+    onDismiss: () -> Unit,
+    onStart: (MixEngine.MixPlan, Boolean) -> Unit
+) {
+    // Toutes les phases aplaties : (nom de phase, morceau)
+    var entries by remember(plan) {
+        mutableStateOf(
+            plan.phases.flatMap { ph -> ph.tracks.map { ph.name to it } }
+        )
+    }
+    fun swap(a: Int, b: Int) {
+        if (a !in entries.indices || b !in entries.indices) return
+        val m = entries.toMutableList()
+        val tmp = m[a]
+        m[a] = m[b]
+        m[b] = tmp
+        entries = m
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Modifier « ${plan.name} »") },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    "● vert : tonalité et tempo compatibles · orange : l'un " +
+                        "des deux · rouge : aucun.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                if (entries.isEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Plus aucun morceau dans ce plan.")
+                }
+                entries.forEachIndexed { i, entry ->
+                    val (phase, t) = entry
+                    // Badge de transition depuis le morceau précédent
+                    if (i > 0) {
+                        val q = transitionQuality(entries[i - 1].second, t)
+                        Text(
+                            "●",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when (q) {
+                                2 -> Color(0xFF43A047)
+                                1 -> Color(0xFFFB8C00)
+                                else -> Color(0xFFE53935)
+                            },
+                            modifier = Modifier.padding(start = 12.dp)
+                        )
+                    }
+                    // En-tête de phase (au premier morceau de chaque suite)
+                    if (i == 0 || entries[i - 1].first != phase) {
+                        Text(
+                            phase,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                t.title,
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "${t.bpm} BPM · ${t.camelot}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.6f)
+                            )
+                        }
+                        IconButton(
+                            onClick = { swap(i, i - 1) },
+                            enabled = i > 0,
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Text(
+                                "▲",
+                                color = MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = if (i > 0) 0.7f else 0.25f)
+                            )
+                        }
+                        IconButton(
+                            onClick = { swap(i, i + 1) },
+                            enabled = i < entries.size - 1,
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Text(
+                                "▼",
+                                color = MaterialTheme.colorScheme.onSurface.copy(
+                                    alpha = if (i < entries.size - 1) 0.7f else 0.25f
+                                )
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                entries = entries.toMutableList()
+                                    .also { it.removeAt(i) }
+                            },
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.Close, "Retirer",
+                                tint = MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(
+                    enabled = entries.isNotEmpty(),
+                    onClick = { onStart(rebuildPlan(plan, entries), false) }
+                ) { Text("Lancer en mix") }
+                Button(
+                    enabled = entries.isNotEmpty(),
+                    onClick = { onStart(rebuildPlan(plan, entries), true) }
+                ) { Text("Lancer en DJ") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Fermer") }
+        }
+    )
+}
+
 @Composable
 private fun MixPlanCard(
     plan: MixEngine.MixPlan,
     dj: Boolean,
     onRemoveTrack: (Track) -> Unit,
     onRehearse: () -> Unit,
-    onStart: () -> Unit
+    onStart: () -> Unit,
+    onStartEdited: (MixEngine.MixPlan, Boolean) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showEditor by remember { mutableStateOf(false) }
+    if (showEditor) {
+        MixPlanEditorDialog(
+            plan = plan,
+            onDismiss = { showEditor = false },
+            onStart = { edited, djMode ->
+                showEditor = false
+                onStartEdited(edited, djMode)
+            }
+        )
+    }
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1036,6 +1509,10 @@ private fun MixPlanCard(
             Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
                 Text(if (dj) "Lancer en DJ" else "Lancer le mix")
             }
+            TextButton(
+                onClick = { showEditor = true },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Modifier…") }
             if (dj) {
                 TextButton(onClick = onRehearse, modifier = Modifier.fillMaxWidth()) {
                     Text("Répéter les transitions (jonctions seules)")

@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,12 +39,14 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,9 +55,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.pulsemix.app.data.Rule
 import com.pulsemix.app.library.SongRecognizer
 import com.pulsemix.app.PlayerViewModel
 import kotlinx.coroutines.delay
@@ -91,6 +97,10 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     // le bouton « m3u » restait muet. Horodatage en clé pour que le message
     // se réarme même en ré-exportant la même playlist.
     var exportInfo by remember { mutableStateOf<Pair<Long, String>?>(null) }
+    // Playlists intelligentes : suppression confirmée + dialogue de création
+    val smartPlaylists by vm.smartPlaylists.collectAsStateWithLifecycle()
+    var deleteSmartTarget by remember { mutableStateOf<String?>(null) }
+    var showNewRule by remember { mutableStateOf(false) }
 
     deleteTarget?.let { name ->
         AlertDialog(
@@ -110,6 +120,41 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { deleteTarget = null }) { Text("Annuler") }
+            }
+        )
+    }
+
+    deleteSmartTarget?.let { name ->
+        AlertDialog(
+            onDismissRequest = { deleteSmartTarget = null },
+            title = { Text("Supprimer la règle « $name » ?") },
+            text = {
+                Text(
+                    "La playlist intelligente sera supprimée — c'est " +
+                        "définitif. Les morceaux, eux, ne bougent pas."
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    vm.removeSmartPlaylist(name)
+                    deleteSmartTarget = null
+                }) { Text("Supprimer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteSmartTarget = null }) {
+                    Text("Annuler")
+                }
+            }
+        )
+    }
+
+    if (showNewRule) {
+        NewSmartRuleDialog(
+            existingNames = smartPlaylists.map { it.name }.toSet(),
+            onDismiss = { showNewRule = false },
+            onCreate = { name, rule ->
+                vm.addSmartPlaylist(name, rule)
+                showNewRule = false
             }
         )
     }
@@ -149,7 +194,9 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(4.dp))
-            LazyColumn {
+            // weight : laisse la place à la section « Playlists
+            // intelligentes » en bas, même avec une longue liste.
+            LazyColumn(Modifier.weight(1f, fill = false)) {
                 items(playlists, key = { it.name }) { pl ->
                     Row(
                         Modifier
@@ -191,7 +238,239 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 }
             }
         }
+
+        // ------------------------------------------ playlists intelligentes
+        Spacer(Modifier.height(12.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Playlists intelligentes",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { showNewRule = true }) {
+                Text("Nouvelle règle…")
+            }
+        }
+        if (smartPlaylists.isEmpty()) {
+            Text(
+                "Des règles (BPM, genre, énergie…) évaluées sur la " +
+                    "bibliothèque au moment de jouer.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+        } else {
+            Text(
+                "Appuie sur une règle pour lancer la sélection du moment.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+            LazyColumn(Modifier.heightIn(max = 220.dp)) {
+                items(smartPlaylists, key = { it.name }) { sp ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                vm.playSmartPlaylist(sp.name)
+                                onBack()
+                            }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                sp.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                ruleSummary(sp.rule),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.6f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(onClick = { deleteSmartTarget = sp.name }) {
+                            Icon(
+                                Icons.Rounded.Close, "Supprimer",
+                                tint = MaterialTheme.colorScheme.onSurface
+                                    .copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                }
+            }
+        }
     }
+}
+
+/** Résumé lisible d'une règle : « BPM 120-130 · énergie ≥ 0,5 · pas jouée
+ *  depuis 30 j ». */
+private fun ruleSummary(r: Rule): String {
+    val parts = ArrayList<String>()
+    val min = r.minBpm?.toInt()
+    val max = r.maxBpm?.toInt()
+    when {
+        min != null && max != null -> parts.add("BPM $min-$max")
+        min != null -> parts.add("BPM ≥ $min")
+        max != null -> parts.add("BPM ≤ $max")
+    }
+    r.genre?.let { parts.add(it) }
+    r.minEnergy?.let { parts.add("énergie ≥ ${frDecimal(it)}") }
+    r.maxEnergy?.let { parts.add("énergie ≤ ${frDecimal(it)}") }
+    r.notPlayedDays?.let { parts.add("pas jouée depuis $it j") }
+    if (r.favoritesOnly == true) parts.add("favoris seulement")
+    return if (parts.isEmpty()) "tous les morceaux" else parts.joinToString(" · ")
+}
+
+/** 0.5f → « 0,5 » (virgule française). */
+private fun frDecimal(v: Float): String =
+    String.format(java.util.Locale.FRENCH, "%.1f", v)
+
+/**
+ * Création d'une playlist intelligente : nom + critères optionnels (vides =
+ * pas de filtre), construit une [Rule] et la remonte via [onCreate].
+ */
+@Composable
+private fun NewSmartRuleDialog(
+    existingNames: Set<String>,
+    onDismiss: () -> Unit,
+    onCreate: (String, Rule) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var minBpm by remember { mutableStateOf("") }
+    var maxBpm by remember { mutableStateOf("") }
+    var genre by remember { mutableStateOf("") }
+    var useEnergy by remember { mutableStateOf(false) }
+    var minEnergy by remember { mutableFloatStateOf(0.5f) }
+    var notPlayed by remember { mutableStateOf("") }
+    var favoritesOnly by remember { mutableStateOf(false) }
+    val numberKeyboard = KeyboardOptions(keyboardType = KeyboardType.Number)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nouvelle règle") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Chaque critère est optionnel : vide = pas de filtre.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Nom") },
+                    singleLine = true,
+                    // Créer sous un nom déjà pris REMPLACE la règle
+                    // existante : prévenir plutôt que d'écraser en silence.
+                    supportingText = if (name.trim() in existingNames) {
+                        { Text("Ce nom existe déjà : la règle sera remplacée.") }
+                    } else null
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = minBpm,
+                        onValueChange = { minBpm = it },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("BPM min") },
+                        singleLine = true,
+                        keyboardOptions = numberKeyboard
+                    )
+                    OutlinedTextField(
+                        value = maxBpm,
+                        onValueChange = { maxBpm = it },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("BPM max") },
+                        singleLine = true,
+                        keyboardOptions = numberKeyboard
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = genre,
+                    onValueChange = { genre = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Genre") },
+                    singleLine = true
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { useEnergy = !useEnergy }
+                ) {
+                    Checkbox(
+                        checked = useEnergy,
+                        onCheckedChange = { useEnergy = it }
+                    )
+                    Text(
+                        if (useEnergy) "Énergie min : ${frDecimal(minEnergy)}"
+                        else "Filtrer sur l'énergie",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                if (useEnergy) {
+                    Slider(
+                        value = minEnergy,
+                        onValueChange = { minEnergy = it },
+                        valueRange = 0f..1f
+                    )
+                }
+                OutlinedTextField(
+                    value = notPlayed,
+                    onValueChange = { notPlayed = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Pas joué depuis (jours)") },
+                    singleLine = true,
+                    keyboardOptions = numberKeyboard
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { favoritesOnly = !favoritesOnly }
+                ) {
+                    Switch(
+                        checked = favoritesOnly,
+                        onCheckedChange = { favoritesOnly = it }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Favoris seulement",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = name.isNotBlank(),
+                onClick = {
+                    onCreate(
+                        name.trim(),
+                        Rule(
+                            minBpm = minBpm.trim().toFloatOrNull(),
+                            maxBpm = maxBpm.trim().toFloatOrNull(),
+                            genre = genre.trim().takeIf { it.isNotBlank() },
+                            minEnergy = if (useEnergy) minEnergy else null,
+                            notPlayedDays = notPlayed.trim().toIntOrNull(),
+                            favoritesOnly = if (favoritesOnly) true else null
+                        )
+                    )
+                }
+            ) { Text("Créer") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Annuler") }
+        }
+    )
 }
 
 /**

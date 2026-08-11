@@ -83,18 +83,19 @@ object UrlImporter {
                     )
                     return@withContext
                 }
-                var imported = 0
+                val imported = ArrayList<DocumentFile>()
                 for ((i, t) in targets.withIndex()) {
                     if (stopRequested) break
                     _state.value = State.Working(
                         "Téléchargement : ${t.name}", i, targets.size
                     )
-                    if (downloadTo(context, root, t)) imported++
+                    downloadTo(context, root, t)?.let { imported.add(it) }
                 }
                 _state.value = State.Done(
-                    imported,
-                    if (imported == 0) "Rien n'a pu être importé."
-                    else "$imported fichier(s) importé(s). Analyse en cours…"
+                    imported.size,
+                    if (imported.isEmpty()) "Rien n'a pu être importé."
+                    else "${imported.size} fichier(s) importé(s). " +
+                        "Analyse en cours…" + duplicateWarning(context, imported)
                 )
             } catch (e: Exception) {
                 _state.value = State.Error(
@@ -130,18 +131,19 @@ object UrlImporter {
                 }
                 return
             }
-            var imported = 0
+            val imported = ArrayList<DocumentFile>()
             for ((i, f) in files.withIndex()) {
                 if (stopRequested) break
                 _state.value = State.Working(
                     "Copie : ${f.name}", i, files.size
                 )
-                if (copyLocalFile(context, root, f)) imported++
+                copyLocalFile(context, root, f)?.let { imported.add(it) }
             }
             _state.value = State.Done(
-                imported,
-                if (imported == 0) "Rien n'a pu être importé."
-                else "$imported fichier(s) importé(s). Analyse en cours…"
+                imported.size,
+                if (imported.isEmpty()) "Rien n'a pu être importé."
+                else "${imported.size} fichier(s) importé(s). " +
+                    "Analyse en cours…" + duplicateWarning(context, imported)
             )
         } catch (e: Exception) {
             _state.value = if (stopRequested) {
@@ -159,12 +161,13 @@ object UrlImporter {
         }
     }
 
-    /** Copie un fichier local (cache) vers le dossier SAF de la bibliothèque. */
+    /** Copie un fichier local (cache) vers le dossier SAF de la bibliothèque.
+     *  @return le document créé, null en cas d'échec. */
     private fun copyLocalFile(
         context: Context,
         root: DocumentFile,
         src: java.io.File
-    ): Boolean {
+    ): DocumentFile? {
         return try {
             val name = uniqueName(root, sanitize(src.name))
             val mime = when {
@@ -175,16 +178,16 @@ object UrlImporter {
                 name.endsWith(".wav") -> "audio/wav"
                 else -> "audio/*"
             }
-            val doc = root.createFile(mime, name) ?: return false
+            val doc = root.createFile(mime, name) ?: return null
             val out = context.contentResolver.openOutputStream(doc.uri)
             if (out == null) {
                 doc.delete()
-                return false
+                return null
             }
             out.use { o -> src.inputStream().use { it.copyTo(o, 64 * 1024) } }
-            true
+            doc
         } catch (_: Exception) {
-            false
+            null
         }
     }
 
@@ -281,11 +284,12 @@ object UrlImporter {
 
     // ---------------------------------------------------------- transfert
 
+    /** @return le document créé, null en cas d'échec. */
     private fun downloadTo(
         context: Context,
         root: DocumentFile,
         t: Target
-    ): Boolean {
+    ): DocumentFile? {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(t.url).openConnection() as HttpURLConnection).apply {
@@ -296,7 +300,7 @@ object UrlImporter {
             }
             val type = conn.contentType ?: ""
             // Refuser une page HTML renvoyée à la place d'un média
-            if (type.startsWith("text/") || type.contains("html")) return false
+            if (type.startsWith("text/") || type.contains("html")) return null
             val name = uniqueName(root, sanitize(t.name).ensureExt(t.url, type))
             val mime = when {
                 type.startsWith("audio/") -> type.substringBefore(';')
@@ -307,7 +311,7 @@ object UrlImporter {
                 name.endsWith(".wav") -> "audio/wav"
                 else -> "audio/*"
             }
-            val doc = root.createFile(mime, name) ?: return false
+            val doc = root.createFile(mime, name) ?: return null
             context.contentResolver.openOutputStream(doc.uri)?.use { out ->
                 conn.inputStream.use { input ->
                     val buf = ByteArray(64 * 1024)
@@ -315,7 +319,7 @@ object UrlImporter {
                     while (true) {
                         if (stopRequested) {
                             doc.delete()
-                            return false
+                            return null
                         }
                         val r = input.read(buf)
                         if (r < 0) break
@@ -324,17 +328,98 @@ object UrlImporter {
                     }
                     if (total < 8_192) { // fichier suspect (erreur, page vide)
                         doc.delete()
-                        return false
+                        return null
                     }
                 }
-                return true
+                return doc
             }
             doc.delete()
-            false
+            null
         } catch (_: Exception) {
-            false
+            null
         } finally {
             conn?.disconnect()
+        }
+    }
+
+    // -------------------------------------------------- garde anti-doublon
+
+    /**
+     * Compare les fichiers importés à la bibliothèque : nom de fichier
+     * normalisé (mêmes mots) ET durée à ±7 s. En cas de forte ressemblance,
+     * le message final le signale — sans rien empêcher : le fichier est
+     * importé, l'utilisateur décide.
+     */
+    private fun duplicateWarning(
+        context: Context,
+        imported: List<DocumentFile>
+    ): String {
+        val library = try {
+            com.pulsemix.app.Graph.store.tracks.value
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val sb = StringBuilder()
+        // Fichiers déjà traités du MÊME lot (tokens, durée, nom affiché) :
+        // une playlist YouTube peut contenir deux uploads du même titre —
+        // la bibliothèque ne les connaît pas encore (le rescan n'a pas eu
+        // lieu), il faut donc aussi comparer les importés entre eux.
+        data class BatchEntry(val tokens: Set<String>, val durMs: Long, val label: String)
+        val batch = ArrayList<BatchEntry>()
+        for (doc in imported) {
+            val name = (doc.name ?: continue).substringBeforeLast('.')
+            val fileTokens = NameMatch.tokens(name)
+            if (fileTokens.isEmpty()) continue
+            val durMs = mediaDurationMs(context, doc)
+            if (durMs <= 0L) continue // durée illisible : pas de verdict fiable
+            var bestLabel: String? = null
+            var bestSim = 0f
+            for (t in library) {
+                if (t.durationMs <= 0L) continue
+                if (kotlin.math.abs(t.durationMs - durMs) > 7_000L) continue
+                val sim = NameMatch.similarityToFile(fileTokens, t.title, t.artist)
+                    .coerceAtLeast(
+                        NameMatch.similarity(fileTokens, NameMatch.tokens(t.title))
+                    )
+                if (sim > bestSim) {
+                    bestSim = sim
+                    bestLabel = buildString {
+                        if (t.artist.isNotBlank()) append(t.artist).append(" - ")
+                        append(t.title)
+                    }
+                }
+            }
+            for (b in batch) {
+                if (kotlin.math.abs(b.durMs - durMs) > 7_000L) continue
+                val sim = NameMatch.similarity(fileTokens, b.tokens)
+                if (sim > bestSim) {
+                    bestSim = sim
+                    bestLabel = "${b.label} (même import)"
+                }
+            }
+            batch.add(BatchEntry(fileTokens, durMs, name))
+            if (bestLabel != null && bestSim >= 0.6f) {
+                sb.append("\n⚠ Doublon probable de : ").append(bestLabel)
+            }
+        }
+        return sb.toString()
+    }
+
+    /** Durée du fichier importé (MediaMetadataRetriever), 0 si illisible. */
+    private fun mediaDurationMs(context: Context, doc: DocumentFile): Long {
+        val mmr = android.media.MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(context, doc.uri)
+            mmr.extractMetadata(
+                android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+            )?.toLongOrNull() ?: 0L
+        } catch (_: Exception) {
+            0L
+        } finally {
+            try {
+                mmr.release()
+            } catch (_: Exception) {
+            }
         }
     }
 
