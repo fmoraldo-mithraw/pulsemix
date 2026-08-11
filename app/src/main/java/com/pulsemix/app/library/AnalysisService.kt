@@ -69,6 +69,9 @@ class AnalysisService : Service() {
         // termine dès que le scan a lâché le fichier en cours.
         if (intent?.action == ACTION_STOP) {
             LibraryScanner.requestStop()
+            // Rien ne tourne (appui sur une notification résiduelle) : sans
+            // stopSelf, le service restait en avant-plan indéfiniment.
+            if (!running) stopSelf()
             return START_NOT_STICKY
         }
 

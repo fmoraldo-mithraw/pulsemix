@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -227,6 +228,16 @@ object PlayerCore {
     // Persistance de l'état de lecture (reprise après fermeture/veille/plantage)
     private lateinit var stateStore: PlaybackStateStore
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Un SEUL fil pour écrire l'état : deux sauvegardes simultanées (tick
+     * de position + travaux ménagers différés) écrivaient le même fichier
+     * temporaire — état de reprise corrompu ou instantané ancien qui
+     * écrase le récent.
+     */
+    private val stateWriter = java.util.concurrent.Executors
+        .newSingleThreadExecutor { r -> Thread(r, "state-writer") }
+        .asCoroutineDispatcher()
     private var lastSaveMs = 0L
     private var lastWidgetTickMs = 0L
 
@@ -1883,7 +1894,7 @@ object PlayerCore {
                 )
             }
         }
-        ioScope.launch {
+        ioScope.launch(stateWriter) {
             if (state != null) stateStore.save(state) else stateStore.clear()
         }
     }

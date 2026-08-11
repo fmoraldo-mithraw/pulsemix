@@ -74,11 +74,24 @@ object LibraryScanner {
                 val roots = treeUris.mapNotNull { DocumentFile.fromTreeUri(context, it) }
                 if (roots.isEmpty()) return@withContext
                 val files = ArrayList<DocumentFile>()
-                for (root in roots) walk(root, files, 0)
+                var emptyRoot = false
+                for (root in roots) {
+                    val before = files.size
+                    walk(root, files, 0)
+                    if (files.size == before) emptyRoot = true
+                }
                 val audioFiles = convertUnplayable(context, files.filter { isAudio(it) })
 
                 val uris = audioFiles.map { it.uri.toString() }.toSet()
-                store.retainOnly(uris)
+                // Un dossier qui ne rend AUCUN fichier ressemble bien plus à
+                // une carte SD absente ou une permission perdue (le SAF échoue
+                // en silence, listFiles() rend simplement vide) qu'à un
+                // dossier réellement vidé : purger la bibliothèque là-dessus
+                // détruirait analyses, favoris et corrections — et la purge
+                // était aussitôt écrite sur disque. Dans le doute, on garde
+                // tout : les morceaux vraiment disparus partiront au prochain
+                // scan qui, lui, aura pu lire le dossier.
+                if (!emptyRoot) store.retainOnly(uris)
 
                 // Restaurer les sauvegardes stockées dans les dossiers :
                 // après une désinstallation (ou sur un autre appareil), les
@@ -199,17 +212,31 @@ object LibraryScanner {
                                 // Stop pendant le décodage : ne pas marquer le
                                 // morceau en échec, la reprise le refera.
                                 if (stopRequested && features == null) return@withPermit
+                                // État FRAIS du morceau, pas l'instantané pris
+                                // avant l'analyse : une correction de tag, un
+                                // favori ou une exclusion appliqués pendant
+                                // qu'il décodait étaient silencieusement
+                                // écrasés par la photo d'avant.
+                                val cur = store.get(uriStr) ?: existing
                                 // Réglages faits à la main : ils survivent à
                                 // l'analyse. Sans ça, un BPM corrigé ou un
                                 // meilleur passage choisi sur un morceau pas
                                 // encore analysé était écrasé au scan suivant.
-                                val lockedBpm = existing?.takeIf { it.bpmLocked }
-                                val lockedSeg = existing?.takeIf { it.segmentLocked }
+                                val lockedBpm = cur?.takeIf { it.bpmLocked }
+                                val lockedSeg = cur?.takeIf { it.segmentLocked }
+                                // Titre et artiste : la bibliothèque fait foi
+                                // pour un morceau déjà connu. Les corrections
+                                // de tags (MusicBrainz, manuelles) n'existent
+                                // que là — les relire du fichier les perdait
+                                // à chaque réanalyse.
+                                val keptTitle = cur?.title?.takeIf { it.isNotBlank() }
+                                    ?: meta.first
+                                val keptArtist = if (cur != null) cur.artist else meta.second
                                 val track = if (features != null) {
                                     Track(
                                         uri = uriStr,
-                                        title = meta.first,
-                                        artist = meta.second,
+                                        title = keptTitle,
+                                        artist = keptArtist,
                                         durationMs = if (features.durationMs > 0) features.durationMs else meta.third,
                                         bpm = lockedBpm?.bpm ?: features.bpm,
                                         keyName = features.keyName,
@@ -227,9 +254,10 @@ object LibraryScanner {
                                         musicStartMs = features.musicStartMs,
                                         analyzed = lockedBpm != null || features.bpm > 0f,
                                         genre = genre,
-                                        genreLocked = existing?.genreLocked == true,
-                                        favorite = existing?.favorite == true,
-                                        excluded = existing?.excluded == true,
+                                        genreLocked = cur?.genreLocked == true,
+                                        favorite = cur?.favorite == true,
+                                        excluded = cur?.excluded == true,
+                                        notEpic = cur?.notEpic == true,
                                         bpmLocked = lockedBpm != null,
                                         segmentLocked = lockedSeg != null,
                                         energySlope = features.energySlope,
@@ -241,8 +269,8 @@ object LibraryScanner {
                                 } else {
                                     Track(
                                         uri = uriStr,
-                                        title = meta.first,
-                                        artist = meta.second,
+                                        title = keptTitle,
+                                        artist = keptArtist,
                                         durationMs = meta.third,
                                         bpm = lockedBpm?.bpm ?: 0f,
                                         bestStartMs = lockedSeg?.bestStartMs ?: 0L,
@@ -250,19 +278,24 @@ object LibraryScanner {
                                         firstBeatMs = lockedSeg?.firstBeatMs ?: 0L,
                                         analyzed = lockedBpm != null,
                                         genre = genre,
-                                        genreLocked = existing?.genreLocked == true,
-                                        favorite = existing?.favorite == true,
-                                        excluded = existing?.excluded == true,
+                                        genreLocked = cur?.genreLocked == true,
+                                        favorite = cur?.favorite == true,
+                                        excluded = cur?.excluded == true,
+                                        notEpic = cur?.notEpic == true,
                                         bpmLocked = lockedBpm != null,
                                         segmentLocked = lockedSeg != null
                                     )
                                 }
                                 // Pas de tag genre : déduire du titre ou de la
                                 // signature acoustique
-                                val finalTrack =
-                                    if (track.genre == "-")
+                                val lockedGenre = cur?.takeIf { it.genreLocked }?.genre
+                                val finalTrack = when {
+                                    lockedGenre != null ->
+                                        track.copy(genre = lockedGenre, genreLocked = true)
+                                    track.genre == "-" ->
                                         track.copy(genre = GenreClassifier.infer(track))
-                                    else track
+                                    else -> track
+                                }
                                 store.put(finalTrack)
                                 val d = done.incrementAndGet()
                                 _progress.value = Progress(d, total, meta.first)
@@ -381,8 +414,17 @@ object LibraryScanner {
             val bytes = payload.toString().toByteArray()
 
             val tmpName = "$BACKUP_BASENAME.tmp"
-            // Reliquat d'une écriture interrompue : à nettoyer d'abord
-            root.findFile(tmpName)?.delete()
+            // Reliquats d'écritures interrompues : à nettoyer d'abord. Par
+            // PRÉFIXE, pas par nom exact — le provider SAF ajoute
+            // l'extension du type MIME au nom demandé (« ….tmp » devient
+            // « ….tmp.json »), et findFile(nom exact) ne retrouvait jamais
+            // rien : un fichier orphelin s'accumulait à chaque interruption.
+            try {
+                for (f in root.listFiles()) {
+                    if (f.name?.startsWith(tmpName) == true) f.delete()
+                }
+            } catch (_: Exception) {
+            }
             val tmp = root.createFile("application/json", tmpName)
             if (tmp == null) {
                 // Dossier sans création possible : écriture directe, comme

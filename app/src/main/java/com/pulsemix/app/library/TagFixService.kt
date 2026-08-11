@@ -86,6 +86,10 @@ class TagFixService : Service() {
 
         if (intent?.action == ACTION_STOP) {
             TagFixer.requestStop()
+            // Rien ne tourne (appui sur une notification résiduelle) : sans
+            // stopSelf, le service restait en avant-plan, notification
+            // « Préparation… » comprise, indéfiniment.
+            if (!running) stopSelf()
             return START_NOT_STICKY
         }
 

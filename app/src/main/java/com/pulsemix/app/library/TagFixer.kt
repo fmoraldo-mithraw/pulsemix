@@ -133,7 +133,7 @@ object TagFixer {
     suspend fun writeAllToFiles(store: TrackStore): Int = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext 0
         if (writeProgress.value != null || _progress.value != null ||
-            coverProgress.value != null
+            coverProgress.value != null || LibraryScanner.progress.value != null
         ) {
             return@withContext 0
         }
@@ -190,7 +190,7 @@ object TagFixer {
         // le drapeau d'arrêt et se contrediraient (remise à zéro qui efface
         // les jaquettes pendant qu'un passage en télécharge, etc.).
         if (coverProgress.value != null || _progress.value != null ||
-            writeProgress.value != null
+            writeProgress.value != null || LibraryScanner.progress.value != null
         ) {
             return@withContext 0
         }
@@ -317,6 +317,9 @@ object TagFixer {
             .getSharedPreferences("settings", Context.MODE_PRIVATE)
             .getBoolean("writeTagsToFiles", false)
         load()
+        // Une écriture de fichier interrompue par une mort du processus a
+        // laissé une copie de l'original : la restaurer avant tout.
+        writeScope.launch { TagWriter.recoverPending(appContext!!) }
     }
 
     fun requestStop() {
@@ -336,8 +339,10 @@ object TagFixer {
      */
     suspend fun fixAll(store: TrackStore, force: Boolean = false): Unit =
         withContext(Dispatchers.IO) {
+            // Jamais pendant un scan : il réécrit les morceaux en masse,
+            // les corrections appliquées en parallèle seraient de la loterie.
             if (_progress.value != null || coverProgress.value != null ||
-                writeProgress.value != null
+                writeProgress.value != null || LibraryScanner.progress.value != null
             ) {
                 return@withContext
             }
@@ -384,9 +389,16 @@ object TagFixer {
                     }
                 }
             } finally {
-                save()
-                store.save()
+                // Le drapeau d'abord : si l'annulation du service frappe le
+                // finally, un _progress resté armé bloquait tous les
+                // passages jusqu'au redémarrage. Et la sauvegarde se fait
+                // hors annulation : jusqu'à vingt corrections seraient
+                // sinon perdues avec elle.
                 _progress.value = null
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    save()
+                    store.save()
+                }
             }
         }
 
@@ -427,7 +439,7 @@ object TagFixer {
     suspend fun resetAll(store: TrackStore): Int = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext 0
         if (_progress.value != null || coverProgress.value != null ||
-            writeProgress.value != null
+            writeProgress.value != null || LibraryScanner.progress.value != null
         ) {
             return@withContext 0
         }
@@ -478,14 +490,18 @@ object TagFixer {
             }
         } finally {
             resetting.value = false
+            _progress.value = null
             pending.value = emptyList()
             applied.value = if (stopRequested) undo.drop(undone) else emptyList()
             checked.clear()
             checkedCount.value = 0
             lastError.value = null
-            save()
-            store.save()
-            _progress.value = null
+            // Hors annulation : l'état remis à zéro doit atteindre le disque
+            // même si le service est tué pendant ce finally.
+            withContext(kotlinx.coroutines.NonCancellable) {
+                save()
+                store.save()
+            }
         }
         changed
     }
