@@ -1,6 +1,8 @@
 package com.pulsemix.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,6 +25,7 @@ import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -36,17 +39,20 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.pulsemix.app.library.SongRecognizer
 import com.pulsemix.app.PlayerViewModel
 
 /** En-tête d'un sous-écran : retour + titre. */
@@ -699,6 +705,75 @@ fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 }
             }
         )
+
+        // --------------------------- reconnaissance « à la Shazam »
+        val recogState by vm.songRecState.collectAsStateWithLifecycle()
+        val context = LocalContext.current
+        val micPermission = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted -> if (granted) vm.startSongRecognition() }
+        // Titre identifié : remplir le champ et lancer la recherche YouTube
+        LaunchedEffect(recogState) {
+            val rs = recogState
+            if (rs is SongRecognizer.State.Found) {
+                query = listOf(rs.artist, rs.title)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" ")
+                vm.resetSongRecognition()
+                vm.searchYoutube(query)
+            }
+        }
+        when (val rs = recogState) {
+            is SongRecognizer.State.Listening -> {
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (rs.searching)
+                            "Identification… (${rs.elapsedSec} s écoutées)"
+                        else "J'écoute… ${rs.elapsedSec} s",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(onClick = { vm.stopSongRecognition() }) {
+                        Text("Stop")
+                    }
+                }
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            is SongRecognizer.State.NotFound,
+            is SongRecognizer.State.Error -> {
+                val message = (rs as? SongRecognizer.State.NotFound)?.message
+                    ?: (rs as SongRecognizer.State.Error).message
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { vm.resetSongRecognition() }) {
+                        Text("OK")
+                    }
+                }
+            }
+            else -> {
+                TextButton(onClick = {
+                    if (androidx.core.content.ContextCompat.checkSelfPermission(
+                            context, android.Manifest.permission.RECORD_AUDIO
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    ) {
+                        vm.startSongRecognition()
+                    } else {
+                        micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+                    }
+                }) {
+                    Icon(Icons.Rounded.Mic, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Reconnaître ce qui joue")
+                }
+            }
+        }
         if (searching) {
             Spacer(Modifier.height(6.dp))
             LinearProgressIndicator(Modifier.fillMaxWidth())

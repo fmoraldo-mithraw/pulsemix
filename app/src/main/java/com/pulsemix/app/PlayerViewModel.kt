@@ -602,6 +602,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         com.pulsemix.app.library.StreamImporter.cancelSearch()
     fun hasFolder(): Boolean = folders.value.isNotEmpty()
 
+    // --------------------------------------- reconnaissance « à la Shazam »
+    val songRecState = com.pulsemix.app.library.SongRecognizer.state
+
+    /** Écoute le micro et identifie le morceau qui joue (permission acquise). */
+    fun startSongRecognition() {
+        viewModelScope.launch {
+            com.pulsemix.app.library.SongRecognizer.listenAndRecognize()
+        }
+    }
+
+    fun stopSongRecognition() = com.pulsemix.app.library.SongRecognizer.stop()
+    fun resetSongRecognition() = com.pulsemix.app.library.SongRecognizer.reset()
+
     fun playPlaylist(p: com.pulsemix.app.data.Playlist) {
         val byUri = tracks.value.associateBy { it.uri }
         val list = p.uris.mapNotNull { byUri[it] }
