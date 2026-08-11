@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
@@ -276,6 +278,7 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 // Pendant le report des tags dans les fichiers (réglages),
                 // le service refuserait un second passage : ne pas le promettre
                 val canRun = tracks.isNotEmpty() && writeProg == null
+                // Deux actions principales côte à côte, jamais repliées…
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { vm.fetchTagsAll() },
@@ -284,35 +287,40 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                     ) {
                         Text(
                             if (done > 0) "Vérifier ($remaining)"
-                            else "Vérifier tout"
+                            else "Vérifier tout",
+                            maxLines = 1
                         )
                     }
                     OutlinedButton(
                         onClick = { vm.fetchAllCovers() },
                         enabled = canRun,
                         modifier = Modifier.weight(1f)
-                    ) { Text("Jaquettes") }
+                    ) { Text("Jaquettes", maxLines = 1) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // …et les secondaires à leur taille naturelle, sur une seule
+                // ligne qui défile : des largeurs forcées repliaient les
+                // libellés en pilules difformes de hauteurs inégales.
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     OutlinedButton(
                         onClick = { pickTrack = true },
-                        enabled = tracks.isNotEmpty(),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Un morceau…") }
+                        enabled = tracks.isNotEmpty()
+                    ) { Text("Corriger un morceau…", maxLines = 1) }
                     if (done > 0) {
                         OutlinedButton(
                             onClick = { vm.recheckAllTags() },
-                            enabled = canRun,
-                            modifier = Modifier.weight(1f)
-                        ) { Text("Revérifier") }
+                            enabled = canRun
+                        ) { Text("Tout revérifier", maxLines = 1) }
                     }
                     OutlinedButton(
                         onClick = { confirmReset = true },
-                        enabled = tracks.isNotEmpty(),
-                        modifier = Modifier.weight(1f)
+                        enabled = tracks.isNotEmpty()
                     ) {
                         Text(
                             "Remise à zéro",
+                            maxLines = 1,
                             color = MaterialTheme.colorScheme.error
                         )
                     }
