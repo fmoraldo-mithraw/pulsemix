@@ -1146,13 +1146,21 @@ fun PlayerScreen(
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Un mix dure toujours au moins une heure : les catégories
+                // commencent donc à 1 h (« Auto » = durée libre, jamais
+                // sous l'heure non plus).
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     FilterChip(
                         selected = targetMin == null,
                         onClick = { targetMin = null },
                         label = { Text("Auto") }
                     )
-                    for ((label, minutes) in listOf("30 min" to 30, "1 h" to 60, "2 h" to 120)) {
+                    for ((label, minutes) in listOf(
+                        "1 h" to 60, "1 h 30" to 90, "2 h" to 120, "3 h" to 180
+                    )) {
                         FilterChip(
                             selected = targetMin == minutes,
                             onClick = { targetMin = minutes },

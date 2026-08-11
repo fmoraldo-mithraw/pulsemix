@@ -161,4 +161,88 @@ class MixEngineTest {
         val t = track("content://a", "Believer", "Imagine Dragons", 204_000)
         assertTrue("content://a" in MixEngine.dupKeys(t))
     }
+
+    // ----------------------------------------------- plancher d'une heure
+
+    /** Bibliothèque synthétique analysée : tempos étalés sur toutes les
+     *  bandes, tonalités voisines, titres tous distincts (pas de dédup). */
+    private fun library(n: Int) = List(n) { i ->
+        Track(
+            uri = "content://t$i",
+            title = "Morceau $i",
+            artist = "Artiste ${i % 7}",
+            durationMs = 240_000L,
+            bpm = 80f + (i % 24) * 3f,
+            camelot = "${1 + i % 12}${if (i % 2 == 0) "A" else "B"}",
+            energyMean = 0.2f + (i % 10) * 0.07f,
+            energyPeak = 0.4f + (i % 10) * 0.05f,
+            centroid = 1000f + (i % 8) * 300f,
+            onsetRate = 1f + (i % 5) * 0.4f,
+            segmentMs = 60_000L,
+            analyzed = true
+        )
+    }
+
+    private fun planMs(p: MixEngine.MixPlan, dj: Boolean) =
+        p.phases.sumOf { ph ->
+            ph.tracks.sumOf { t ->
+                (if (dj) t.segmentMs else t.durationMs).coerceAtLeast(60_000L)
+            }
+        }
+
+    @Test
+    fun `sans cible tous les plans durent au moins une heure`() {
+        val all = library(40) // 40 × 4 min = 160 min de matière
+        val plans = MixEngine.proposeMixes(all)
+        assertTrue(plans.isNotEmpty())
+        for (p in plans) {
+            assertTrue(
+                "plan ${p.id} trop court : ${planMs(p, dj = false) / 60_000} min",
+                planMs(p, dj = false) >= MixEngine.MIN_MIX_MS
+            )
+        }
+    }
+
+    @Test
+    fun `une cible sous l heure est remontee au plancher`() {
+        val all = library(40)
+        val plans = MixEngine.proposeMixes(all, targetMinutes = 30)
+        assertTrue(plans.isNotEmpty())
+        for (p in plans) {
+            assertTrue(
+                "plan ${p.id} trop court : ${planMs(p, dj = false) / 60_000} min",
+                planMs(p, dj = false) >= MixEngine.MIN_MIX_MS
+            )
+        }
+    }
+
+    @Test
+    fun `en mode dj les segments courts sont compenses en nombre`() {
+        // 90 morceaux à segments d'1 min : il en faut ~60 par set
+        val all = library(90)
+        val plans = MixEngine.proposeMixes(all, dj = true)
+        assertTrue(plans.isNotEmpty())
+        for (p in plans) {
+            assertTrue(
+                "set DJ ${p.id} trop court : ${planMs(p, dj = true) / 60_000} min",
+                planMs(p, dj = true) >= MixEngine.MIN_MIX_MS
+            )
+        }
+    }
+
+    @Test
+    fun `le mix similaire atteint aussi l heure`() {
+        val all = library(40)
+        val plan = MixEngine.similarPlan(all, all[0])
+        assertTrue(plan != null && planMs(plan, dj = false) >= MixEngine.MIN_MIX_MS)
+    }
+
+    @Test
+    fun `bibliotheque trop petite - le plan prend tout sans crasher`() {
+        // 6 morceaux de 4 min : impossible d'atteindre l'heure, le plan
+        // doit juste prendre ce qu'il y a.
+        val all = library(6)
+        val plans = MixEngine.proposeMixes(all)
+        assertTrue(plans.isNotEmpty())
+    }
 }

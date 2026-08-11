@@ -169,7 +169,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Lance un mix « comme ce morceau » (même style/énergie). */
     fun startSimilar(seed: Track, djMode: Boolean) {
         viewModelScope.launch(Dispatchers.Default) {
-            val plan = MixEngine.similarPlan(tracks.value, seed)
+            val plan = MixEngine.similarPlan(tracks.value, seed, dj = djMode)
             withContext(Dispatchers.Main) {
                 when {
                     // Rien ne se passait en silence : dire pourquoi.

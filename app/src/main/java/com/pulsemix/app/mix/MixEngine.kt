@@ -239,6 +239,11 @@ object MixEngine {
         return analyzed.filter { it.genre == genre || it.genre in adjacent }
     }
 
+    /** Durée minimale d'un mix ou d'un set DJ : en dessous d'une heure,
+     *  le set s'arrête au moment où la soirée démarre. */
+    const val MIN_MIX_MINUTES = 60
+    const val MIN_MIX_MS = MIN_MIX_MINUTES * 60_000L
+
     fun proposeMixes(
         all: List<Track>,
         dj: Boolean = false,
@@ -458,18 +463,27 @@ object MixEngine {
         // les trop courts — les générateurs ont des tailles de pool fixes
         // (4-6 morceaux par phase), donc sans extension un « 2 h » en DJ
         // plafonnait à ~20 min quelle que soit la durée choisie.
+        // Dans tous les cas, un mix ne descend jamais sous l'heure (tant
+        // que la bibliothèque a de quoi) : une cible plus courte est
+        // remontée au plancher, et « Auto » (sans cible) rallonge aussi —
+        // sans jamais raccourcir un plan naturellement plus long.
+        // La rallonge pioche dans le vivier du plan, pas dans toute la
+        // bibliothèque : allonger le mix épique avec les morceaux les
+        // plus compatibles au tempo l'aurait rempli de variété.
+        val epicPool by lazy { EpicScore.select(tracks, max = 200) }
+        fun poolFor(p: MixPlan) = if (p.id == "epique") epicPool else tracks
         if (targetMinutes != null) {
-            val targetMs = targetMinutes * 60_000L
-            // La rallonge pioche dans le vivier du plan, pas dans toute la
-            // bibliothèque : allonger le mix épique avec les morceaux les
-            // plus compatibles au tempo l'aurait rempli de variété.
-            val epicPool by lazy { EpicScore.select(tracks, max = 200) }
+            val targetMs = targetMinutes.coerceAtLeast(MIN_MIX_MINUTES) * 60_000L
             return deduped.map { p ->
-                val pool = if (p.id == "epique") epicPool else tracks
-                extendToDuration(trimToDuration(p, targetMs, dj), targetMs, dj, pool)
+                extendToDuration(
+                    trimToDuration(p, targetMs, dj), targetMs, dj, poolFor(p),
+                    floorMs = MIN_MIX_MS
+                )
             }
         }
-        return deduped
+        return deduped.map { p ->
+            extendToDuration(p, MIN_MIX_MS, dj, poolFor(p), floorMs = MIN_MIX_MS)
+        }
     }
 
     /**
@@ -567,17 +581,23 @@ object MixEngine {
      * Allonge un plan trop court pour la durée cible : enchaîne des morceaux
      * compatibles supplémentaires au bout de la dernière phase, tant que ça
      * rapproche de la cible. L'arc des phases existantes est préservé.
+     *
+     * [floorMs] est un PLANCHER dur : tant qu'il n'est pas atteint, on
+     * continue d'ajouter même si ça éloigne de la cible (l'arrêt « au plus
+     * proche » pouvait laisser un plan juste sous l'heure quand le dernier
+     * candidat dépassait). Le vivier peut évidemment s'épuiser avant.
      */
     private fun extendToDuration(
         plan: MixPlan,
         targetMs: Long,
         dj: Boolean,
-        all: List<Track>
+        all: List<Track>,
+        floorMs: Long = 0L
     ): MixPlan {
         val phases = plan.phases.map { it.tracks.toMutableList() }.toMutableList()
         val last = phases.lastOrNull()?.takeIf { it.isNotEmpty() } ?: return plan
         var total = phases.sumOf { ph -> ph.sumOf { trackLenMs(it, dj) } }
-        if (total >= targetMs) return plan
+        if (total >= targetMs && total >= floorMs) return plan
 
         // Mêmes clés d'identité que dedupePlan : la rallonge ne doit pas
         // réintroduire une chanson déjà présente sous un autre fichier.
@@ -602,8 +622,11 @@ object MixEngine {
             val next = pool.removeAt(bestIdx)
             val newTotal = total + trackLenMs(next, dj)
             // On s'arrête dès qu'ajouter éloigne de la cible plus que ça
-            // ne l'approche (au plus proche, léger dépassement compris).
-            if (abs(newTotal - targetMs) >= abs(total - targetMs)) break
+            // ne l'approche (au plus proche, léger dépassement compris) —
+            // mais jamais sous le plancher.
+            if (total >= floorMs &&
+                abs(newTotal - targetMs) >= abs(total - targetMs)
+            ) break
             last.add(next)
             used.addAll(dupKeys(next))
             total = newTotal
@@ -621,7 +644,12 @@ object MixEngine {
      * tempo (double/moitié compris), tonalité, énergie et brillance, enchaînés
      * à partir du morceau de départ.
      */
-    fun similarPlan(all: List<Track>, seed: Track, rnd: Random = Random.Default): MixPlan? {
+    fun similarPlan(
+        all: List<Track>,
+        seed: Track,
+        rnd: Random = Random.Default,
+        dj: Boolean = false
+    ): MixPlan? {
         val candidates = all.filter {
             it.analyzed && it.bpm > 0f && !it.excluded && it.uri != seed.uri
         }
@@ -661,13 +689,21 @@ object MixEngine {
         for (c in candidates) dists[c.uri] = distance(c)
         val pool = sampleTop(candidates.sortedBy { dists[it.uri] }, 18, rnd)
         val ordered = chainOrder(listOf(seed) + pool, ascending = true, rnd, startWith = seed)
-        return dedupePlan(
+        val plan = dedupePlan(
             MixPlan(
                 "similar",
                 "Comme « ${seed.title} »",
                 "Morceaux du même style et de la même énergie, enchaînés depuis celui-ci.",
                 splitIntoPhases(ordered, listOf("Même veine 1", "Même veine 2", "Même veine 3", "Même veine 4"))
             )
+        )
+        // Même plancher d'une heure que les autres mix. La rallonge pioche
+        // dans les plus proches du morceau-graine (pas toute la
+        // bibliothèque) pour rester « dans la même veine » : les 18
+        // premiers seuls faisaient ~20 min en mode DJ.
+        val reserve = candidates.sortedBy { dists[it.uri] }.take(80)
+        return extendToDuration(
+            plan, MIN_MIX_MS, dj, reserve, floorMs = MIN_MIX_MS
         )
     }
 
