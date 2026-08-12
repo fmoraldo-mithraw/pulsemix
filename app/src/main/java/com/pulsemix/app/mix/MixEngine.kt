@@ -149,7 +149,7 @@ object MixEngine {
         return out
     }
 
-    private fun cost(prev: Track, cand: Track, ascending: Boolean): Float {
+    internal fun cost(prev: Track, cand: Track, ascending: Boolean): Float {
         val ref = if (prev.bpm > 0) prev.bpm else 120f
         var delta = abs(cand.bpm - prev.bpm) / ref * 100f
         // Tolérance double/moitié de tempo
@@ -172,18 +172,25 @@ object MixEngine {
         ) 6f else 0f
         // Paires marquées « transition ratée » par l'utilisateur
         val badPair = if (TransitionFeedback.isBad(prev.uri, cand.uri)) 10f else 0f
+        // Continuité d'ÉNERGIE : toujours comptée, même genre ou pas. Deux
+        // morceaux du même genre peuvent être aux antipodes d'intensité, et
+        // c'est le saut d'énergie qui choque l'oreille dans un mix — BPM
+        // proche et tonalité voisine n'y changent rien (l'énergie était
+        // avalée par le garde-genre ci-dessous, d'où des enchaînements
+        // doux → surexcité dans « écouter comme »).
+        val energyJump = (abs(prev.energyMean - cand.energyMean) / 0.15f)
+            .coerceAtMost(3f) * 1.5f
         // Continuité de style : même genre = neutre ; sinon pénaliser l'écart
-        // de signature sonore (brillance, énergie, densité d'attaques) pour
-        // ne pas choquer l'oreille d'un morceau à l'autre
+        // de signature sonore (brillance, densité d'attaques) pour ne pas
+        // choquer l'oreille d'un morceau à l'autre
         val sameGenre = prev.genre.isNotBlank() && prev.genre != "-" &&
             prev.genre == cand.genre
         val styleDist = if (sameGenre) 0f else (
             abs(prev.centroid - cand.centroid) / 2_000f +
-                abs(prev.energyMean - cand.energyMean) / 0.15f +
                 abs(prev.onsetRate - cand.onsetRate) / 3f
-            ).coerceAtMost(3f) * 1.2f
+            ).coerceAtMost(2f) * 1.2f
         return delta + dirPenalty - harmonic + recency + overplay - favBonus +
-            sameArtist + badPair + styleDist
+            sameArtist + badPair + styleDist + energyJump
     }
 
     // -------------------------------------------------------- propositions

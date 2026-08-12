@@ -162,6 +162,48 @@ class MixEngineTest {
         assertTrue("content://a" in MixEngine.dupKeys(t))
     }
 
+    // ------------------------------------------- continuité d'enchaînement
+
+    private fun chained(
+        uri: String,
+        bpm: Float,
+        camelot: String,
+        energy: Float,
+        genre: String = "pop"
+    ) = Track(
+        uri = uri, title = uri, artist = "", durationMs = 240_000L,
+        bpm = bpm, camelot = camelot, energyMean = energy, genre = genre,
+        analyzed = true
+    )
+
+    @Test
+    fun `un grand saut d energie penalise meme a genre identique`() {
+        val prev = chained("content://a", 130f, "8A", 0.80f)
+        // Énergie proche mais tempo et clé un peu moins bons…
+        val close = chained("content://b", 133f, "7A", 0.75f)
+        // …contre tempo et clé parfaits mais énergie aux antipodes :
+        // la continuité d'énergie doit l'emporter.
+        val far = chained("content://c", 130f, "8A", 0.15f)
+        assertTrue(
+            MixEngine.cost(prev, close, ascending = true) <
+                MixEngine.cost(prev, far, ascending = true)
+        )
+    }
+
+    @Test
+    fun `une petite variation d energie reste preferable au reste`() {
+        val prev = chained("content://a", 130f, "8A", 0.60f)
+        // Le saut d'énergie ne doit pas écraser tempo/tonalité pour des
+        // écarts ordinaires : ici l'énergie quasi identique mais tout le
+        // reste mauvais doit perdre contre un bon enchaînement.
+        val good = chained("content://b", 131f, "8A", 0.52f)
+        val bad = chained("content://c", 100f, "3B", 0.60f)
+        assertTrue(
+            MixEngine.cost(prev, good, ascending = true) <
+                MixEngine.cost(prev, bad, ascending = true)
+        )
+    }
+
     // ----------------------------------------------- plancher d'une heure
 
     /** Bibliothèque synthétique analysée : tempos étalés sur toutes les
