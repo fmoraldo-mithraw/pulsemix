@@ -211,6 +211,126 @@ class DjMixerSpecTest {
         )
     }
 
+    // ----------------------------------------------------------- preRollMs
+    // Pré-roll du deck entrant d'une transition automatique : il démarre
+    // ~la durée du fondu avant son ancre (arrondie à la mesure) pour que
+    // son drop tombe à la FIN du fondu. À 120 BPM, la mesure vaut 2 s.
+
+    @Test
+    fun `pre-roll - sans bpm ou sans fondu - zero`() {
+        assertEquals(0L, DjMixer.preRollMs(60_000L, 14_000L, 0f, emptyList()))
+        assertEquals(0L, DjMixer.preRollMs(60_000L, 0L, 120f, emptyList()))
+    }
+
+    @Test
+    fun `pre-roll - sans structure - fondu arrondi a la mesure`() {
+        // 14 s à 120 BPM = pile 7 mesures
+        assertEquals(
+            14_000L, DjMixer.preRollMs(60_000L, 14_000L, 120f, emptyList())
+        )
+        // 13,2 s = 6,6 mesures -> 7 mesures (au plus proche)
+        assertEquals(
+            14_000L, DjMixer.preRollMs(60_000L, 13_200L, 120f, emptyList())
+        )
+        // 12,9 s = 6,45 mesures -> 6 mesures
+        assertEquals(
+            12_000L, DjMixer.preRollMs(60_000L, 12_900L, 120f, emptyList())
+        )
+    }
+
+    @Test
+    fun `pre-roll - moins d une demi-mesure de fondu - zero`() {
+        assertEquals(0L, DjMixer.preRollMs(60_000L, 900L, 120f, emptyList()))
+        // Pile une demi-mesure : une mesure entière
+        assertEquals(2_000L, DjMixer.preRollMs(60_000L, 1_000L, 120f, emptyList()))
+    }
+
+    @Test
+    fun `pre-roll - ancre trop tot - reduit aux mesures qui tiennent`() {
+        // 5 s avant l'ancre : seules 2 mesures entières tiennent avant 0
+        assertEquals(4_000L, DjMixer.preRollMs(5_000L, 14_000L, 120f, emptyList()))
+        // Ancre au début du fichier : rien à rejouer avant
+        assertEquals(0L, DjMixer.preRollMs(0L, 14_000L, 120f, emptyList()))
+        assertEquals(0L, DjMixer.preRollMs(1_500L, 14_000L, 120f, emptyList()))
+    }
+
+    @Test
+    fun `pre-roll - borne au debut de la BUILD adjacente`() {
+        // BUILD 52..60 s, ancre à 60 s : les 14 s demandées sont bornées
+        // aux 4 mesures qui ramènent pile au début de la montée.
+        val s = listOf(
+            section(30_000L, 52_000L, StructureDetector.SectionKind.BREAK),
+            section(52_000L, 60_000L, StructureDetector.SectionKind.BUILD),
+            section(60_000L, 100_000L, StructureDetector.SectionKind.DROP)
+        )
+        assertEquals(8_000L, DjMixer.preRollMs(60_000L, 14_000L, 120f, s))
+        // Fin de BUILD à ± une mesure de l'ancre : même borne
+        val s2 = listOf(
+            section(52_000L, 58_500L, StructureDetector.SectionKind.BUILD),
+            section(58_500L, 100_000L, StructureDetector.SectionKind.DROP)
+        )
+        // (60_000 - 52_000) / 2_000 = 4 mesures entières vers la montée
+        assertEquals(8_000L, DjMixer.preRollMs(60_000L, 14_000L, 120f, s2))
+    }
+
+    @Test
+    fun `pre-roll - BUILD longue - candidat rythmique intact`() {
+        // La montée commence bien avant : la borne ne mord pas, le
+        // candidat rythmique (7 mesures) s'applique tel quel.
+        val s = listOf(
+            section(20_000L, 60_000L, StructureDetector.SectionKind.BUILD),
+            section(60_000L, 100_000L, StructureDetector.SectionKind.DROP)
+        )
+        assertEquals(14_000L, DjMixer.preRollMs(60_000L, 14_000L, 120f, s))
+    }
+
+    @Test
+    fun `pre-roll - ancre en plein drop sans build avant - zero`() {
+        // Structure dégénérée : l'ancre est en plein milieu d'un temps
+        // fort, sans montée adjacente — entrer en plein drop filtré vaut
+        // mieux que rejouer autre chose : pas de pré-roll.
+        val s = listOf(
+            section(0L, 40_000L, StructureDetector.SectionKind.INTRO),
+            section(40_000L, 120_000L, StructureDetector.SectionKind.DROP)
+        )
+        assertEquals(0L, DjMixer.preRollMs(60_000L, 14_000L, 120f, s))
+    }
+
+    // ------------------------------------------------------ nextPhraseBeat
+    // Quantisation de phrase (16 temps) du départ des transitions :
+    // l'échelon au-dessus de la mesure.
+
+    @Test
+    fun `nextPhraseBeat - prochain 1 de phrase`() {
+        assertEquals(48.0, DjMixer.nextPhraseBeat(33.0, 0.0), 1e-9)
+        // Déjà pile sur une phrase : on ne repousse pas
+        assertEquals(32.0, DjMixer.nextPhraseBeat(32.0, 0.0), 1e-9)
+        assertEquals(16.0, DjMixer.nextPhraseBeat(0.5, 0.0), 1e-9)
+    }
+
+    @Test
+    fun `nextPhraseBeat - grille recalee du pre-roll`() {
+        // Pré-roll de 7 mesures = 28 temps : la grille de phrases du deck
+        // est décalée de 28 % 16 = 12 temps (phrases à 12, 28, 44...)
+        assertEquals(44.0, DjMixer.nextPhraseBeat(33.0, 12.0), 1e-9)
+        assertEquals(28.0, DjMixer.nextPhraseBeat(28.0, 12.0), 1e-9)
+        assertEquals(12.0, DjMixer.nextPhraseBeat(3.0, 12.0), 1e-9)
+    }
+
+    // ------------------------------------------------------- bassSwapPhase
+    // Le « 1 » du swap net de basses : dernière frontière de mesure du
+    // sortant avant la fin du fondu.
+
+    @Test
+    fun `bassSwapPhase - une mesure avant la fin du fondu`() {
+        // Fin de fondu pile sur une mesure : swap une mesure avant
+        assertEquals(28.0, DjMixer.bassSwapPhase(32.0), 1e-9)
+        // Fin de fondu hors grille : frontière de mesure la plus proche
+        // de « fin - une mesure », toujours avant la fin
+        assertEquals(28.0, DjMixer.bassSwapPhase(30.3), 1e-9)
+        assertEquals(28.0, DjMixer.bassSwapPhase(33.9), 1e-9)
+    }
+
     // ------------------------------------------------- crossfader manuel
     // Le fader du panneau « Performance » remplace la progression
     // temporelle du fondu : mêmes courbes equal-power que le moteur, et
