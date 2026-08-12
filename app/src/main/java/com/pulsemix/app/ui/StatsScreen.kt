@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -117,16 +118,28 @@ fun StatsScreen(
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
         } else {
+            // Compteur dans sa propre colonne : sur les titres longs,
+            // l'ellipse mangeait le « · N lectures » en bout de ligne et
+            // le classement perdait tout son intérêt.
             for ((i, e) in stats.topTracks.withIndex()) {
                 val (t, n) = e
-                Text(
-                    "${i + 1}. ${t.title}" +
-                        (if (t.artist.isNotBlank()) " — ${t.artist}" else "") +
-                        " · $n lectures",
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${i + 1}. ${t.title}" +
+                            (if (t.artist.isNotBlank()) " — ${t.artist}" else ""),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "$n",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
             }
         }
         if (stats.topArtists.isNotEmpty()) {
@@ -138,12 +151,22 @@ fun StatsScreen(
             )
             Spacer(Modifier.height(4.dp))
             for ((i, e) in stats.topArtists.withIndex()) {
-                Text(
-                    "${i + 1}. ${e.first} · ${e.second} lectures",
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${i + 1}. ${e.first}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "${e.second}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
             }
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))

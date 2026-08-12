@@ -1,5 +1,6 @@
 package com.pulsemix.app.mix
 
+import com.pulsemix.app.data.PlayHistory
 import com.pulsemix.app.data.Track
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -160,6 +161,49 @@ class MixEngineTest {
     fun `l uri est toujours une cle`() {
         val t = track("content://a", "Believer", "Imagine Dragons", 204_000)
         assertTrue("content://a" in MixEngine.dupKeys(t))
+    }
+
+    // ------------------------------------------------- rotation des lectures
+
+    @Test
+    fun `un morceau jamais joue pese trois fois plus au tirage`() {
+        // URIs propres à ce test : PlayHistory est un singleton, on ne
+        // touche pas aux morceaux des autres tests.
+        val fresh = track("content://rot-fresh", "Jamais joué", "X", 200_000)
+        assertEquals(3f, MixEngine.drawWeight(fresh), 1e-4f)
+    }
+
+    @Test
+    fun `un morceau sur-joue et recent ne pese presque plus rien`() {
+        // Compteur écrasant : quel que soit ce que les autres tests ont
+        // laissé dans le singleton, ce morceau sature overplayPenalty à 1.
+        // Même ordre de grandeur que le « test://hot » de PlayHistoryTest,
+        // exprès : chacun reste ~8x au-dessus de la moyenne même quand
+        // l'autre est déjà importé, quel que soit l'ordre d'exécution.
+        // Le record() final marque la lecture récente (penalty 48 h à ~1).
+        PlayHistory.importCounts(
+            mapOf(
+                "content://rot-hot" to 100_000,
+                "content://rot-avg1" to 1, "content://rot-avg2" to 1,
+                "content://rot-avg3" to 1, "content://rot-avg4" to 1,
+                "content://rot-avg5" to 1
+            )
+        )
+        PlayHistory.record("content://rot-hot")
+        val hot = track("content://rot-hot", "Trop joué", "X", 200_000)
+        // 1 (déjà joué) − 0,8 (sur-joué) − 0,6 (récent) → plancher 0,1
+        assertEquals(0.1f, MixEngine.drawWeight(hot), 1e-4f)
+        // Et au coût d'enchaînement, ce morceau doit perdre contre un
+        // jamais-joué équivalent malgré un enchaînement légèrement moins bon.
+        val prev = track("content://rot-prev", "Précédent", "Y", 200_000)
+            .copy(bpm = 130f, camelot = "8A", energyMean = 0.5f, analyzed = true)
+        val hotGood = hot.copy(bpm = 130f, camelot = "8A", energyMean = 0.5f, analyzed = true)
+        val freshOk = track("content://rot-neuf", "Neuf", "Z", 200_000)
+            .copy(bpm = 133f, camelot = "7A", energyMean = 0.5f, analyzed = true)
+        assertTrue(
+            MixEngine.cost(prev, freshOk, ascending = true) <
+                MixEngine.cost(prev, hotGood, ascending = true)
+        )
     }
 
     // ------------------------------------------- continuité d'enchaînement

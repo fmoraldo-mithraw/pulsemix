@@ -822,7 +822,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             MixEngine.suggestNext(
                 current, tracks.value,
                 penalize = { uri ->
-                    com.pulsemix.app.data.PlayHistory.overplayPenalty(uri)
+                    // Sur-écoute + lecture récente : les suggestions
+                    // doivent faire découvrir, pas resservir les tops
+                    (com.pulsemix.app.data.PlayHistory.overplayPenalty(uri) +
+                        0.5f * com.pulsemix.app.data.PlayHistory.penalty(uri))
+                        .coerceAtMost(1.5f)
                 },
                 isBadPair = { from, to ->
                     com.pulsemix.app.data.TransitionFeedback.isBad(from, to)

@@ -120,31 +120,63 @@ object MixEngine {
     }
 
     /**
+     * Poids de tirage d'un morceau dans les sélections : c'est LUI qui fait
+     * tourner la bibliothèque. Un morceau jamais joué pèse trois fois plus
+     * qu'un morceau ordinaire ; un morceau sur-joué ou entendu dans les
+     * dernières 48 h ne pèse presque plus rien. L'ancien mécanisme (deux
+     * re-tirages uniformes) laissait toujours revenir les mêmes tops
+     * pendant que des centaines de morceaux restaient jamais joués.
+     */
+    internal fun drawWeight(t: Track): Float {
+        val base = if (PlayHistory.count(t.uri) == 0) 3f else 1f
+        val malus = 0.8f * PlayHistory.overplayPenalty(t.uri) +
+            0.6f * PlayHistory.penalty(t.uri)
+        return (base - malus).coerceAtLeast(0.1f)
+    }
+
+    /**
      * Prend n morceaux vers le haut d'un classement, en piochant au hasard
-     * dans une fenêtre légèrement plus large (n + 50 %) : la sélection change
-     * d'un lancement à l'autre tout en restant fidèle au critère.
+     * dans une fenêtre deux fois plus large que le besoin : la sélection
+     * change d'un lancement à l'autre tout en restant fidèle au critère.
+     * Tirage PONDÉRÉ par l'historique ([drawWeight]) : les jamais-joués
+     * sortent en priorité, les sur-joués s'effacent sans être interdits.
      */
     private fun sampleTop(sorted: List<Track>, n: Int, rnd: Random): List<Track> {
-        val window = sorted.take(min(sorted.size, n + n / 2 + 1)).toMutableList()
-        val out = ArrayList<Track>(min(n, window.size))
-        repeat(min(n, window.size)) {
-            var idx = rnd.nextInt(window.size)
-            // anti-répétition : un morceau joué récemment ou beaucoup trop
-            // joué obtient jusqu'à deux re-tirages
-            var tries = 0
-            while (tries < 2 && !window[idx].favorite &&
-                (PlayHistory.penalty(window[idx].uri) > 0.5f ||
-                    PlayHistory.overplayPenalty(window[idx].uri) > 0.5f)
-            ) {
-                idx = rnd.nextInt(window.size)
-                tries++
+        val window = sorted.take(min(sorted.size, n * 2 + 1)).toMutableList()
+        // Poids figés une fois (les pénalités lisent l'horloge : les figer
+        // garde le tirage cohérent pendant toute la sélection)
+        val weights = FloatArray(window.size) { drawWeight(window[it]) }
+        var total = 0f
+        for (w in weights) total += w
+        var count = window.size
+        val out = ArrayList<Track>(min(n, count))
+        repeat(min(n, count)) {
+            var idx = 0
+            var pick = rnd.nextFloat() * total
+            for (i in 0 until count) {
+                pick -= weights[i]
+                if (pick <= 0f) {
+                    idx = i
+                    break
+                }
+                idx = i
             }
             // favoris légèrement avantagés
             if (rnd.nextFloat() < 0.25f) {
-                val fav = window.indexOfFirst { it.favorite }
+                var fav = -1
+                for (i in 0 until count) {
+                    if (window[i].favorite) {
+                        fav = i
+                        break
+                    }
+                }
                 if (fav >= 0) idx = fav
             }
             out.add(window.removeAt(idx))
+            total -= weights[idx]
+            // Compacte le tableau de poids en miroir de la liste
+            for (i in idx until count - 1) weights[i] = weights[i + 1]
+            count--
         }
         return out
     }
@@ -161,10 +193,14 @@ object MixEngine {
         val dirPenalty = if (dir > 0) dir * 0.15f else 0f
         val harmonic = camelotScore(prev.camelot, cand.camelot) * 4f
         // Anti-répétition (48 h) et petit bonus favori
-        val recency = PlayHistory.penalty(cand.uri) * 3f
+        val recency = PlayHistory.penalty(cand.uri) * 4f
         // Compteur de lectures : un morceau beaucoup trop joué s'efface
-        // au profit des autres (sans devenir interdit)
-        val overplay = PlayHistory.overplayPenalty(cand.uri) * 3f
+        // nettement au profit des autres (sans devenir interdit). Poids
+        // fort à dessein : à 3f, les mêmes tops revenaient dans chaque
+        // mix pendant que des centaines de morceaux restaient vierges.
+        val overplay = PlayHistory.overplayPenalty(cand.uri) * 7f
+        // Découverte : un morceau jamais joué est avantagé
+        val freshBonus = if (PlayHistory.count(cand.uri) == 0) 1f else 0f
         val favBonus = if (cand.favorite) 0.5f else 0f
         // Jamais deux morceaux du même artiste d'affilée (si évitable)
         val sameArtist = if (cand.artist.isNotBlank() &&
@@ -189,8 +225,8 @@ object MixEngine {
             abs(prev.centroid - cand.centroid) / 2_000f +
                 abs(prev.onsetRate - cand.onsetRate) / 3f
             ).coerceAtMost(2f) * 1.2f
-        return delta + dirPenalty - harmonic + recency + overplay - favBonus +
-            sameArtist + badPair + styleDist + energyJump
+        return delta + dirPenalty - harmonic + recency + overplay - favBonus -
+            freshBonus + sameArtist + badPair + styleDist + energyJump
     }
 
     // -------------------------------------------------------- propositions
@@ -685,9 +721,12 @@ object MixEngine {
             val energy = abs((t.energyMean - eLo) / eSpan - (seed.energyMean - eLo) / eSpan)
             val bright = abs((t.centroid - cLo) / cSpan - (seed.centroid - cLo) / cSpan)
             val onset = abs((t.onsetRate - oLo) / oSpan - (seed.onsetRate - oLo) / oSpan)
+            // Historique appuyé (1,0/1,5 contre 0,5/0,5 avant) : le mix
+            // « comme ce morceau » repiochait toujours les mêmes voisins
+            val fresh = if (PlayHistory.count(t.uri) == 0) 0.4f else 0f
             return 2.5f * bpmDist + 0.8f * harmonic + 1.2f * energy +
-                0.6f * bright + 0.4f * onset + 0.5f * PlayHistory.penalty(t.uri) +
-                0.5f * PlayHistory.overplayPenalty(t.uri)
+                0.6f * bright + 0.4f * onset + 1.0f * PlayHistory.penalty(t.uri) +
+                1.5f * PlayHistory.overplayPenalty(t.uri) - fresh
         }
 
         // Distances figées avant le tri (la pénalité d'historique varie avec
