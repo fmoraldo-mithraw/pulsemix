@@ -837,6 +837,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         private var loopLen = 0
         private var loopXfade = 0
         private var loopedOut = 0L
+        // Gain de passe : la première répétition joue pleine, chaque
+        // répétition SUPPLÉMENTAIRE s'atténue (x0,82, plancher 0,35).
+        // Le plan ne compte que sur une répétition ; au-delà, c'est un
+        // imprévu (deck lent à s'ouvrir, fader manuel tenu) — une boucle
+        // qui s'efface sonne comme un geste, une boucle constante comme
+        // un disque rayé.
+        private var loopPassGain = 1f
 
         /** Active la boucle de sortie. @return false si trop peu de matière. */
         private fun startLoop(): Boolean {
@@ -1127,10 +1134,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         sL = sL * (1f - t) + ld[q * 2] * t
                         sR = sR * (1f - t) + ld[q * 2 + 1] * t
                     }
-                    dst[i] = sL
-                    dst[i + 1] = sR
+                    dst[i] = sL * loopPassGain
+                    dst[i + 1] = sR * loopPassGain
                     loopPos++
-                    if (loopPos >= loopLen + loopXfade) loopPos = loopXfade
+                    if (loopPos >= loopLen + loopXfade) {
+                        loopPos = loopXfade
+                        // Chaque répétition au-delà de la première s'efface
+                        loopPassGain = max(0.35f, loopPassGain * 0.82f)
+                    }
                     loopedOut++
                     out++
                     framesOut++
@@ -1592,24 +1603,31 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         val toBeat = ((nextBeat - phaseNow) * period).toLong()
                         val toBar = ((nextBar - phaseNow) * period).toLong()
                         val toPhrase = ((nextPhrase - phaseNow) * period).toLong()
+                        // Budget de PLAN sur la boucle de sortie : une seule
+                        // répétition de sa cellule de 8 temps. Planifier
+                        // au-delà (l'ancien budget allait jusqu'à
+                        // LOOP_MAX_OUT, 30 s) faisait tourner la même
+                        // cellule jusqu'à 8 fois sous le fondu — l'effet
+                        // « disque rayé ». LOOP_MAX_OUT reste le garde-fou
+                        // d'EXÉCUTION (fader manuel tenu, deck lent à
+                        // s'ouvrir), pas un budget de plan.
+                        val loopSlack = (8.0 * period).toLong()
                         // Ordre de préférence : phrase > mesure > temps.
-                        // Attendre la phrase n'est permis que si la capacité
-                        // du deck A (reste du passage + boucle de sortie,
-                        // LOOP_MAX_OUT au plus) tient ENCORE le fondu entier
-                        // après l'attente — on ne délaie jamais au point de
-                        // dépasser ce que la boucle peut tenir. Saut manuel :
-                        // dès la prochaine mesure, l'utilisateur attend une
+                        // Attendre la phrase n'est permis que si le reste du
+                        // passage + une répétition de boucle tiennent ENCORE
+                        // le fondu entier après l'attente. Saut manuel : dès
+                        // la prochaine mesure, l'utilisateur attend une
                         // réponse rapide.
                         var start = framesGlobal + when {
                             !ready.jumping && toPhrase + fadeF <=
-                                a.remainingOut + LOOP_MAX_OUT - OUT_SR -> toPhrase
+                                a.remainingOut + loopSlack -> toPhrase
                             toBar <= a.remainingOut + OUT_SR -> toBar
                             else -> toBeat
                         }
                         if (start < framesGlobal) start = framesGlobal
                         // La boucle de sortie prolonge le deck A sous le
-                        // fondu : la capacité inclut LOOP_MAX_OUT
-                        val maxLen = a.remainingOut + LOOP_MAX_OUT -
+                        // fondu : la capacité inclut UNE répétition de boucle
+                        val maxLen = a.remainingOut + loopSlack -
                                 (start - framesGlobal) - OUT_SR / 10
                         fadeStartF = start
                         fadeLenF = min(fadeF, max(OUT_SR / 4L, maxLen))
