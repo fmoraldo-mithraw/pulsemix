@@ -76,6 +76,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -1152,6 +1153,22 @@ fun PlayerScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
+                    // Transitions pro : drop-swap de festival quand le
+                    // morceau entrant a un vrai drop détecté. Réglage
+                    // persistant, applicable à chaud (prochaine transition).
+                    val proTransitions by
+                        vm.proTransitions.collectAsStateWithLifecycle()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Transitions pro (drop-swap)",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = proTransitions,
+                            onCheckedChange = { vm.setProTransitions(it) }
+                        )
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 // Un mix dure toujours au moins une heure : les catégories

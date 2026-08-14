@@ -111,7 +111,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val KIND_HARMONIC = 2 // long blend + mid swap
         const val KIND_DARK = 3     // filter sweep passe-bas (le sortant s'étouffe)
         const val KIND_EQ = 4       // échange de basses classique, sans filtre
+        const val KIND_DROP = 5     // drop-swap festival : montée en fond, coupe sur le drop
         const val ECHO_FEEDBACK = 0.55f
+        // Drop-swap : pendant la montée le sortant reste la star (quasi
+        // plein), l'entrant monte en fond plafonné à mi-volume — la
+        // tension vient de ce déséquilibre, le release de son inversion.
+        const val DROP_HOLD_A = 0.95f
+        const val DROP_CAP_B = 0.5f
+        // Seuil d'énergie de l'entrant pour oser un drop-swap : sur un
+        // morceau mou, la coupe tomberait dans le vide.
+        const val DROP_MIN_ENERGY = 0.12f
 
 
         // Forme de la jonction, par technique. Principe commun : une seule
@@ -404,6 +413,108 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         internal fun bassSwapPhase(fadeEndPhase: Double): Double =
             Math.round((fadeEndPhase - 4.0) / 4.0) * 4.0
 
+        /**
+         * Phase (en temps) du drop-swap (KIND_DROP) : le « 1 » de MESURE
+         * de la grille du sortant le plus proche de la FIN du fondu —
+         * avec le pré-roll, c'est là que le « 1 » du drop de l'entrant
+         * tombe. Contrairement à [bassSwapPhase] (une mesure avant la
+         * fin), on vise la fin elle-même : le drop claque quand le
+         * sortant s'efface, zéro retombée d'énergie.
+         * Fonction PURE (companion, internal, testée en JVM).
+         */
+        internal fun dropSwapPhase(fadeEndPhase: Double): Double =
+            Math.round(fadeEndPhase / 4.0) * 4.0
+
+        /**
+         * Gain du SORTANT d'un drop-swap : quasi plein ([DROP_HOLD_A])
+         * pendant toute la montée, coupé NET sur le « 1 » du drop — la
+         * coupe ne parcourt qu'un huitième de la rampe du swap (un
+         * seizième de temps) : assez court pour un geste franc, assez
+         * long pour ne pas claquer ; la queue d'écho d'un temps fait le
+         * reste. Fonction PURE (companion, internal, testée en JVM).
+         * @param st progression de la rampe du swap (0 avant le drop,
+         *   1 un demi-temps après).
+         */
+        internal fun dropGainA(st: Float): Float =
+            DROP_HOLD_A * (1f - (st * 8f).coerceIn(0f, 1f))
+
+        /**
+         * Gain de l'ENTRANT d'un drop-swap : montée progressive plafonnée
+         * à mi-volume sous l'outro du sortant ([x] = progression du
+         * fondu), puis plein volume d'un coup sur le « 1 » du drop, avec
+         * la rampe anti-clic du swap ([st], un demi-temps). Fonction
+         * PURE (companion, internal, testée en JVM).
+         */
+        internal fun dropGainB(x: Float, st: Float): Float =
+            if (st > 0f) DROP_CAP_B + (1f - DROP_CAP_B) * st.coerceAtMost(1f)
+            else DROP_CAP_B * sin(x.coerceIn(0f, 1f) * HALF_PI)
+
+        /**
+         * Sélection « pro » des jonctions (toggle Transitions pro) : la
+         * palette de [fadeSpec], plus le drop-swap de festival
+         * ([KIND_DROP]) quand l'entrant a un VRAI drop détecté sur son
+         * ancre. Tension → release : pendant l'outro du sortant,
+         * l'entrant monte en fond (passe-haut, gain plafonné) ; sur le
+         * « 1 » de son drop, le sortant est coupé net (queue d'écho d'un
+         * temps) pendant que l'entrant claque plein volume plein
+         * spectre, basses échangées au même instant.
+         *
+         *  - saut manuel : fondu court neutre, comme [fadeSpec] ;
+         *  - tempo non calable (même seuil) : coupe courte, comme
+         *    [fadeSpec] — un drop-swap sans beatlock battrait ;
+         *  - section DROP de l'entrant à ± une mesure de son ancre ET
+         *    entrant assez énergique (≥ [DROP_MIN_ENERGY]) : KIND_DROP,
+         *    durée [FADE_NORMAL_S] — la montée se joue sous l'outro ;
+         *  - deux KIND_DROP d'affilée sont PERMIS (le geste standard en
+         *    festival), mais pas trois : [dropStreak] ≥ 2 force un blend
+         *    (délégation à [fadeSpec], qui ne rend jamais KIND_DROP) ;
+         *  - entrant calme (< 0,10) ou sans structure ([nextSections]
+         *    vide, vieille bibliothèque) : délégation à [fadeSpec] — le
+         *    mode pro reste sans risque, un drop-swap sur de l'ambient
+         *    serait ridicule.
+         *
+         * Fonction PURE (companion, internal, testée en JVM) comme
+         * [fadeSpec].
+         * @param dropStreak nombre de KIND_DROP déjà enchaînés.
+         * @param nextSections structure décodée de l'entrant (vide = pas
+         *   de structure) — décodée par l'appelant, UNE fois.
+         * @param anchorMs ancre de l'entrant (premier beat de son
+         *   passage fort) : c'est là que son deck fait tomber le drop.
+         */
+        internal fun fadeSpecPro(
+            current: Track,
+            curRate: Float,
+            next: Track,
+            rate: Float,
+            jumping: Boolean,
+            lastKind: Int,
+            dropStreak: Int,
+            nextSections: List<StructureDetector.Section>,
+            anchorMs: Long
+        ): Pair<Double, Int> {
+            if (jumping) return FADE_JUMP_S to KIND_EQ
+            val effA = current.bpm * curRate
+            val effB = next.bpm * rate
+            if (effA > 0f && effB > 0f) {
+                val ratio = effA / effB
+                val lockErr = minOf(
+                    abs(ratio - 1f),
+                    abs(ratio - 2f) / 2f,
+                    abs(ratio - 0.5f) * 2f
+                )
+                if (lockErr > 0.005f) return FADE_CUT_S to KIND_CUT
+                if (dropStreak < 2 && next.energyMean >= DROP_MIN_ENERGY) {
+                    val barMs = 4.0 * 60_000.0 / next.bpm
+                    for (s in nextSections) {
+                        if (s.kind == StructureDetector.SectionKind.DROP &&
+                            abs(s.startMs - anchorMs) <= barMs
+                        ) return FADE_NORMAL_S to KIND_DROP
+                    }
+                }
+            }
+            return fadeSpec(current, curRate, next, rate, jumping, lastKind)
+        }
+
         // Crossfader manuel (panneau « Performance ») : durée de la rampe
         // qui ramène les gains manuels vers la courbe automatique après
         // « Auto » (et symétriquement à la saisie) — un basculement sec
@@ -519,6 +630,21 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     // Dernière technique utilisée : évite deux fois de suite la même quand
     // plusieurs conviennent (variété façon DJ)
     private var lastFadeKind = -1
+    // Drop-swaps enchaînés : deux d'affilée sont permis (le geste standard
+    // en festival), le troisième est forcé en blend (cf. fadeSpecPro).
+    private var dropStreak = 0
+    /**
+     * Mode « Transitions pro » (drop-swap) : réglage PERSISTANT posé par
+     * PlayerCore, lu au moment de programmer chaque transition — jamais
+     * dans la boucle par bloc. Applicable à chaud (la prochaine transition
+     * programmée le voit), et PAS remis à zéro au start() : c'est un
+     * réglage, pas un état de set.
+     */
+    @Volatile private var proMode = false
+
+    fun setProMode(on: Boolean) {
+        proMode = on
+    }
     // Décalage entre ce qui est calculé et ce qui sort des haut-parleurs
     @Volatile private var outLatencyMs = 0L
     // Suivi du cran de vitesse manuel : un changement demandé s'applique
@@ -1309,6 +1435,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Fin de set annoncée une seule fois (dernier passage, dernières
         // secondes) — désarmée si un saut ramène en arrière dans le plan.
         var setEndingSent = false
+        // Mode pro : structure de l'entrant décodée UNE fois par candidat
+        // et mise en cache — le bloc « programmer la prochaine transition »
+        // repasse à chaque tour tant que le fondu n'est pas dû, pas
+        // question d'y décoder en boucle.
+        var proSectionsIdx = -1
+        var proSections: List<StructureDetector.Section> = emptyList()
 
         // Renfort dynamique des basses (sur le signal mixé)
         var mixLpL = 0f
@@ -1503,11 +1635,30 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         else -> a.segIndex + 1
                     }
                     if (nextIdx < segments.size && failedForSeg != a.segIndex) {
-                        val rate =
-                            computeRate(a.track.bpm * a.curRate, segments[nextIdx].track.bpm)
-                        val (fadeS, fadeKind) = fadeSpec(
-                            a.track, a.curRate, segments[nextIdx].track,
-                            rate, jumping, lastFadeKind
+                        val nx = segments[nextIdx].track
+                        val rate = computeRate(a.track.bpm * a.curRate, nx.bpm)
+                        // Mode pro : sélection fadeSpecPro, qui a besoin de
+                        // la structure de l'entrant (décodée une fois, en
+                        // cache) et de son ancre — recalculée comme dans
+                        // Deck.init, c'est là que le drop tombera.
+                        val (fadeS, fadeKind) = if (proMode) {
+                            if (proSectionsIdx != nextIdx) {
+                                proSectionsIdx = nextIdx
+                                proSections = if (nx.structure.isEmpty())
+                                    emptyList()
+                                else StructureDetector.decode(nx.structure)
+                            }
+                            val best = nx.bestStartMs
+                                .coerceIn(0L, max(0L, nx.durationMs - 15_000L))
+                            val anchor = if (nx.firstBeatMs in
+                                best..(best + nx.segmentMs)
+                            ) nx.firstBeatMs else best
+                            fadeSpecPro(
+                                a.track, a.curRate, nx, rate, jumping,
+                                lastFadeKind, dropStreak, proSections, anchor
+                            )
+                        } else fadeSpec(
+                            a.track, a.curRate, nx, rate, jumping, lastFadeKind
                         )
                         val fadeF = (fadeS * OUT_SR).toLong()
                         // 3 s d'avance : le deck est prêt (et pré-décodé)
@@ -1642,6 +1793,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         }
                         fadeKindF = ready.fadeKind
                         lastFadeKind = ready.fadeKind
+                        // Compteur de drop-swaps enchaînés (fadeSpecPro) :
+                        // permis deux fois d'affilée, jamais trois.
+                        dropStreak =
+                            if (ready.fadeKind == KIND_DROP) dropStreak + 1
+                            else 0
                         // Swap net des basses (KIND_EQ / KIND_HARMONIC) :
                         // le « 1 » du swap est la dernière frontière de
                         // mesure de A avant la fin du fondu — l'instant où
@@ -1663,9 +1819,36 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             // Rampe anti-clic d'un temps, calculée hors
                             // boucle chaude
                             bassSwapRampF = period.toLong().coerceAtLeast(1L)
+                        } else if (fadeKindF == KIND_DROP &&
+                            period > 0.0 && !period.isNaN()
+                        ) {
+                            // Drop-swap : le « 1 » visé est la frontière
+                            // de mesure la plus proche de la FIN du fondu
+                            // (le pré-roll y fait déjà tomber le drop de
+                            // l'entrant) — jamais après « fin − rampe » :
+                            // au-delà, la bascule serait tronquée par le
+                            // passage de relais des decks (saut de 0,5 à
+                            // 1). Rampe anti-clic d'un demi-temps.
+                            bassSwapRampF =
+                                (period / 2.0).toLong().coerceAtLeast(1L)
+                            val endPhase = phaseNow +
+                                (fadeStartF + fadeLenF - framesGlobal) / period
+                            val swapPhase = dropSwapPhase(endPhase)
+                            val hiF = max(
+                                fadeStartF,
+                                fadeStartF + fadeLenF - bassSwapRampF
+                            )
+                            bassSwapF = (framesGlobal +
+                                ((swapPhase - phaseNow) * period).toLong())
+                                .coerceIn(fadeStartF, hiF)
                         }
-                        // Echo-out : ligne à retard d'un battement
-                        echoBuf = if (ready.fadeKind == KIND_CUT) {
+                        // Echo-out : ligne à retard d'un battement —
+                        // allouée ICI (jamais dans la boucle par bloc),
+                        // pour la coupe écho ET pour le drop-swap, qui en
+                        // fait sa queue d'un temps.
+                        echoBuf = if (ready.fadeKind == KIND_CUT ||
+                            ready.fadeKind == KIND_DROP
+                        ) {
                             echoPos = 0
                             FloatArray(
                                 a.beatPeriodFrames.toInt()
@@ -1808,12 +1991,24 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 if (fadeActive && framesGlobal >= fadeStartF &&
                     fadeKindF != KIND_CUT
                 ) {
-                    val o = ((xb - shape[2]) / (shape[3] - shape[2]))
-                        .coerceIn(0f, 1f)
-                    val fcB = OPEN_FC_LOW *
-                        (OPEN_FC_HIGH / OPEN_FC_LOW).pow(o.pow(1.4f))
-                    alphaB = 1f - exp(-2f * Math.PI.toFloat() * fcB / OUT_SR)
-                    openMix = o.pow(3f)
+                    if (fadeKindF == KIND_DROP) {
+                        // Drop-swap : l'entrant monte PASSE-HAUT (aigus
+                        // d'abord, le spectre descend) — le même sweep
+                        // exponentiel que l'ouverture, parcouru à
+                        // l'envers : la coupure descend de 16 kHz vers
+                        // 140 Hz pendant la montée. Le passe-bas sweep2
+                        // sert de complément (HP = signal − LP).
+                        val fcB = OPEN_FC_HIGH *
+                            (OPEN_FC_LOW / OPEN_FC_HIGH).pow(xb.pow(0.7f))
+                        alphaB = 1f - exp(-2f * Math.PI.toFloat() * fcB / OUT_SR)
+                    } else {
+                        val o = ((xb - shape[2]) / (shape[3] - shape[2]))
+                            .coerceIn(0f, 1f)
+                        val fcB = OPEN_FC_LOW *
+                            (OPEN_FC_HIGH / OPEN_FC_LOW).pow(o.pow(1.4f))
+                        alphaB = 1f - exp(-2f * Math.PI.toFloat() * fcB / OUT_SR)
+                        openMix = o.pow(3f)
+                    }
                 }
                 // Swap net des basses (KIND_EQ / KIND_HARMONIC) :
                 // progression de la rampe du swap aux bornes du bloc,
@@ -1825,7 +2020,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 var swapT0 = 0f
                 var swapStep = 0f
                 if (fadeActive && bassSwapF >= 0L &&
-                    (fadeKindF == KIND_EQ || fadeKindF == KIND_HARMONIC)
+                    (fadeKindF == KIND_EQ || fadeKindF == KIND_HARMONIC ||
+                        fadeKindF == KIND_DROP)
                 ) {
                     swapOn = true
                     val ramp = bassSwapRampF.toFloat()
@@ -1879,6 +2075,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             // Coupe franche : sortie raide, entrée franche
                             gA = cos(x.pow(0.7f) * HALF_PI)
                             gB = sin(x.pow(1.3f) * HALF_PI)
+                        } else if (fadeKindF == KIND_DROP && swapOn) {
+                            // Drop-swap : sortant quasi plein sous la
+                            // montée plafonnée de l'entrant, puis bascule
+                            // NETTE sur le « 1 » du drop — coupe du
+                            // sortant (queue d'écho d'un temps), entrant
+                            // à 1,0 avec la rampe anti-clic du swap (un
+                            // demi-temps).
+                            val st = swapT0 + swapStep * i
+                            gA = dropGainA(st)
+                            gB = dropGainB(x, st)
                         } else if (fadeKindF == KIND_HARMONIC) {
                             // Long blend : les deux morceaux sont faits pour
                             // se superposer, courbes equal-power symétriques
@@ -1933,6 +2139,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     if (inFade && bd != null) {
                         bd.lpL += BASS_ALPHA * (bL - bd.lpL)
                         bd.lpR += BASS_ALPHA * (bR - bd.lpR)
+                        // Swap NET (KIND_EQ / KIND_HARMONIC / KIND_DROP) :
+                        // -1 = geste progressif historique ; sinon 0 avant
+                        // le « 1 » du swap (sortant plein, entrant coupé),
+                        // 1 après (inversion), rampe précalculée entre les
+                        // deux (un temps ; un demi-temps pour le drop-swap).
+                        val st = if (swapOn) swapT0 + swapStep * i else -1f
                         // ENTRANT (commun aux jonctions fondues) : passe-bas
                         // 2 pôles qui s'ouvre. Au début il n'apporte QUE ses
                         // basses — le sortant garde médiums et aigus, donc
@@ -1940,7 +2152,21 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // au moment où le sortant s'efface. Une seule source
                         // par bande. (Coupe nette : aucun traitement,
                         // l'echo-out agit après le mixage.)
-                        if (fadeKindF != KIND_CUT) {
+                        if (fadeKindF == KIND_DROP) {
+                            // Drop-swap : l'entrant est PASSE-HAUT (signal
+                            // moins son passe-bas 2 pôles, coupure
+                            // descendante — cf. alphaB) ; sur le « 1 » du
+                            // drop le complément passe-bas revient avec la
+                            // rampe du swap — plein spectre d'un coup,
+                            // sans clic.
+                            bd.sweepLpL += alphaB * (bL - bd.sweepLpL)
+                            bd.sweepLpR += alphaB * (bR - bd.sweepLpR)
+                            bd.sweep2L += alphaB * (bd.sweepLpL - bd.sweep2L)
+                            bd.sweep2R += alphaB * (bd.sweepLpR - bd.sweep2R)
+                            val stO = if (st > 0f) st else 0f
+                            vbL = bL - bd.sweep2L * (1f - stO)
+                            vbR = bR - bd.sweep2R * (1f - stO)
+                        } else if (fadeKindF != KIND_CUT) {
                             bd.sweepLpL += alphaB * (bL - bd.sweepLpL)
                             bd.sweepLpR += alphaB * (bR - bd.sweepLpR)
                             bd.sweep2L += alphaB * (bd.sweepLpL - bd.sweep2L)
@@ -1950,13 +2176,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         }
                         // SORTANT : cède ses basses tôt et vite, pour
                         // laisser la place à celles de l'entrant.
+                        // (KIND_DROP : aucune branche — le sortant garde
+                        // ses basses pleines jusqu'à sa coupe, il reste la
+                        // star de la montée.)
                         val bassOut = ((x - shape[0]) / (shape[1] - shape[0]))
                             .coerceIn(0f, 1f)
-                        // Swap NET (KIND_EQ / KIND_HARMONIC) : -1 = geste
-                        // progressif historique ; sinon 0 avant le « 1 »
-                        // du swap (sortant plein, entrant coupé), 1 après
-                        // (inversion), rampe d'un temps entre les deux.
-                        val st = if (swapOn) swapT0 + swapStep * i else -1f
                         when (fadeKindF) {
                             KIND_HARMONIC -> {
                                 // Long blend : bass swap — NET quand le
@@ -2073,9 +2297,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
                     var l = (vaL * gA + vbL * gB) * master
                     var r = (vaR * gA + vbR * gB) * master
-                    // Echo-out (KIND_CUT) : le début du fondu alimente une
-                    // ligne à retard d'un battement ; ses répétitions
-                    // s'éteignent en feedback pendant que l'entrant démarre.
+                    // Echo-out : ligne à retard d'un battement, répétitions
+                    // qui s'éteignent en feedback. KIND_CUT : nourrie sur
+                    // le début du fondu, pendant que l'entrant démarre.
+                    // KIND_DROP : nourrie sur le DERNIER temps avant le
+                    // drop (la ligne fait un temps) — sa première relecture
+                    // tombe pile sur la coupe : le sortant s'éteint sur sa
+                    // propre queue d'écho.
                     val eb = echoBuf
                     if (eb != null && inFade) {
                         val n = eb.size / 2
@@ -2083,8 +2311,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         val eR = eb[echoPos * 2 + 1]
                         l += eL * master
                         r += eR * master
-                        val feedL = if (x < 0.3f) vaL * gA else 0f
-                        val feedR = if (x < 0.3f) vaR * gA else 0f
+                        val feeding = if (fadeKindF == KIND_DROP)
+                            bassSwapF >= 0L && gf >= bassSwapF - n && gf < bassSwapF
+                        else x < 0.3f
+                        val feedL = if (feeding) vaL * gA else 0f
+                        val feedR = if (feeding) vaR * gA else 0f
                         eb[echoPos * 2] = eL * ECHO_FEEDBACK + feedL
                         eb[echoPos * 2 + 1] = eR * ECHO_FEEDBACK + feedR
                         echoPos = (echoPos + 1) % n

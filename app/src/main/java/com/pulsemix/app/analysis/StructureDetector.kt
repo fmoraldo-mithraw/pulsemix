@@ -36,6 +36,11 @@ object StructureDetector {
     const val PHRASE_BEATS = 16
     const val PHRASE_BEATS_SHORT = 8
     const val SHORT_TRACK_MS = 90_000L
+    // Basses : au-dessus de cette part du pic lissé de bassRms, une trame
+    // forte a « ses basses » — c'est un drop ; en dessous, l'énergie vient
+    // du reste du spectre (break filtré, montée sans kick). Relatif au pic,
+    // comme les seuils RMS : indépendant du mastering.
+    const val BASS_DROP_LEVEL = 0.60f
 
     /** Longueur d'une phrase en ms (0.0 si le BPM est inconnu). */
     fun phraseMs(bpm: Float, durationMs: Long): Double =
@@ -56,6 +61,11 @@ object StructureDetector {
      * @param bpm 0 ou moins = pas d'arrondi aux phrases.
      * @param firstBeatMs ancre de la grille de phrases (un beat mesuré,
      *   n'importe où dans le morceau : la grille s'étend des deux côtés).
+     * @param bassRms énergie de la bande basse (~< 150 Hz) par bloc, sur
+     *   la MÊME grille que [rms]. C'est le marqueur n° 1 d'un drop en
+     *   electro : le break/build retire la basse, le drop la fait
+     *   exploser — le RMS seul ne les distingue pas. Vide (défaut, ou
+     *   taille désalignée) : détection historique, à l'identique.
      */
     fun detect(
         rms: FloatArray,
@@ -63,7 +73,8 @@ object StructureDetector {
         hopMs: Float,
         bpm: Float,
         durationMs: Long,
-        firstBeatMs: Long
+        firstBeatMs: Long,
+        bassRms: FloatArray = FloatArray(0)
     ): List<Section> {
         if (rms.isEmpty() || hopMs <= 0f || durationMs <= 0L) return emptyList()
         val n = rms.size
@@ -83,38 +94,107 @@ object StructureDetector {
         for (v in smooth) if (v > peak) peak = v
         if (peak <= 1e-6f) return emptyList() // silence : rien à segmenter
 
-        // Classe par trame : 0 = calme, 1 = moyen, 2 = fort
+        // Basses lissées sur la même fenêtre, quand elles sont fournies
+        // (taille alignée sur rms) : c'est elles qui distinguent drop et
+        // break — indistinguables au RMS seul, un break filtré garde toute
+        // son énergie de médiums et d'aigus. Absentes (ancienne analyse) :
+        // comportement historique, bit à bit.
+        val hasBass = bassRms.size == n
+        val bsmooth = if (hasBass) FloatArray(n) else FloatArray(0)
+        var bassPeak = 0f
+        if (hasBass) {
+            for (i in 0 until n) {
+                var s = 0f
+                var c = 0
+                for (j in max(0, i - win / 2)..min(n - 1, i + win / 2)) {
+                    s += bassRms[j]; c++
+                }
+                bsmooth[i] = s / c
+                if (bsmooth[i] > bassPeak) bassPeak = bsmooth[i]
+            }
+        }
+        val bassHi = BASS_DROP_LEVEL * bassPeak
+
+        // Classe par trame : 0 = calme, 1 = moyen, 2 = fort avec basses,
+        // 3 = fort SANS basses (break filtré — jamais émis sans bassRms)
         val cls = IntArray(n) {
             val v = smooth[it] / peak
-            if (v >= STRONG_LEVEL) 2 else if (v <= CALM_LEVEL) 0 else 1
+            when {
+                v >= STRONG_LEVEL ->
+                    if (!hasBass || bsmooth[it] >= bassHi) 2 else 3
+                v <= CALM_LEVEL -> 0
+                else -> 1
+            }
         }
 
         // Plages contiguës de même classe -> nature de chaque section
         val starts = ArrayList<Int>()
         for (i in 0 until n) if (i == 0 || cls[i] != cls[i - 1]) starts.add(i)
-        val raw = ArrayList<Section>(starts.size)
+        val kinds = arrayOfNulls<SectionKind>(starts.size)
         for (k in starts.indices) {
             val from = starts[k]
             val until = if (k + 1 < starts.size) starts[k + 1] else n
             val c = cls[from]
-            val kind = when {
+            kinds[k] = when {
                 c == 2 -> SectionKind.DROP
+                // Fort mais basses retirées : toute l'énergie vient des
+                // médiums et des aigus — un break filtré, pas un drop.
+                c == 3 -> SectionKind.BREAK
                 // Montée : segment moyen qui grimpe vers un temps fort,
                 // avec un flux spectral qui grimpe aussi quand il est
                 // mesuré — la signature d'un build (filtre qui s'ouvre,
-                // percussions qui s'épaississent).
+                // percussions qui s'épaississent). Avec bassRms : les
+                // basses doivent être encore basses ET déboucher sur leur
+                // explosion (la classe 2 qui suit exige les basses pleines).
                 c == 1 && k + 1 < starts.size && cls[starts[k + 1]] == 2 &&
                     smooth[until - 1] > smooth[from] &&
-                    fluxRises(flux, from, until) -> SectionKind.BUILD
+                    fluxRises(flux, from, until) &&
+                    (!hasBass || meanIn(bsmooth, from, until) < bassHi) ->
+                    SectionKind.BUILD
                 k == 0 -> SectionKind.INTRO
                 k == starts.size - 1 -> SectionKind.OUTRO
                 else -> SectionKind.BREAK
             }
+        }
+
+        // Affinage du « 1 » de chaque DROP : la frontière brute vient des
+        // lissages (~2 s), qui traînent derrière l'événement réel. Le vrai
+        // départ d'un drop est le plus grand SAUT de bassRms (brut, pas
+        // lissé) dans une fenêtre de ± une mesure autour de la frontière —
+        // ce bloc devient la frontière, AVANT l'arrondi à la phrase.
+        // C'est ce « 1 » précis que le drop-swap du moteur DJ vise.
+        val bounds0 = IntArray(starts.size) { starts[it] }
+        if (hasBass && bpm > 0f) {
+            val barBlocks = Math.round(4f * 60_000f / bpm / hopMs)
+            for (k in 1 until starts.size) {
+                if (kinds[k] != SectionKind.DROP || barBlocks <= 0) continue
+                val b = bounds0[k]
+                val lo = max(1, max(bounds0[k - 1] + 1, b - barBlocks))
+                val hi = min(
+                    (if (k + 1 < starts.size) starts[k + 1] else n) - 1,
+                    b + barBlocks
+                )
+                var bestI = b
+                var bestJump = 0f // un vrai saut seulement : sans montée
+                // de basses dans la fenêtre, la frontière ne bouge pas
+                for (i in lo..hi) {
+                    val jump = bassRms[i] - bassRms[i - 1]
+                    if (jump > bestJump) {
+                        bestJump = jump
+                        bestI = i
+                    }
+                }
+                bounds0[k] = bestI
+            }
+        }
+
+        val raw = ArrayList<Section>(starts.size)
+        for (k in starts.indices) {
             val s = if (k == 0) 0L
-            else min(durationMs, (from * hopMs.toDouble()).toLong())
+            else min(durationMs, (bounds0[k] * hopMs.toDouble()).toLong())
             val e = if (k == starts.size - 1) durationMs
-            else min(durationMs, (until * hopMs.toDouble()).toLong())
-            if (e > s) raw.add(Section(s, e, kind))
+            else min(durationMs, (bounds0[k + 1] * hopMs.toDouble()).toLong())
+            if (e > s) raw.add(Section(s, e, kinds[k]!!))
         }
         if (raw.isEmpty()) return emptyList()
 
@@ -200,6 +280,16 @@ object StructureDetector {
         }
         if (headCnt == 0 || tailCnt == 0) return true
         return tailSum / tailCnt >= headSum / headCnt
+    }
+
+    /** Moyenne de [arr] sur [from, until) — bornée à la taille du tableau. */
+    private fun meanIn(arr: FloatArray, from: Int, until: Int): Float {
+        var s = 0f
+        var c = 0
+        for (i in from until min(until, arr.size)) {
+            s += arr[i]; c++
+        }
+        return if (c > 0) s / c else 0f
     }
 
     // -------------------------------------------------------- persistance

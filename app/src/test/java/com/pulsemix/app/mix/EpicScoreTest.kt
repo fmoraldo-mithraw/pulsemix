@@ -1,5 +1,6 @@
 package com.pulsemix.app.mix
 
+import com.pulsemix.app.analysis.AudioAnalyzer
 import com.pulsemix.app.data.Track
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,7 +25,7 @@ class EpicScoreTest {
         bpm = 92f, energyMean = 0.11f, energyPeak = 0.30f, centroid = 1900f,
         onsetRate = 1.2f, analyzed = true,
         lowMidRatio = 0.52f, sustainRatio = 0.80f,
-        energySlope = 2.0f, dynamicSpread = 5.0f, featuresVersion = 2
+        energySlope = 2.0f, dynamicSpread = 5.0f, featuresVersion = AudioAnalyzer.FEATURES_VERSION
     )
 
     /** Électro de club : plate, dense en attaques, sans montée. */
@@ -33,7 +34,7 @@ class EpicScoreTest {
         bpm = 128f, energyMean = 0.24f, energyPeak = 0.30f, centroid = 3200f,
         onsetRate = 3.8f, analyzed = true,
         lowMidRatio = 0.22f, sustainRatio = 0.30f,
-        energySlope = 1.05f, dynamicSpread = 1.5f, featuresVersion = 2
+        energySlope = 1.05f, dynamicSpread = 1.5f, featuresVersion = AudioAnalyzer.FEATURES_VERSION
     )
 
     private fun anchors(n: Int) = List(n) {

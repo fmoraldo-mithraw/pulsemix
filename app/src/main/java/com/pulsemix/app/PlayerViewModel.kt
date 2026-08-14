@@ -736,6 +736,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setCrossfadeSeconds(seconds: Int) = PlayerCore.setCrossfadeSeconds(seconds)
 
+    /** Transitions pro du mode DJ (drop-swap façon festival). */
+    val proTransitions = PlayerCore.proTransitions
+
+    fun setProTransitions(on: Boolean) = PlayerCore.setProTransitions(on)
+
     /** Supprime définitivement un morceau du disque et de la bibliothèque. */
     fun deleteTrack(track: Track) {
         PlayerCore.onTrackDeleted(track.uri)

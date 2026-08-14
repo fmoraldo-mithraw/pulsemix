@@ -90,6 +90,22 @@ object PlayerCore {
             .edit().putInt("crossfadeSeconds", s).apply()
     }
 
+    /**
+     * Transitions « pro » du mode DJ : autorise le drop-swap de festival
+     * (montée filtrée sous l'outro, coupe nette sur le « 1 » du drop de
+     * l'entrant) et la sélection fadeSpecPro du moteur. Persisté, et
+     * applicable À CHAUD : la prochaine transition programmée le lit,
+     * pas besoin de redémarrer le set.
+     */
+    val proTransitions = MutableStateFlow(false)
+
+    fun setProTransitions(on: Boolean) {
+        proTransitions.value = on
+        mixer.setProMode(on)
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit().putBoolean("proTransitions", on).apply()
+    }
+
     /** Égaliseur simple : graves / médiums / aigus en dB (-6..+6). */
     val eqBands = MutableStateFlow(Triple(0f, 0f, 0f))
 
@@ -331,6 +347,7 @@ object PlayerCore {
         normalizeVolume.value = prefs.getBoolean("normalizeVolume", true)
         crossfade.value = prefs.getBoolean("crossfade", true)
         crossfadeSeconds.value = prefs.getInt("crossfadeSeconds", 10).coerceIn(3, 15)
+        proTransitions.value = prefs.getBoolean("proTransitions", false)
         // La latence d'amorçage est propre à l'appareil : la retenir entre
         // les sessions rend le PREMIER fondu aussi propre que les suivants,
         // au lieu de repartir d'une valeur typique à recalibrer.
@@ -535,6 +552,9 @@ object PlayerCore {
                 }
             }
         })
+        // Mode « Transitions pro » : réglage persistant transmis au moteur
+        // dès sa création (puis à chaud par setProTransitions).
+        mixer.setProMode(proTransitions.value)
 
         // Égaliseur sur la session ExoPlayer
         eqExo = try {
@@ -955,6 +975,7 @@ object PlayerCore {
         o.put("eqTreble", eqBands.value.third.toDouble())
         o.put("crossfade", crossfade.value)
         o.put("crossfadeSeconds", crossfadeSeconds.value)
+        o.put("proTransitions", proTransitions.value)
         return o
     }
 
@@ -971,6 +992,9 @@ object PlayerCore {
             setCrossfade(o.optBoolean("crossfade", crossfade.value))
             setCrossfadeSeconds(
                 o.optInt("crossfadeSeconds", crossfadeSeconds.value)
+            )
+            setProTransitions(
+                o.optBoolean("proTransitions", proTransitions.value)
             )
         }
     }

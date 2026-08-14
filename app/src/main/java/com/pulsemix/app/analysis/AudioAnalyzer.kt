@@ -35,8 +35,18 @@ class AudioAnalyzer {
          *
          * 2 : montée, amplitude de respiration, part de son tenu et part de
          * bas-médium — de quoi reconnaître l'orchestral et l'épique.
+         *
+         * 3 : structure segmentée avec l'énergie des BASSES par bloc —
+         * drop et break enfin distingués, « 1 » du drop recalé sur le
+         * saut de basses. C'est ce « 1 » que vise le drop-swap du moteur
+         * DJ : la bibliothèque se met à niveau au prochain scan (lancé
+         * automatiquement au démarrage).
          */
-        const val FEATURES_VERSION = 2
+        const val FEATURES_VERSION = 3
+
+        /** Coupure du one-pole d'extraction des basses (~< 150 Hz) pour
+         *  [Features.structure] : l'enveloppe des kicks et des sub. */
+        const val BASS_FC_HZ = 150f
 
         val NOTE_NAMES = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
         // Camelot : index = pitch class du fondamental
@@ -103,9 +113,10 @@ class AudioAnalyzer {
          * Structure du morceau (intro/montée/temps fort/calme/outro),
          * encodée compacte par [StructureDetector.encode]. Vide si rien de
          * fiable n'a pu être segmenté. Calculée ici — sur les tableaux
-         * déjà en mémoire, pas de seconde passe — et non versionnée : les
-         * morceaux analysés avant l'arrivée du champ ne sont PAS réanalysés
-         * (l'UI et le DJ gardent alors leur comportement historique).
+         * déjà en mémoire, pas de seconde passe. Depuis FEATURES_VERSION 3
+         * elle s'appuie aussi sur l'énergie des basses par bloc (drop et
+         * break distingués, « 1 » du drop recalé) : le bump fait remonter
+         * les anciennes bibliothèques au prochain scan.
          */
         val structure: String
     )
@@ -147,7 +158,9 @@ class AudioAnalyzer {
 
             // Structure du morceau : le flux spectral est recalé sur la
             // grille des blocs RMS ; hors de la fenêtre FFT (l'analyse n'en
-            // couvre qu'une partie centrale), -1 = pas de mesure.
+            // couvre qu'une partie centrale), -1 = pas de mesure. L'énergie
+            // des basses (même grille, même passe) distingue drop et break
+            // et recale le « 1 » des drops.
             val rmsArr = FloatArray(rms.size) { rms[it] }
             val fluxOnRms = FloatArray(rms.size) { i ->
                 val midSample = i.toLong() * RMS_BLOCK + RMS_BLOCK / 2
@@ -156,9 +169,13 @@ class AudioAnalyzer {
                     state.flux[j]
                 else -1f
             }
+            val bassArr = FloatArray(rms.size) {
+                if (it < state.bassRms.size) state.bassRms[it] else 0f
+            }
             val structure = StructureDetector.encode(
                 StructureDetector.detect(
-                    rmsArr, fluxOnRms, blockMs.toFloat(), bpm, durationMs, firstBeatMs
+                    rmsArr, fluxOnRms, blockMs.toFloat(), bpm, durationMs,
+                    firstBeatMs, bassArr
                 )
             )
 
@@ -205,6 +222,15 @@ class AudioAnalyzer {
         val rms = ArrayList<Float>()
         private var sumSq = 0.0
         private var blockFill = 0
+
+        // RMS de la bande basse (~< 150 Hz), même grille de blocs : un
+        // one-pole sur le PCM pendant la passe existante — pas de seconde
+        // passe de décodage, pas de FFT en plus. C'est le marqueur des
+        // drops pour StructureDetector.
+        val bassRms = ArrayList<Float>()
+        private var bassLp = 0f
+        private var bassAlpha = 0f
+        private var bassSumSq = 0.0
 
         // FFT
         private val frame = FloatArray(FFT_SIZE)
@@ -254,6 +280,8 @@ class AudioAnalyzer {
                 for (i in 0 until FFT_SIZE) {
                     window[i] = (0.5 - 0.5 * Math.cos(2.0 * Math.PI * i / (FFT_SIZE - 1))).toFloat()
                 }
+                // One-pole des basses : coefficient dépendant du taux réel
+                bassAlpha = (1.0 - exp(-2.0 * Math.PI * BASS_FC_HZ / sr)).toFloat()
             }
             for (f in 0 until frames) {
                 var m = 0f
@@ -265,12 +293,16 @@ class AudioAnalyzer {
         }
 
         private fun processSample(s: Float) {
-            // RMS global
+            // RMS global + RMS de la bande basse (one-pole, même bloc)
             sumSq += (s * s).toDouble()
+            bassLp += bassAlpha * (s - bassLp)
+            bassSumSq += (bassLp * bassLp).toDouble()
             blockFill++
             if (blockFill == RMS_BLOCK) {
                 rms.add(sqrt(sumSq / RMS_BLOCK).toFloat())
+                bassRms.add(sqrt(bassSumSq / RMS_BLOCK).toFloat())
                 sumSq = 0.0
+                bassSumSq = 0.0
                 blockFill = 0
             }
             // Framing FFT

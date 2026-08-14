@@ -189,6 +189,137 @@ class StructureDetectorTest {
         assertEquals(SectionKind.DROP, sections.first { it.startMs >= 32_000L }.kind)
     }
 
+    // ------------------------------------------------------------- basses
+    // Avec bassRms, le détecteur lit le marqueur n° 1 des drops en
+    // electro : le break retire la basse, le drop la fait exploser.
+
+    /** bassRms alignée sur la grille : paliers (nombre de trames, niveau). */
+    private fun bassProfile(vararg parts: Pair<Int, Float>): FloatArray {
+        val out = ArrayList<Float>()
+        for ((count, level) in parts) repeat(count) { out.add(level) }
+        return out.toFloatArray()
+    }
+
+    @Test
+    fun `bassRms vide - resultat identique a avant`() {
+        // Non-régression bit à bit : sans basses (défaut ou tableau vide),
+        // le profil de référence garde exactement sa lecture historique.
+        val rms = referenceRms()
+        val before = StructureDetector.detect(
+            rms, noFlux(rms.size), HOP_MS, 120f, DUR, 0L
+        )
+        val explicit = StructureDetector.detect(
+            rms, noFlux(rms.size), HOP_MS, 120f, DUR, 0L, FloatArray(0)
+        )
+        assertEquals(before, explicit)
+        // Une bassRms désalignée (taille différente) est ignorée aussi
+        val misaligned = StructureDetector.detect(
+            rms, noFlux(rms.size), HOP_MS, 120f, DUR, 0L, FloatArray(7) { 1f }
+        )
+        assertEquals(before, misaligned)
+        assertEquals(
+            listOf(
+                SectionKind.INTRO, SectionKind.BUILD, SectionKind.DROP,
+                SectionKind.BREAK, SectionKind.DROP, SectionKind.OUTRO
+            ),
+            before.map { it.kind }
+        )
+    }
+
+    @Test
+    fun `basses retirees - le fort sans basses est un break`() {
+        // Énergie RMS pleine PARTOUT dans le corps du morceau : au RMS
+        // seul, 40-160 s serait un unique temps fort. Les basses
+        // tranchent : retirées sur 96-112 s, c'est un break filtré.
+        val rms = profile(
+            Triple(160, 0.2f, 0.2f), // 0-16 s : intro
+            Triple(240, 0.2f, 1.0f), // 16-40 s : montée
+            Triple(560, 1.0f, 1.0f), // 40-96 s : drop
+            Triple(160, 1.0f, 1.0f), // 96-112 s : break FILTRÉ (rms plein !)
+            Triple(480, 1.0f, 1.0f), // 112-160 s : drop
+            Triple(400, 0.15f, 0.15f) // 160-200 s : outro
+        )
+        val bass = bassProfile(
+            310 to 0.05f, // 0-31 s : pas de basses (intro + montée)
+            650 to 0.5f, // 31-96 s : basses pleines
+            160 to 0.02f, // 96-112 s : basses retirées
+            480 to 0.5f, // 112-160 s : basses pleines
+            400 to 0.05f // 160-200 s : outro
+        )
+        val sections = StructureDetector.detect(
+            rms, noFlux(rms.size), HOP_MS, 120f, DUR, 0L, bass
+        )
+        assertEquals(
+            listOf(
+                SectionKind.INTRO, SectionKind.BUILD, SectionKind.DROP,
+                SectionKind.BREAK, SectionKind.DROP, SectionKind.OUTRO
+            ),
+            sections.map { it.kind }
+        )
+        val brk = sections.first { it.kind == SectionKind.BREAK }
+        assertEquals(96_000L, brk.startMs)
+        assertEquals(112_000L, brk.endMs)
+    }
+
+    @Test
+    fun `basses deja pleines pendant la rampe - pas un build`() {
+        // Les basses tournent à plein pendant la montée d'énergie : ce
+        // n'est pas un build d'electro (qui retire la basse pour la
+        // tension avant de la faire exploser).
+        val rms = referenceRms()
+        val bass = bassProfile(
+            160 to 0.5f, 240 to 0.5f, 560 to 0.5f,
+            160 to 0.02f, 480 to 0.5f, 400 to 0.05f
+        )
+        val sections = StructureDetector.detect(
+            rms, noFlux(rms.size), HOP_MS, 120f, DUR, 0L, bass
+        )
+        assertTrue(sections.none { it.kind == SectionKind.BUILD })
+        assertTrue(sections.any { it.kind == SectionKind.DROP })
+    }
+
+    @Test
+    fun `saut de basses decale - le 1 du drop est recale`() {
+        // La frontière brute vient du RMS lissé (croise 0,75 vers
+        // 35,25 s → arrondie à 32 s) ; le vrai « 1 » du drop est le grand
+        // saut de basses à 36,5 s, environ une demi-mesure plus loin.
+        // Recalée sur le saut PUIS arrondie à la phrase, la frontière
+        // tombe à 40 s.
+        val rms = profile(
+            Triple(160, 0.2f, 0.2f), // 0-16 s : intro
+            Triple(280, 0.2f, 1.0f), // 16-44 s : montée (0,75 à 35,25 s)
+            Triple(520, 1.0f, 1.0f), // 44-96 s : drop
+            Triple(400, 0.15f, 0.15f) // 96-136 s : outro
+        )
+        val dur = rms.size * 100L // 136 s
+        val bass = bassProfile(
+            300 to 0.02f, // 0-30 s : pas de basses
+            65 to 0.7f, // 30-36,5 s : les basses s'installent
+            995 to 1.0f // 36,5 s : le vrai « 1 » claque ici
+        )
+        val without = StructureDetector.detect(
+            rms, noFlux(rms.size), HOP_MS, 120f, dur, 0L
+        )
+        assertEquals(
+            32_000L,
+            without.first { it.kind == SectionKind.DROP }.startMs
+        )
+        val sections = StructureDetector.detect(
+            rms, noFlux(rms.size), HOP_MS, 120f, dur, 0L, bass
+        )
+        assertEquals(
+            listOf(
+                SectionKind.INTRO, SectionKind.BUILD,
+                SectionKind.DROP, SectionKind.OUTRO
+            ),
+            sections.map { it.kind }
+        )
+        assertEquals(
+            40_000L,
+            sections.first { it.kind == SectionKind.DROP }.startMs
+        )
+    }
+
     @Test
     fun `encode decode - aller-retour exact`() {
         val sections = listOf(
