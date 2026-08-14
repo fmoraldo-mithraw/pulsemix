@@ -186,12 +186,20 @@ object TagFixer {
      */
     suspend fun fetchAllCovers(store: TrackStore): Int = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext 0
-        // Un seul passage à la fois, tous types confondus : ils partagent
-        // le drapeau d'arrêt et se contrediraient (remise à zéro qui efface
-        // les jaquettes pendant qu'un passage en télécharge, etc.).
+        // Un seul passage TagFixer à la fois : ils partagent le drapeau
+        // d'arrêt et se contrediraient (la remise à zéro efface les
+        // jaquettes pendant qu'un passage en télécharge). L'analyse de la
+        // bibliothèque (LibraryScanner), elle, ne touche JAMAIS aux
+        // jaquettes et peut durer des heures : la bloquer ici rendait le
+        // bouton muet pendant toute une analyse — les deux coexistent
+        // (réseau d'un côté, CPU de l'autre).
         if (coverProgress.value != null || _progress.value != null ||
-            writeProgress.value != null || LibraryScanner.progress.value != null
+            writeProgress.value != null
         ) {
+            // Dire pourquoi rien ne part : un bouton muet est un bug aux
+            // yeux de l'utilisateur (à raison).
+            coverMessage.value =
+                "Une autre passe de tags est déjà en cours — réessaie après."
             return@withContext 0
         }
         stopRequested = false
