@@ -317,7 +317,10 @@ fun LibraryScreen(
                 FilterChip(
                     selected = compatOnly,
                     onClick = { compatOnly = !compatOnly },
-                    enabled = current != null,
+                    // Le filtre exige un morceau en cours ANALYSÉ (BPM/clé
+                    // connus) : actif sans ça, la puce s'allumait sans
+                    // changer la liste d'un iota.
+                    enabled = current?.analyzed == true,
                     label = { Text("Compatibles") }
                 )
                 FilterChip(

@@ -92,11 +92,6 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     // Suppression sur confirmation : un simple tap de croix effaçait la
     // playlist sans retour possible — action définitive, comme les morceaux.
     var deleteTarget by remember { mutableStateOf<String?>(null) }
-    // Export M3U : PlaylistStore.exportM3u est asynchrone et ne renvoie rien
-    // (erreurs avalées) — on affiche donc une confirmation générique, sinon
-    // le bouton « m3u » restait muet. Horodatage en clé pour que le message
-    // se réarme même en ré-exportant la même playlist.
-    var exportInfo by remember { mutableStateOf<Pair<Long, String>?>(null) }
     // Playlists intelligentes : suppression confirmée + dialogue de création
     val smartPlaylists by vm.smartPlaylists.collectAsStateWithLifecycle()
     var deleteSmartTarget by remember { mutableStateOf<String?>(null) }
@@ -179,18 +174,22 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
-            exportInfo?.let { (stamp, name) ->
+            // Résultat RÉEL de l'export (chemin créé, ou erreur) : l'ancien
+            // message générique confirmait même quand l'écriture échouait.
+            val exportMsg by vm.playlistExportMessage.collectAsStateWithLifecycle()
+            exportMsg?.let { msg ->
                 Text(
-                    "Playlist « $name » exportée en M3U " +
-                        "(dossier Playlists de l'appli).",
+                    msg,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = if (msg.contains("échoué") || msg.contains("impossible"))
+                        MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary
                 )
                 // Le message confirme puis s'efface : il ne doit pas
                 // s'installer entre le titre et la liste.
-                LaunchedEffect(stamp) {
-                    delay(4_000)
-                    exportInfo = null
+                LaunchedEffect(msg) {
+                    delay(6_000)
+                    vm.playlistExportMessage.value = null
                 }
             }
             Spacer(Modifier.height(4.dp))
@@ -224,7 +223,6 @@ fun PlaylistsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                         }
                         TextButton(onClick = {
                             vm.exportPlaylist(pl)
-                            exportInfo = System.currentTimeMillis() to pl.name
                         }) { Text("m3u") }
                         IconButton(onClick = { deleteTarget = pl.name }) {
                             Icon(
@@ -495,6 +493,9 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
     // Vrai quand la recherche doit se lancer dès l'ouverture (bouton
     // « Chercher » d'une proposition incertaine)
     var manualAuto by remember { mutableStateOf(false) }
+    // Message des lignes de correction dont le morceau a quitté la
+    // bibliothèque (suggestions persistées, fichier supprimé depuis)
+    var missingTrackMsg by remember { mutableStateOf<String?>(null) }
     var pickTrack by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     val writeToFiles by vm.writeTagsToFiles.collectAsStateWithLifecycle()
@@ -673,6 +674,17 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                 TextButton(onClick = { vm.clearCoverMessage() }) { Text("OK") }
             }
         }
+        missingTrackMsg?.let { msg ->
+            Text(
+                msg,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+            LaunchedEffect(msg) {
+                delay(4_000)
+                missingTrackMsg = null
+            }
+        }
         tagError?.let {
             Spacer(Modifier.height(4.dp))
             Text(
@@ -750,14 +762,24 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                                 // Ni l'un ni l'autre : voir la liste des
                                 // possibilités et choisir le bon résultat
                                 TextButton(onClick = {
-                                    manualAuto = true
-                                    manualFor = tracks.find { it.uri == s.uri }
+                                    // Morceau disparu de la bibliothèque :
+                                    // sans message, le bouton semblait mort
+                                    // (et manualAuto restait armé pour rien)
+                                    val t = tracks.find { it.uri == s.uri }
+                                    if (t != null) {
+                                        manualAuto = true
+                                        manualFor = t
+                                    } else missingTrackMsg =
+                                        "Ce morceau n'est plus dans la bibliothèque."
                                 }) { Text("Chercher") }
                             }
                         }
                         // Écouter le morceau pour vérifier l'artiste
                         IconButton(onClick = {
-                            tracks.find { it.uri == s.uri }?.let(vm::playTrack)
+                            val t = tracks.find { it.uri == s.uri }
+                            if (t != null) vm.playTrack(t)
+                            else missingTrackMsg =
+                                "Ce morceau n'est plus dans la bibliothèque."
                         }) { Icon(Icons.Rounded.PlayArrow, "Écouter") }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
@@ -793,8 +815,12 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                                     // Correction douteuse ? Revoir la liste
                                     // des possibilités, en choisir une autre.
                                     TextButton(onClick = {
-                                        manualAuto = true
-                                        manualFor = tracks.find { it.uri == s.uri }
+                                        val t = tracks.find { it.uri == s.uri }
+                                        if (t != null) {
+                                            manualAuto = true
+                                            manualFor = t
+                                        } else missingTrackMsg =
+                                            "Ce morceau n'est plus dans la bibliothèque."
                                     }) { Text("Chercher") }
                                     // Ou revenir aux tags d'avant correction
                                     TextButton(onClick = { vm.revertTag(s) }) {
@@ -806,7 +832,10 @@ fun TagsScreen(vm: PlayerViewModel, onBack: () -> Unit) {
                                 }
                             }
                             IconButton(onClick = {
-                                tracks.find { it.uri == s.uri }?.let(vm::playTrack)
+                                val t = tracks.find { it.uri == s.uri }
+                                if (t != null) vm.playTrack(t)
+                                else missingTrackMsg =
+                                    "Ce morceau n'est plus dans la bibliothèque."
                             }) { Icon(Icons.Rounded.PlayArrow, "Écouter") }
                         }
                         HorizontalDivider(
@@ -1062,7 +1091,15 @@ fun ImportUrlScreen(vm: PlayerViewModel, onBack: () -> Unit) {
         val context = LocalContext.current
         val micPermission = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission()
-        ) { granted -> if (granted) vm.startSongRecognition() }
+        ) { granted ->
+            if (granted) vm.startSongRecognition()
+            // Refus (ou refus définitif : Android ne montre même plus le
+            // dialogue) : sans ce message, le bouton semblait mort.
+            else SongRecognizer.state.value = SongRecognizer.State.Error(
+                "Micro refusé — autorise-le dans les réglages Android " +
+                    "(Applications > PulseMix > Autorisations)."
+            )
+        }
         // Titre identifié : remplir le champ et lancer la recherche YouTube
         LaunchedEffect(recogState) {
             val rs = recogState

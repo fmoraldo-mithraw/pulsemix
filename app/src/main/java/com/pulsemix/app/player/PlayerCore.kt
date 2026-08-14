@@ -235,14 +235,14 @@ object PlayerCore {
 
     /** Kill des basses d'un deck (A = actif/sortant, B = entrant). */
     fun setBassKill(deckA: Boolean, on: Boolean) {
-        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        if (mode.value != PlayerMode.DJ || djEngineStoppedAndSay()) return
         if (deckA) bassKillA.value = on else bassKillB.value = on
         mixer.setBassKill(deckA, on)
     }
 
     /** Boucle de sortie manuelle du deck actif (0 = off, 4 ou 8 temps). */
     fun setExitLoop(beats: Int) {
-        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        if (mode.value != PlayerMode.DJ || djEngineStoppedAndSay()) return
         val b = if (beats == 4 || beats == 8) beats else 0
         exitLoopBeats.value = b
         mixer.setManualLoop(b)
@@ -250,14 +250,14 @@ object PlayerCore {
 
     /** Nudge tempo ± : petite retouche momentanée pour recaler à l'oreille. */
     fun nudgeTempo(delta: Float) {
-        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        if (mode.value != PlayerMode.DJ || djEngineStoppedAndSay()) return
         mixer.nudgeTempo(delta)
     }
 
     /** « Mixer maintenant » : transition immédiate vers le morceau
      *  suivant — le même chemin que le bouton « suivant » en mode DJ. */
     fun mixNow() {
-        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        if (mode.value != PlayerMode.DJ || djEngineStoppedAndSay()) return
         crossfadedFrom = null
         stopTail()
         mixer.nextTrack()
@@ -740,7 +740,12 @@ object PlayerCore {
     fun playNormal(tracks: List<Track>, startIndex: Int = 0) {
         resetAutoNextForLaunch()
         stopTail()
-        if (tracks.isEmpty()) return
+        if (tracks.isEmpty()) {
+            // Comme Douce/Mix/DJ : dire pourquoi rien ne démarre
+            launchMessage.value =
+                "Aucun morceau dans la bibliothèque : ajoute un dossier de musique."
+            return
+        }
         launchMessage.value = null
         stopDjIfNeeded()
         mode.value = PlayerMode.NORMAL
@@ -884,7 +889,8 @@ object PlayerCore {
 
     /** Démarre/arrête l'enregistrement du set DJ (fichier M4A). */
     fun toggleDjRecording() {
-        if (mode.value != PlayerMode.DJ || !mixer.isRunning) return
+        if (mode.value != PlayerMode.DJ) return
+        if (djEngineStoppedAndSay()) return
         if (djRecording.value) {
             mixer.setRecorder(null)
             djRecording.value = false
@@ -897,7 +903,11 @@ object PlayerCore {
                 )
                 mixer.setRecorder(MixRecorder(f))
                 djRecording.value = true
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                // Stockage plein/indisponible : sans message, l'icône
+                // restait grise sans explication
+                launchMessage.value = "Enregistrement impossible : " +
+                    (e.message ?: e::class.java.simpleName)
             }
         }
     }
@@ -960,9 +970,19 @@ object PlayerCore {
 
     /** Marque la transition qui vient de se produire comme ratée. */
     fun markBadTransition() {
-        val from = prevDjUri ?: return
-        val to = currentTrack.value?.uri ?: return
-        if (from != to) com.pulsemix.app.data.TransitionFeedback.record(from, to)
+        // Premier morceau d'un set : aucune transition encore jouée — le
+        // dire, le bouton restait muet. Et confirmer l'enregistrement :
+        // sans retour, impossible de savoir si le geste a compté.
+        val from = prevDjUri
+        val to = currentTrack.value?.uri
+        if (from == null || to == null || from == to) {
+            launchMessage.value =
+                "Aucune transition encore jouée dans ce set."
+            return
+        }
+        com.pulsemix.app.data.TransitionFeedback.record(from, to)
+        launchMessage.value =
+            "Transition notée : ces deux morceaux ne s'enchaîneront plus."
     }
 
     /** Réglages exportés dans la sauvegarde du dossier de musique. */
@@ -1072,11 +1092,25 @@ object PlayerCore {
         )
     }
 
+    /**
+     * Mode DJ affiché mais moteur arrêté (fin de set + enchaînement
+     * annulé, ou reprise après fermeture — seul « lecture » relance) :
+     * les gestes DJ n'ont personne pour les consommer. Le dire, plutôt
+     * que des boutons actifs qui ne font rien — même famille de bug que
+     * le « Jaquettes » muet.
+     */
+    private fun djEngineStoppedAndSay(): Boolean {
+        if (mode.value != PlayerMode.DJ || mixer.isRunning) return false
+        launchMessage.value = "Set arrêté — appuie sur lecture pour le relancer."
+        return true
+    }
+
     fun next() {
         // Tout changement voulu rend caduque la marque « fin déjà fondue » :
         // si on revient plus tard sur ce morceau, sa fin doit l'être encore.
         crossfadedFrom = null
         if (mode.value == PlayerMode.DJ) {
+            if (djEngineStoppedAndSay()) return
             stopTail()
             // Morceau suivant, pas phase suivante : « suivant » avance d'un
             // morceau quel que soit le mode. Le moteur y fait une vraie
@@ -1104,6 +1138,12 @@ object PlayerCore {
         } else {
             exo.nextMediaItemIndex
         }
+        // Bout de file sans répétition : seekToNextMediaItem serait un
+        // no-op silencieux — le bouton semblait mort. Le dire.
+        if (target == C.INDEX_UNSET && !exo.hasNextMediaItem()) {
+            launchMessage.value = "Fin de la file d'attente."
+            return
+        }
         crossfadeTo(exo.hasNextMediaItem()) {
             when {
                 target != C.INDEX_UNSET -> exo.seekTo(target, 0)
@@ -1117,6 +1157,7 @@ object PlayerCore {
         // fin doit pouvoir l'être à nouveau.
         crossfadedFrom = null
         if (mode.value == PlayerMode.DJ) {
+            if (djEngineStoppedAndSay()) return
             stopTail()
             // Morceau précédent, pas phase précédente : même règle que
             // « suivant », la navigation se fait morceau par morceau.
@@ -1729,6 +1770,10 @@ object PlayerCore {
     fun seekToFractionSmooth(f: Float) {
         val frac = f.coerceIn(0f, 1f)
         if (mode.value == PlayerMode.DJ) {
+            // Moteur arrêté : la demande ne serait jamais consommée, et
+            // l'UI affichait la position « voulue » pendant 20 s avant de
+            // retomber — le geste semblait pris puis annulé.
+            if (djEngineStoppedAndSay()) return
             mixer.requestSeek(frac)
             return
         }

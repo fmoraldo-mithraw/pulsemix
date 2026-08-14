@@ -420,9 +420,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun resetAllTags() {
         viewModelScope.launch {
             val n = com.pulsemix.app.library.TagFixer.resetAll(store)
-            tagResetMessage.value =
-                if (n > 0) "$n morceaux remis aux tags de leurs fichiers."
-                else "Aucun tag à remettre : la bibliothèque suit déjà les fichiers."
+            tagResetMessage.value = when {
+                // -1 : refus (analyse ou autre passe en cours) — surtout ne
+                // pas annoncer un faux « rien à faire »
+                n < 0 -> "Impossible pour l'instant : une analyse ou une " +
+                    "autre passe est en cours — réessaie après."
+                n > 0 -> "$n morceaux remis aux tags de leurs fichiers."
+                else -> "Aucun tag à remettre : la bibliothèque suit déjà les fichiers."
+            }
         }
     }
 
@@ -674,6 +679,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val byUri = tracks.value.associateBy { it.uri }
         val list = p.uris.mapNotNull { byUri[it] }
         if (list.isNotEmpty()) PlayerCore.playNormal(list, 0)
+        // Fichiers supprimés ou dossier re-choisi (les URI SAF changent) :
+        // sans message, le tap fermait l'écran sans jouer quoi que ce soit.
+        else PlayerCore.launchMessage.value =
+            "« ${p.name} » : aucun de ses morceaux n'est encore dans la " +
+                "bibliothèque (fichiers déplacés ou supprimés ?)."
     }
 
     fun deletePlaylist(name: String) = com.pulsemix.app.data.PlaylistStore.delete(name)
@@ -682,6 +692,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         com.pulsemix.app.data.PlaylistStore.exportM3u(
             getApplication(), p, tracks.value.associate { it.uri to it.title }
         )
+
+    /** Résultat réel du dernier export M3U (chemin créé, ou erreur). */
+    val playlistExportMessage = com.pulsemix.app.data.PlaylistStore.exportMessage
 
     /** Définit le meilleur passage à la main (verrouillé contre la réanalyse). */
     fun setManualSegment(track: Track, startMs: Long, durMs: Long) =

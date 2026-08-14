@@ -72,11 +72,20 @@ object PlaylistStore {
         }
     }
 
+    /** Résultat du dernier export M3U (chemin créé, ou erreur) : l'écran
+     *  affichait avant une confirmation générique, mensongère quand
+     *  l'écriture échouait en silence (stockage indisponible). */
+    val exportMessage = MutableStateFlow<String?>(null)
+
     /** Export M3U8 dans le dossier de fichiers externes de l'appli. */
     fun exportM3u(context: Context, playlist: Playlist, titles: Map<String, String>) {
         scope.launch {
             try {
-                val dir = context.getExternalFilesDir("Playlists") ?: return@launch
+                val dir = context.getExternalFilesDir("Playlists")
+                if (dir == null) {
+                    exportMessage.value = "Export impossible : stockage indisponible."
+                    return@launch
+                }
                 val safe = playlist.name.replace(Regex("[^A-Za-z0-9 _-]"), "_")
                 val out = File(dir, "$safe.m3u8")
                 out.writeText(buildString {
@@ -86,7 +95,11 @@ object PlaylistStore {
                         append(uri).append('\n')
                     }
                 })
-            } catch (_: Exception) {
+                exportMessage.value =
+                    "« ${playlist.name} » exportée : ${out.absolutePath}"
+            } catch (e: Exception) {
+                exportMessage.value =
+                    "Export M3U échoué : ${e.message ?: e::class.java.simpleName}"
             }
         }
     }

@@ -192,6 +192,18 @@ fun PlayerScreen(
                 color = MaterialTheme.colorScheme.error
             )
         }
+        // Export du meilleur passage lancé depuis le menu ⋮ d'un morceau
+        // d'ICI : le résultat (chemin du fichier, ou échec) ne s'affichait
+        // que dans Bibliothèque — invisible depuis le lecteur.
+        val segmentMsg by vm.segmentExportMessage.collectAsStateWithLifecycle()
+        segmentMsg?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+        }
 
         // Fin d'un mix : décompte avant l'enchaînement sur un mix du même
         // type. Il démarre pendant les dernières secondes du dernier
@@ -277,8 +289,13 @@ fun PlayerScreen(
         val t = track
         if (t != null && t.analyzed) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = {}, label = { Text("${t.bpm} BPM") })
-                AssistChip(onClick = {}, label = { Text("${t.keyName} · ${t.camelot}") })
+                // Purement informatifs : cliquables, ils ondulaient sous le
+                // doigt sans rien faire — un bouton qui ment.
+                AssistChip(onClick = {}, enabled = false, label = { Text("${t.bpm} BPM") })
+                AssistChip(
+                    onClick = {}, enabled = false,
+                    label = { Text("${t.keyName} · ${t.camelot}") }
+                )
             }
         }
 
@@ -298,6 +315,9 @@ fun PlayerScreen(
                     FilterChip(
                         selected = i == currentPhase,
                         onClick = {},
+                        // Indicateur de phase, pas commande (le saut passe
+                        // par ⏭) : désactivé pour ne pas mentir au doigt
+                        enabled = false,
                         label = { Text(phases[i]) }
                     )
                 }
@@ -361,10 +381,18 @@ fun PlayerScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            IconButton(onClick = { vm.setShuffle(!shuffle) }) {
+            // Aléatoire : n'agit qu'en NORMAL/DOUCE (en Mix/DJ la file
+            // suit le plan) — affiché ailleurs, il s'allumait sans rien
+            // changer. Même tri que le bouton répétition.
+            IconButton(
+                onClick = { vm.setShuffle(!shuffle) },
+                enabled = mode == PlayerMode.NORMAL || mode == PlayerMode.DOUCE
+            ) {
                 Icon(
                     Icons.Rounded.Shuffle, "Aléatoire",
-                    tint = if (shuffle) MaterialTheme.colorScheme.primary
+                    tint = if (shuffle &&
+                        (mode == PlayerMode.NORMAL || mode == PlayerMode.DOUCE)
+                    ) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
             }

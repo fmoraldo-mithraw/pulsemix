@@ -135,6 +135,14 @@ object TagFixer {
         if (writeProgress.value != null || _progress.value != null ||
             coverProgress.value != null || LibraryScanner.progress.value != null
         ) {
+            // Ici le verrou anti-analyse est JUSTIFIÉ (on réécrit les
+            // fichiers que le scanner lit) — mais un refus doit se dire :
+            // un bouton actif qui ne fait rien est un bug aux yeux de
+            // l'utilisateur.
+            writeMessage.value =
+                if (LibraryScanner.progress.value != null)
+                    "Analyse de la bibliothèque en cours — réessaie après."
+                else "Une autre passe de tags est déjà en cours — réessaie après."
             return@withContext 0
         }
         stopRequested = false
@@ -349,9 +357,16 @@ object TagFixer {
         withContext(Dispatchers.IO) {
             // Jamais pendant un scan : il réécrit les morceaux en masse,
             // les corrections appliquées en parallèle seraient de la loterie.
+            // Le refus se DIT (lastError est affiché par l'écran Tags) : un
+            // bouton actif qui ne fait rien est un bug aux yeux de
+            // l'utilisateur — même famille que le bouton « Jaquettes » muet.
             if (_progress.value != null || coverProgress.value != null ||
                 writeProgress.value != null || LibraryScanner.progress.value != null
             ) {
+                lastError.value =
+                    if (LibraryScanner.progress.value != null)
+                        "Analyse de la bibliothèque en cours — réessaie après."
+                    else "Une autre passe de tags est déjà en cours."
                 return@withContext
             }
             stopRequested = false
@@ -449,7 +464,10 @@ object TagFixer {
         if (_progress.value != null || coverProgress.value != null ||
             writeProgress.value != null || LibraryScanner.progress.value != null
         ) {
-            return@withContext 0
+            // -1 = refus (passe concurrente), à distinguer de « 0 tag à
+            // remettre » : l'appelant affichait un faux succès (« la
+            // bibliothèque suit déjà les fichiers ») sur un simple refus.
+            return@withContext -1
         }
         stopRequested = false
         resetting.value = true
