@@ -1463,20 +1463,35 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var gatePhase = 0.0
         var gateSm = 1f
 
-        // Répétition : avance rapide jusqu'aux ~15 dernières secondes du deck
-        fun fastForward(d: Deck) {
-            if (!rehearsal) return
-            val tailFrames = 15L * OUT_SR
-            var w = 0
-            while (running && d.remainingOut > tailFrames) {
-                if (d.read(tmpA, 0, BLOCK_FRAMES) == 0) break
-                if (++w % 8 == 0) {
-                    java.util.Arrays.fill(out, 0f)
-                    audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
-                }
+        // Répétition : SAUT direct aux ~15 dernières secondes du deck, en
+        // le ROUVRANT à la bonne position (même mécanique que le
+        // déplacement manuel, seekFromMs). L'ancienne « avance rapide »
+        // LISAIT tout le morceau en écrivant un bloc de silence sur huit
+        // (WRITE_BLOCKING) : à ~8x le temps réel, « répéter les
+        // transitions » jouait des dizaines de secondes de silence avant
+        // chaque jonction — vécu comme « ça ne lance rien ». Rouvrir
+        // coûte ~0,5 s de silence, une fois par morceau. Échec
+        // d'ouverture : le deck d'origine continue tel quel.
+        fun rehearsalSkip(d: Deck): Deck {
+            if (!rehearsal) return d
+            if (d.remainingOut <= 15L * OUT_SR) return d
+            val target = d.logicalEndMs - 15_000L
+            if (target <= 0L) return d
+            val factor = phaseLengthFactor.getOrElse(d.segment.phaseIndex) { 1f }
+            // Mêmes paramètres de longueur que le deck d'origine : le
+            // calcul de fin (segMs x facteur + calage structure) est pur,
+            // la réouverture retombe sur le même logicalEndMs.
+            val nd = Deck(
+                d.segIndex, d.segment, d.curRate, factor,
+                playToEnd = d.playToEnd, seekFromMs = target
+            )
+            if (!nd.open()) {
+                nd.close()
+                return d
             }
-            // recaler la grille de beats sur la position réellement atteinte
-            d.startedAtFrame = framesGlobal - d.framesOut
+            d.close()
+            nd.startedAtFrame = framesGlobal
+            return nd
         }
 
         fun openNextValid(
@@ -1518,7 +1533,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             currentPhaseIndex = deckA.segment.phaseIndex
             currentSegIndex = deckA.segIndex
             announce(deckA)
-            fastForward(deckA)
+            deckA = rehearsalSkip(deckA)
 
             while (running && gen == runGeneration) {
                 // Pause (miroir du bouton play/pause et du Bluetooth).
@@ -2441,7 +2456,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     currentPhaseIndex = b.segment.phaseIndex
                     currentSegIndex = b.segIndex
                     announce(b)
-                    fastForward(b)
+                    deckA = rehearsalSkip(b)
                 }
 
                 // Début/fin de transition annoncés à l'UI (activation du
