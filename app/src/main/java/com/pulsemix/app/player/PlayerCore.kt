@@ -11,6 +11,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.PlayerMessage
 import com.pulsemix.app.R
 import com.pulsemix.app.data.PlaybackState
 import com.pulsemix.app.data.PlaybackStateStore
@@ -73,6 +74,9 @@ object PlayerCore {
     fun setCrossfade(enabled: Boolean) {
         crossfade.value = enabled
         if (!enabled) releasePrepared()
+        // Les déclencheurs de timeline suivent le réglage : posés pour le
+        // morceau en cours à l'activation, retirés à la désactivation.
+        if (enabled) scheduleCrossfadeMessages() else cancelCrossfadeMessages()
         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
             .edit().putBoolean("crossfade", enabled).apply()
     }
@@ -86,6 +90,9 @@ object PlayerCore {
         // écrivait dans les préférences soixante fois par seconde.
         if (s == crossfadeSeconds.value) return
         crossfadeSeconds.value = s
+        // La fenêtre du fondu vient de changer : les déclencheurs de
+        // timeline du morceau en cours doivent suivre.
+        scheduleCrossfadeMessages()
         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
             .edit().putInt("crossfadeSeconds", s).apply()
     }
@@ -377,6 +384,11 @@ object PlayerCore {
                 // La boucle d'entretien s'endort à l'arrêt : tout retour de
                 // la lecture doit la réveiller.
                 if (playing) ensureTicker()
+                // La pause a annulé les déclencheurs de timeline (stopTail) :
+                // toute reprise doit les réarmer pour le morceau en cours.
+                if (playing && mode.value != PlayerMode.DJ) {
+                    scheduleCrossfadeMessages()
+                }
                 // La queue du morceau précédent ne doit pas jouer seule —
                 // mais SEULEMENT si la lecture est vraiment arrêtée. Un
                 // saut met le lecteur en tampon, donc `playing` retombe à
@@ -427,7 +439,36 @@ object PlayerCore {
                 // tours suivants enchaînaient à sec.
                 crossfadedFrom = null
                 if (mode.value != PlayerMode.DJ) updateFromExo()
+                // Nouveaux déclencheurs de timeline pour le nouveau morceau
+                // (si sa durée n'est pas encore connue, READY / timeline
+                // ci-dessous repasseront).
+                scheduleCrossfadeMessages()
                 scheduleHousekeeping()
+            }
+
+            override fun onTimelineChanged(
+                timeline: androidx.media3.common.Timeline,
+                reason: Int
+            ) {
+                // La durée du morceau peut n'être connue qu'ici (TIME_UNSET
+                // à l'ouverture) : les déclencheurs de timeline en dépendent.
+                if (mode.value != PlayerMode.DJ) scheduleCrossfadeMessages()
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                // Un seek périme les déclencheurs de timeline : consommés
+                // (deleteAfterDelivery), ils ne se redélivrent pas après un
+                // retour en arrière, et un saut en avant par-dessus le point
+                // ne les délivre pas — on les reprogramme.
+                if (reason == Player.DISCONTINUITY_REASON_SEEK ||
+                    reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT
+                ) {
+                    if (mode.value != PlayerMode.DJ) scheduleCrossfadeMessages()
+                }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -435,6 +476,11 @@ object PlayerCore {
                 if (state == Player.STATE_ENDED &&
                     mode.value == PlayerMode.MIX
                 ) startAutoNext()
+                // Durée désormais connue : les déclencheurs de timeline
+                // peuvent (enfin) être posés au bon endroit.
+                if (state == Player.STATE_READY &&
+                    mode.value != PlayerMode.DJ
+                ) scheduleCrossfadeMessages()
             }
         })
 
@@ -1421,6 +1467,13 @@ object PlayerCore {
     /** Ouvre la queue d'avance pour le morceau en cours (fin approchante). */
     private fun prepareTailAhead() {
         val track = currentTrack.value ?: return
+        // Déjà une queue pré-armée ? Pour ce morceau, rien à refaire ; pour
+        // un autre, la remplacer proprement — écraser le champ aurait laissé
+        // une instance ExoPlayer orpheline, jamais libérée.
+        if (preparedTail != null) {
+            if (preparedUri == track.uri) return
+            releasePrepared()
+        }
         preparedTail = try {
             newTailPlayer(track)
         } catch (_: Exception) {
@@ -1440,6 +1493,110 @@ object PlayerCore {
     }
 
     /**
+     * Déclencheurs ancrés sur la TIMELINE du morceau (PlayerMessage) : le
+     * tick de 500 ms vit sur un Handler que l'écran éteint retarde parfois
+     * de plusieurs secondes — assez pour manquer la fenêtre du fondu et
+     * laisser passer l'enchaînement sec. Un PlayerMessage, lui, est délivré
+     * par le thread de lecture quand LA LECTURE atteint la position visée,
+     * écran allumé ou non, et son rappel s'exécute sur le thread principal
+     * (setLooper). Le ticker reste en filet : ses gardes (exoTail == null,
+     * preparedTail == null, crossfadedFrom) et celles des rappels
+     * ci-dessous excluent tout double déclenchement.
+     */
+    private var prearmMessage: PlayerMessage? = null
+    private var fadeMessage: PlayerMessage? = null
+
+    private fun cancelCrossfadeMessages() {
+        try {
+            prearmMessage?.cancel()
+        } catch (_: Exception) {
+        }
+        try {
+            fadeMessage?.cancel()
+        } catch (_: Exception) {
+        }
+        prearmMessage = null
+        fadeMessage = null
+    }
+
+    /**
+     * (Re)programme les deux déclencheurs du morceau COURANT : pré-armement
+     * de la queue, puis départ du fondu. Appelé à chaque changement de
+     * morceau, quand la durée devient connue (READY / timeline — elle est
+     * TIME_UNSET au tout début), et après un seek : un message consommé
+     * (deleteAfterDelivery) ne se redélivre pas après un retour en arrière,
+     * et un saut en avant PAR-DESSUS le point ne le délivre pas non plus —
+     * on repart donc sur des messages neufs. Les CONDITIONS de tir sont
+     * réévaluées à la livraison, pas ici : entre la programmation et la fin
+     * du morceau, tout peut changer.
+     */
+    private fun scheduleCrossfadeMessages() {
+        cancelCrossfadeMessages()
+        if (!initialized) return
+        if (!crossfade.value || mode.value == PlayerMode.DJ) return
+        // Mêmes exigences que le ticker : durée connue (TIME_UNSET est
+        // négatif), morceau plus long que la fenêtre, un suivant à
+        // enchaîner.
+        val d = exo.duration
+        if (d <= CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L) return
+        if (!exo.hasNextMediaItem()) return
+        val index = exo.currentMediaItemIndex
+        val fadeAt = d - CROSSFADE_MS - CROSSFADE_LEAD_MS
+        val prearmAt = (fadeAt - PREARM_AHEAD_MS / 2).coerceAtLeast(0L)
+        prearmMessage = try {
+            exo.createMessage { _, _ -> onPrearmPositionReached() }
+                .setPosition(index, prearmAt)
+                .setLooper(Looper.getMainLooper())
+                .setDeleteAfterDelivery(true)
+                .also { it.send() }
+        } catch (_: Exception) {
+            null
+        }
+        fadeMessage = try {
+            exo.createMessage { _, _ -> onCrossfadePositionReached() }
+                .setPosition(index, fadeAt)
+                .setLooper(Looper.getMainLooper())
+                .setDeleteAfterDelivery(true)
+                .also { it.send() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Point de pré-armement atteint : mêmes gardes que le ticker. */
+    private fun onPrearmPositionReached() {
+        if (!initialized || mode.value == PlayerMode.DJ) return
+        val d = exo.duration
+        if (crossfade.value && d > 0 && isPlaying.value &&
+            exo.hasNextMediaItem() && exoTail == null &&
+            preparedTail == null &&
+            currentTrack.value?.uri != crossfadedFrom &&
+            d > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
+            d - exo.currentPosition > CROSSFADE_MS + CROSSFADE_LEAD_MS
+        ) {
+            prepareTailAhead()
+        }
+    }
+
+    /** Point de départ du fondu atteint : mêmes gardes que le ticker. */
+    private fun onCrossfadePositionReached() {
+        if (!initialized || mode.value == PlayerMode.DJ) return
+        val d = exo.duration
+        if (crossfade.value && d > 0 && isPlaying.value &&
+            exo.hasNextMediaItem() && exoTail == null &&
+            currentTrack.value?.uri != crossfadedFrom &&
+            d > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
+            // Trop tard, c'est trop tard — même plancher que le ticker :
+            // mieux vaut l'enchaînement direct qu'une bascule qui
+            // rejouerait la fin du morceau terminé.
+            d - exo.currentPosition >= MIN_AUTO_CROSSFADE_REMAIN_MS
+        ) {
+            crossfadedFrom = currentTrack.value?.uri
+            crossfadeToNext()
+        }
+    }
+
+    /**
      * Confie [track] à partir de [fromMs] au second lecteur, qui le prolonge
      * puis s'efface sur [fadeMs]. Le lecteur principal est libre de partir
      * ailleurs immédiatement.
@@ -1452,20 +1609,47 @@ object PlayerCore {
         fromGesture: Boolean,
         onSwitch: () -> Unit
     ) {
-        // Une bascule de geste encore en attente est appliquée d'abord (deux
-        // « suivant » rapprochés avancent de deux morceaux) ; une bascule
-        // automatique est jetée (voir PendingSwitch).
-        consumePendingBeforeGesture()
-        // Une queue pré-armée pour ce morceau (voir prepareTailAhead) est
-        // déjà ouverte, mise en tampon et prête : la bascule est immédiate
-        // au lieu d'attendre l'ouverture du fichier — c'est cette attente
-        // qui laissait la fenêtre aux fins naturelles et aux garde-fous.
-        val reused = preparedTail?.takeIf { preparedUri == track.uri }
-        if (reused != null) {
+        // La queue pré-armée pour CE morceau (voir prepareTailAhead) est
+        // PRÉLEVÉE avant toute autre chose : consumePendingBeforeGesture()
+        // passe par stopTail() → releasePrepared(), qui la détruisait trois
+        // lignes avant sa réutilisation — chaque bascule repartait donc d'un
+        // lecteur froid (ouverture du fichier, prepare, amorçage), et le
+        // pré-armement ne servait jamais. Sortie du champ, elle échappe à ce
+        // ménage ; charge à nous de la libérer sur tout chemin d'échec.
+        val prearmed = preparedTail?.takeIf { preparedUri == track.uri }
+        if (prearmed != null) {
             preparedTail = null
             preparedUri = null
-        } else {
-            releasePrepared()
+        }
+        // Une bascule de geste encore en attente est appliquée d'abord (deux
+        // « suivant » rapprochés avancent de deux morceaux) ; une bascule
+        // automatique est jetée (voir PendingSwitch). Au passage, stopTail
+        // libère une éventuelle queue pré-armée pour un AUTRE morceau.
+        try {
+            consumePendingBeforeGesture()
+        } catch (e: Exception) {
+            // Le pré-armé sorti du champ ne doit fuir sur aucun chemin.
+            try {
+                prearmed?.release()
+            } catch (_: Exception) {
+            }
+            throw e
+        }
+        // Déjà ouverte, mise en tampon et prête : la bascule est immédiate
+        // au lieu d'attendre l'ouverture du fichier — c'est cette attente
+        // qui laissait la fenêtre aux fins naturelles et aux garde-fous.
+        // Recalage sur la position vive, comme pour un lecteur neuf.
+        val reused = prearmed?.let { p ->
+            try {
+                p.seekTo(fromMs)
+                p
+            } catch (_: Exception) {
+                try {
+                    p.release()
+                } catch (_: Exception) {
+                }
+                null
+            }
         }
         val player = reused ?: try {
             newTailPlayer(track).apply { seekTo(fromMs) }
@@ -1580,8 +1764,12 @@ object PlayerCore {
                         // boosts suivent le morceau sur le second lecteur.
                         // La session audio n'existe qu'une fois la lecture
                         // partie — d'où la création ici et pas à la
-                        // préparation.
-                        eqTail = try {
+                        // préparation. À PLAT en revanche, rien à copier :
+                        // insérer un AudioEffect dans la chaîne (même
+                        // désactivé, applyEqTo le laisse off) pile à la
+                        // bascule peut faire cliquer le mixeur — on s'en
+                        // passe.
+                        eqTail = if (eqIsFlat()) null else try {
                             android.media.audiofx.Equalizer(0, player.audioSessionId)
                                 .also { applyEqTo(it, includeFilter = true) }
                         } catch (_: Exception) {
@@ -1602,8 +1790,12 @@ object PlayerCore {
                         if (known != null) {
                             val remain = known - player.currentPosition
                             if (remain > 0) {
+                                // Marge élargie (750 ms) : la fin encodée
+                                // réelle précède souvent la durée annoncée,
+                                // et une courbe qui la touche s'arrête net
+                                // en plein croisement.
                                 eff = fadeMs.coerceAtMost(
-                                    (remain - 250L).coerceAtLeast(600L)
+                                    (remain - 750L).coerceAtLeast(600L)
                                 )
                             }
                         }
@@ -1646,11 +1838,17 @@ object PlayerCore {
                 // la main au pont de toute façon : on la lui donne proprement.
                 seekJob?.cancel()
                 val g0 = fadeGain
-                for (k in 1..BRIDGE_STEPS) {
-                    val x = k.toFloat() / BRIDGE_STEPS
+                // Pont calé sur l'horloge réelle, comme les fondus : des
+                // delay() étirés ne doivent pas prolonger le tuilage.
+                val bridge0 = android.os.SystemClock.elapsedRealtime()
+                val bridgeDur = (BRIDGE_STEPS * BRIDGE_STEP_MS).toFloat()
+                while (true) {
+                    val x = ((android.os.SystemClock.elapsedRealtime() - bridge0) /
+                        bridgeDur).coerceAtMost(1f)
                     player.volume = v0 * kotlin.math.sin(x * (Math.PI / 2).toFloat())
                     fadeGain = g0 * kotlin.math.cos(x * (Math.PI / 2).toFloat())
                     applyVolume()
+                    if (x >= 1f) break
                     delay(BRIDGE_STEP_MS)
                     // Le pont tient le jeton pendant qu'il joue : un geste ou
                     // un enchaînement naturel survenu là a déjà réglé le sort
@@ -1688,6 +1886,16 @@ object PlayerCore {
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) switchNow(withTail = true)
+                // Fichier de la queue épuisé : plus rien à prolonger, on
+                // s'en sépare proprement. Si cela survient pendant le pont
+                // ou le fondu, leurs gardes `exoTail !== player` voient le
+                // champ rendu et laissent le principal poursuivre son
+                // fondu d'entrée sans toucher un lecteur libéré.
+                if (state == Player.STATE_ENDED && exoTail === player) {
+                    tailJob?.cancel()
+                    tailJob = null
+                    releaseTail()
+                }
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -1718,42 +1926,104 @@ object PlayerCore {
     private fun fadeOutTail(player: ExoPlayer, v0: Float, fadeMs: Long) {
         tailJob?.cancel()
         tailJob = autoScope.launch(Dispatchers.Main) {
-            val steps = (fadeMs / FADE_STEP_MS).toInt().coerceAtLeast(1)
-            for (i in 1..steps) {
+            // Progression calée sur l'HORLOGE réelle, pas sur le compte des
+            // pas : quand le thread principal peine, les delay() s'étirent
+            // et une courbe comptée débordait de la fin du fichier de la
+            // queue — arrêt net à -9/-15 dB en plein croisement. Ici, un
+            // étirement fait sauter des pas, la durée totale ne bouge pas.
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            val dur = fadeMs.coerceAtLeast(1L).toFloat()
+            while (true) {
+                // La queue a pu être congédiée par un geste ou finir son
+                // fichier (STATE_ENDED) pendant un delay : ne pas toucher
+                // un lecteur libéré, ni celui qui l'aurait remplacé.
+                if (exoTail !== player) return@launch
+                val x = ((android.os.SystemClock.elapsedRealtime() - t0) / dur)
+                    .coerceAtMost(1f)
                 // La somme des deux sources garde un niveau constant, là où
                 // un fondu linéaire creuse au milieu
-                val x = i.toFloat() / steps
                 player.volume = v0 * kotlin.math.cos(x * (Math.PI / 2).toFloat())
+                if (x >= 1f) break
                 delay(FADE_STEP_MS)
             }
             releaseTail()
         }
     }
 
+    /**
+     * Délai entre la mise au silence de la queue et sa destruction :
+     * release() démonte la chaîne audio (lecteur + AudioEffect) et tombait
+     * pile sur la fin du fondu, l'instant le plus sensible à l'oreille —
+     * micro-glitch du mixeur possible. À volume nul et à l'arrêt, démonter
+     * 200 ms plus tard ne s'entend plus.
+     */
+    private const val TAIL_RELEASE_DELAY_MS = 200L
+
+    /** Destruction différée en attente (au plus une à la fois). */
+    private var deferredTailRelease: Runnable? = null
+
+    /** Exécute sans attendre la destruction différée (fermeture, rafale). */
+    private fun flushDeferredTailRelease() {
+        val r = deferredTailRelease ?: return
+        deferredTailRelease = null
+        handler.removeCallbacks(r)
+        r.run()
+    }
+
     private fun releaseTail() {
-        try {
-            eqTail?.release()
-        } catch (_: Exception) {
-        }
+        val eq = eqTail
         eqTail = null
-        val p = exoTail ?: return
+        val p = exoTail
         exoTail = null
+        if (p == null) {
+            try {
+                eq?.release()
+            } catch (_: Exception) {
+            }
+            return
+        }
+        // Silence immédiat — le champ est déjà rendu, personne ne reprendra
+        // ce lecteur — puis destruction différée, hors de l'instant sensible.
         try {
+            p.volume = 0f
             p.stop()
-            p.release()
         } catch (_: Exception) {
         }
+        // Une destruction différée précédente encore en attente part tout de
+        // suite : un seul lecteur en sursis à la fois, pas de fuite quand
+        // les bascules s'enchaînent vite.
+        flushDeferredTailRelease()
+        val r = object : Runnable {
+            override fun run() {
+                if (deferredTailRelease === this) deferredTailRelease = null
+                try {
+                    eq?.release()
+                } catch (_: Exception) {
+                }
+                try {
+                    p.release()
+                } catch (_: Exception) {
+                }
+            }
+        }
+        deferredTailRelease = r
+        handler.postDelayed(r, TAIL_RELEASE_DELAY_MS)
     }
 
     /** Monte le lecteur principal depuis le silence, en equal-power. */
     private fun fadeInMain(fadeMs: Long) {
         seekJob?.cancel()
         seekJob = autoScope.launch(Dispatchers.Main) {
-            val steps = (fadeMs / FADE_STEP_MS).toInt().coerceAtLeast(1)
-            for (i in 1..steps) {
-                val x = i.toFloat() / steps
+            // Même ancrage sur l'horloge réelle que fadeOutTail : un thread
+            // principal en retard saute des pas au lieu d'étirer la montée.
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            val dur = fadeMs.coerceAtLeast(1L).toFloat()
+            while (true) {
+                val x = ((android.os.SystemClock.elapsedRealtime() - t0) / dur)
+                    .coerceAtMost(1f)
                 fadeGain = kotlin.math.sin(x * (Math.PI / 2).toFloat())
                 applyVolume()
+                if (x >= 1f) break
                 delay(FADE_STEP_MS)
             }
             fadeGain = 1f
@@ -1883,6 +2153,21 @@ object PlayerCore {
             .apply()
         applyEqTo(eqExo, includeFilter = true)
         applyEqTo(eqDj)
+    }
+
+    /**
+     * Vrai quand l'égaliseur, les boosts et le filtre sont à plat : la
+     * queue n'a alors aucun timbre à copier. Les CIBLES des rampes
+     * (bassLevel/trebleLevel) comptent aussi : un boost tout juste demandé,
+     * encore à zéro le temps d'un tick, doit quand même suivre sur la
+     * queue.
+     */
+    private fun eqIsFlat(): Boolean {
+        val (bass, mid, treble) = eqBands.value
+        return bass == 0f && mid == 0f && treble == 0f &&
+            bassBoostExtraDb == 0f && trebleExtraDb == 0f &&
+            bassLevel.value == 0 && trebleLevel.value == 0 &&
+            filterLevel.value == 0
     }
 
     /**
@@ -2442,8 +2727,10 @@ object PlayerCore {
         // Une bascule en attente devient caduque : l'appelant (nouveau mix,
         // nouvelle lecture…) refait la file lui-même, l'appliquer sauterait
         // dans une file qui n'existe déjà plus. La queue pré-armée visait le
-        // morceau en cours : caduque aussi.
+        // morceau en cours : caduque aussi, comme les déclencheurs de
+        // timeline (ils se reprogramment au prochain morceau/seek/reprise).
         pendingSwitch = null
+        cancelCrossfadeMessages()
         releasePrepared()
         tailJob?.cancel()
         tailJob = null
@@ -2620,6 +2907,10 @@ object PlayerCore {
         // après fermeture.
         stopTail()
         releasePrepared()
+        // La destruction différée de la queue (releaseTail) ne doit pas être
+        // avalée par le removeCallbacksAndMessages ci-dessous : on l'exécute
+        // tout de suite, sinon le lecteur et son effet fuyaient.
+        flushDeferredTailRelease()
         try {
             eqExo?.release()
         } catch (_: Exception) {
