@@ -359,6 +359,8 @@ object PlayerCore {
         // les sessions rend le PREMIER fondu aussi propre que les suivants,
         // au lieu de repartir d'une valeur typique à recalibrer.
         tailStartupLagMs = prefs.getLong("tailStartupLag", 120L).coerceIn(0L, 400L)
+        tailStartupLagWarmMs =
+            prefs.getLong("tailStartupLagWarm", 40L).coerceIn(0L, 400L)
         repeatMode.value = prefs.getInt("repeatMode", 0).coerceIn(0, 2)
         eqBands.value = Triple(
             prefs.getFloat("eqBass", 0f),
@@ -638,6 +640,10 @@ object PlayerCore {
                         d - exo.currentPosition in
                         MIN_AUTO_CROSSFADE_REMAIN_MS..(CROSSFADE_MS + CROSSFADE_LEAD_MS)
                     ) {
+                        transLog(
+                            "fondu déclenché (ticker filet), reste " +
+                                "${d - exo.currentPosition} ms"
+                        )
                         crossfadedFrom = currentTrack.value?.uri
                         crossfadeToNext()
                     }
@@ -1416,6 +1422,11 @@ object PlayerCore {
      */
     private const val MAX_TAIL_DRIFT_MS = 150L
 
+    /** Écart de raccord visé après recalage MUET : sous ~40 ms, l'oreille
+     *  fusionne les deux sources ; au-delà, un rejeu/une élision s'entend
+     *  comme un saut sur de la musique rythmée. */
+    private const val SEAM_TOLERANCE_MS = 40L
+
     /**
      * Latence d'amorçage de la sortie audio du second lecteur, mesurée sur
      * CET appareil : le temps entre play() et la première goutte de son.
@@ -1428,6 +1439,12 @@ object PlayerCore {
      * est l'amorçage typique d'un AudioTrack Android.
      */
     @Volatile private var tailStartupLagMs = 120L
+
+    /** Latence d'amorçage d'une queue PRÉ-ARMÉE (départ à chaud) : bien
+     *  plus courte qu'à froid — un estimateur unique, calibré sur les
+     *  départs froids, surcompensait les départs chauds et ÉLIDAIT
+     *  ~80-120 ms au raccord, audible comme un saut de disque. */
+    @Volatile private var tailStartupLagWarmMs = 40L
 
     /**
      * Second lecteur muet et sans focus audio, préparé sur le même item que
@@ -1506,7 +1523,16 @@ object PlayerCore {
     private var prearmMessage: PlayerMessage? = null
     private var fadeMessage: PlayerMessage? = null
 
+    /** Jeton de génération des messages : cancel() est asynchrone vis-à-vis
+     *  d'une livraison déjà postée sur le main looper — une livraison
+     *  PÉRIMÉE (ancien morceau, ancien index après édition de file, seek)
+     *  pouvait encore passer les gardes et déclencher un fondu en plein
+     *  milieu d'un morceau (« la transition a sauté »). Chaque
+     *  (re)programmation invalide tout ce qui la précède. */
+    private var crossfadeMsgGen = 0
+
     private fun cancelCrossfadeMessages() {
+        crossfadeMsgGen++
         try {
             prearmMessage?.cancel()
         } catch (_: Exception) {
@@ -1543,8 +1569,9 @@ object PlayerCore {
         val index = exo.currentMediaItemIndex
         val fadeAt = d - CROSSFADE_MS - CROSSFADE_LEAD_MS
         val prearmAt = (fadeAt - PREARM_AHEAD_MS / 2).coerceAtLeast(0L)
+        val gen = crossfadeMsgGen
         prearmMessage = try {
-            exo.createMessage { _, _ -> onPrearmPositionReached() }
+            exo.createMessage { _, _ -> onPrearmPositionReached(gen) }
                 .setPosition(index, prearmAt)
                 .setLooper(Looper.getMainLooper())
                 .setDeleteAfterDelivery(true)
@@ -1553,7 +1580,7 @@ object PlayerCore {
             null
         }
         fadeMessage = try {
-            exo.createMessage { _, _ -> onCrossfadePositionReached() }
+            exo.createMessage { _, _ -> onCrossfadePositionReached(gen) }
                 .setPosition(index, fadeAt)
                 .setLooper(Looper.getMainLooper())
                 .setDeleteAfterDelivery(true)
@@ -1563,8 +1590,11 @@ object PlayerCore {
         }
     }
 
-    /** Point de pré-armement atteint : mêmes gardes que le ticker. */
-    private fun onPrearmPositionReached() {
+    /** Point de pré-armement atteint : mêmes gardes que le ticker, fenêtre
+     *  COMPLÈTE comprise (plancher ET plafond) — une livraison périmée qui
+     *  tomberait loin de la fin ne doit rien déclencher. */
+    private fun onPrearmPositionReached(gen: Int) {
+        if (gen != crossfadeMsgGen) return
         if (!initialized || mode.value == PlayerMode.DJ) return
         val d = exo.duration
         if (crossfade.value && d > 0 && isPlaying.value &&
@@ -1572,25 +1602,32 @@ object PlayerCore {
             preparedTail == null &&
             currentTrack.value?.uri != crossfadedFrom &&
             d > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
-            d - exo.currentPosition > CROSSFADE_MS + CROSSFADE_LEAD_MS
+            d - exo.currentPosition in
+            (CROSSFADE_MS + CROSSFADE_LEAD_MS + 1)..
+            (CROSSFADE_MS + CROSSFADE_LEAD_MS + PREARM_AHEAD_MS)
         ) {
             prepareTailAhead()
         }
     }
 
-    /** Point de départ du fondu atteint : mêmes gardes que le ticker. */
-    private fun onCrossfadePositionReached() {
+    /** Point de départ du fondu atteint : mêmes gardes que le ticker —
+     *  fenêtre COMPLÈTE (plancher « trop tard c'est trop tard » ET plafond
+     *  « pas trop tôt ») : sans plafond, une livraison périmée déclenchait
+     *  un fondu en plein milieu du morceau. */
+    private fun onCrossfadePositionReached(gen: Int) {
+        if (gen != crossfadeMsgGen) return
         if (!initialized || mode.value == PlayerMode.DJ) return
         val d = exo.duration
         if (crossfade.value && d > 0 && isPlaying.value &&
             exo.hasNextMediaItem() && exoTail == null &&
             currentTrack.value?.uri != crossfadedFrom &&
             d > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
-            // Trop tard, c'est trop tard — même plancher que le ticker :
-            // mieux vaut l'enchaînement direct qu'une bascule qui
-            // rejouerait la fin du morceau terminé.
-            d - exo.currentPosition >= MIN_AUTO_CROSSFADE_REMAIN_MS
+            d - exo.currentPosition in
+            MIN_AUTO_CROSSFADE_REMAIN_MS..(CROSSFADE_MS + CROSSFADE_LEAD_MS)
         ) {
+            transLog(
+                "fondu déclenché (message), reste ${d - exo.currentPosition} ms"
+            )
             crossfadedFrom = currentTrack.value?.uri
             crossfadeToNext()
         }
@@ -1686,6 +1723,7 @@ object PlayerCore {
             // restent justes même si la file a bougé — les abandonner ici
             // avalerait l'appui.
             if (!fromGesture && exo.currentMediaItemIndex != expectedIndex) {
+                transLog("bascule caduque : la file a enchaîné toute seule")
                 pendingSwitch = null
                 releaseTail()
                 return
@@ -1718,8 +1756,10 @@ object PlayerCore {
                     // continue. Sans cette avance, la queue reprenait avec ce
                     // retard tout entier : un bout déjà entendu rejouait à la
                     // bascule. Le tampon couvre largement le saut en avant.
+                    val warm = reused != null
                     val live = exo.currentPosition
-                    val target = live + tailStartupLagMs
+                    val target = live +
+                        (if (warm) tailStartupLagWarmMs else tailStartupLagMs)
                     val compensated = target - player.currentPosition > 40L
                     if (compensated) player.seekTo(target)
                     // « Prêt » ne veut pas dire « audible » : on lance la
@@ -1739,25 +1779,70 @@ object PlayerCore {
                         if (exoTail !== player) return@launch
                     }
                     tailAudible = player.currentPosition > start
-                    // Écart résiduel entre le direct et la queue à l'instant
-                    // de la bascule. Positif : un bout rejoue ; négatif : un
-                    // bout est élidé. Compensé, il tombe à quelques dizaines
-                    // de millisecondes — sous le seuil où l'oreille fusionne
-                    // les deux en un seul son.
-                    val residual = exo.currentPosition - player.currentPosition
-                    if (compensated) {
-                        // La latence réelle de CE fondu affine l'estimation
-                        // pour les suivants (moyenne glissante, bornée), et
-                        // la valeur suit l'appareil d'une session à l'autre.
-                        val actual = (residual + tailStartupLagMs).coerceIn(0L, 400L)
-                        tailStartupLagMs = (tailStartupLagMs * 7 + actual * 3) / 10
+                    // Écart résiduel entre le direct et la queue. Positif :
+                    // un bout rejoue ; négatif : un bout est élidé.
+                    var residual = exo.currentPosition - player.currentPosition
+                    if (compensated && tailAudible) {
+                        // La latence réelle de CE démarrage affine
+                        // l'estimateur CORRESPONDANT (chaud ≠ froid) —
+                        // moyenne glissante bornée, persistée.
+                        val lag0 = if (warm) tailStartupLagWarmMs
+                        else tailStartupLagMs
+                        val actual = (residual + lag0).coerceIn(0L, 400L)
+                        if (warm) {
+                            tailStartupLagWarmMs =
+                                (tailStartupLagWarmMs * 7 + actual * 3) / 10
+                        } else {
+                            tailStartupLagMs =
+                                (tailStartupLagMs * 7 + actual * 3) / 10
+                        }
                         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
-                            .edit().putLong("tailStartupLag", tailStartupLagMs).apply()
+                            .edit()
+                            .putLong("tailStartupLag", tailStartupLagMs)
+                            .putLong("tailStartupLagWarm", tailStartupLagWarmMs)
+                            .apply()
                     }
-                    // Résidu trop grand malgré tout — rejoue comme élision
-                    // s'entendraient : arrivée franche plutôt que raccord sale.
+                    // Recalage MUET itératif : la queue est encore à volume
+                    // zéro — tant que l'écart dépasse le seuil d'inaudibilité
+                    // (~40 ms), on la re-cale et on re-mesure, sans que rien
+                    // ne s'entende. C'est ce qui remplace l'ancienne
+                    // tolérance sèche de 150 ms : un rejeu/une élision de
+                    // 100-150 ms au raccord s'entendait comme un saut de
+                    // disque sur de la musique rythmée.
+                    var fixes = 0
+                    while (tailAudible &&
+                        kotlin.math.abs(residual) > SEAM_TOLERANCE_MS &&
+                        fixes < 2
+                    ) {
+                        fixes++
+                        val lagNow = if (warm) tailStartupLagWarmMs
+                        else tailStartupLagMs
+                        val again = exo.currentPosition + lagNow
+                        player.seekTo(again)
+                        var w2 = 0L
+                        while (w2 < 400L && player.currentPosition <= again) {
+                            delay(20L)
+                            w2 += 20L
+                            if (exoTail !== player) return@launch
+                        }
+                        if (player.currentPosition <= again) {
+                            // Jamais repartie après le recalage : raccord
+                            // invérifiable, arrivée franche plutôt que sale.
+                            tailAudible = false
+                            break
+                        }
+                        residual = exo.currentPosition - player.currentPosition
+                    }
+                    // Résidu toujours trop grand malgré les recalages —
+                    // rejoue comme élision s'entendraient : arrivée franche.
                     if (tailAudible && kotlin.math.abs(residual) > MAX_TAIL_DRIFT_MS) {
+                        transLog(
+                            "bascule sèche : résidu ${residual} ms après " +
+                                "$fixes recalage(s)"
+                        )
                         tailAudible = false
+                    } else if (fixes > 0) {
+                        transLog("raccord recalé x$fixes, résidu $residual ms")
                     }
                     if (tailAudible) {
                         // Même timbre que le principal : l'égaliseur et les
@@ -1819,6 +1904,7 @@ object PlayerCore {
                 // silence : c'est exactement la microcoupure qu'on chasse.
                 // On s'en sépare et on arrive franchement.
                 if (!tailAudible) {
+                    transLog("bascule sèche : queue jamais audible (timeout/dérive)")
                     pendingSwitch = null
                     releaseTail()
                     fadeGain = 0f
@@ -2947,6 +3033,13 @@ object PlayerCore {
 
     /** Journal partagé avec PlaybackService : service_log.txt (interne +
      *  externe, comme crash_log.txt). */
+    /** Journal des transitions : mêmes fichiers que diagLog, mais écrits
+     *  HORS du thread principal — diagLog est synchrone, et deux écritures
+     *  disque en plein raccord seraient elles-mêmes une source de saccade. */
+    private fun transLog(message: String) {
+        autoScope.launch(Dispatchers.IO) { diagLog(message) }
+    }
+
     private fun diagLog(message: String) {
         try {
             for (dir in listOfNotNull(
