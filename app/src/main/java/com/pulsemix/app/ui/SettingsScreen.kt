@@ -152,6 +152,40 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
+        // ------------------------------------------------------- diagnostic
+        // Le journal vit dans Android/data, inaccessible depuis la plupart
+        // des gestionnaires de fichiers : « Enregistrer sous » (SAF) le met
+        // là où l'utilisateur peut le reprendre (Téléchargements, Drive…).
+        Text(
+            "Diagnostic",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            "Le journal trace les transitions (déclenchements, recalages), " +
+                "le service média et le moteur DJ — utile pour signaler un " +
+                "problème de lecture.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+        val diagLauncher =
+            androidx.activity.compose.rememberLauncherForActivityResult(
+                androidx.activity.result.contract.ActivityResultContracts
+                    .CreateDocument("text/plain")
+            ) { uri -> if (uri != null) vm.exportDiagLog(uri) }
+        val diagMsg by vm.exportMessage.collectAsStateWithLifecycle()
+        androidx.compose.material3.OutlinedButton(
+            onClick = { diagLauncher.launch("PulseMix.journal.txt") }
+        ) { Text("Exporter le journal (.txt)") }
+        diagMsg?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+        }
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
         // ------------------------------------------------------ réveil matin
         val context = androidx.compose.ui.platform.LocalContext.current
         val alarmOn by vm.alarmEnabled.collectAsStateWithLifecycle()

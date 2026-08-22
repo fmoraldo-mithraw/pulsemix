@@ -261,6 +261,50 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Exporte le journal de diagnostic (transitions, service média, moteur
+     * DJ) vers un fichier choisi par l'utilisateur : le dossier
+     * Android/data de l'appli est inaccessible depuis la plupart des
+     * gestionnaires de fichiers modernes — sans export, le journal
+     * n'existait que pour ceux qui branchent un câble USB.
+     */
+    fun exportDiagLog(dest: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            exportMessage.value = try {
+                val app = getApplication<android.app.Application>()
+                val sources = listOf(
+                    "service_log.txt", "dj_log.txt", "crash_log.txt"
+                ).flatMap { name ->
+                    listOfNotNull(app.filesDir, app.getExternalFilesDir(null))
+                        .map { java.io.File(it, name) }
+                }.filter { it.exists() && it.length() > 0 }
+                    // Interne et externe portent le même contenu : ne garder
+                    // qu'un exemplaire par nom (le plus gros, au cas où)
+                    .groupBy { it.name }
+                    .map { (_, files) -> files.maxBy { it.length() } }
+                if (sources.isEmpty()) {
+                    "Journal vide : rien à exporter pour l'instant."
+                } else {
+                    val out = app.contentResolver.openOutputStream(dest, "wt")
+                    if (out == null) {
+                        "Export impossible : destination inaccessible."
+                    } else {
+                        out.bufferedWriter().use { w ->
+                            for (f in sources) {
+                                w.write("===== ${f.name} =====\n")
+                                w.write(f.readText())
+                                w.write("\n")
+                            }
+                        }
+                        "Journal exporté (${sources.joinToString { it.name }})."
+                    }
+                }
+            } catch (e: Exception) {
+                "Export impossible : ${e.message ?: e::class.java.simpleName}"
+            }
+        }
+    }
+
     fun toggleFavorite(track: Track) = updateTrack(track.uri) {
         it.copy(favorite = !it.favorite)
     }
