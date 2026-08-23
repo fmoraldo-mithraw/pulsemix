@@ -56,8 +56,15 @@ class PlaybackService : MediaSessionService() {
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) =
             updateNotification()
 
-        override fun onMediaItemTransition(item: MediaItem?, reason: Int) =
+        override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+            // La piste silencieuse du mode DJ boucle (REPEAT_MODE_ONE) :
+            // chaque tour déclenchait cette transition et repostait la
+            // notification DEUX FOIS PAR SECONDE, des heures durant
+            // (constaté au journal) — gaspillage permanent et source
+            // possible de micro-accrocs.
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) return
             updateNotification()
+        }
     }
 
     private fun actionIntent(action: String): PendingIntent =

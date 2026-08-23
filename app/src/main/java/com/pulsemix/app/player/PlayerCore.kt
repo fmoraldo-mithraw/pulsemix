@@ -1874,7 +1874,12 @@ object PlayerCore {
                         } catch (_: Exception) {
                             break
                         }
-                        val slideMs = (kotlin.math.abs(residual) * 25L / 2L)
+                        // AMORTI à ~80 % du résidu : viser 100 % faisait
+                        // dépasser la cible puis rebondir de l'autre côté
+                        // (34 -> -43 ms observé en journal), le plafond
+                        // d'itérations arrêtant l'oscillation au mauvais
+                        // moment. En sous-corrigeant, chaque passe converge.
+                        val slideMs = (kotlin.math.abs(residual) * 10L)
                             .coerceIn(40L, 2_000L)
                         val t0 = android.os.SystemClock.elapsedRealtime()
                         while (android.os.SystemClock.elapsedRealtime() - t0 <
@@ -1887,10 +1892,17 @@ object PlayerCore {
                             player.setPlaybackSpeed(1f)
                         } catch (_: Exception) {
                         }
-                        // Position stabilisée avant la mesure suivante
-                        delay(40L)
+                        // Position stabilisée avant la mesure suivante :
+                        // le retour à 1x met quelques dizaines de ms à se
+                        // refléter dans la position rapportée
+                        delay(80L)
                         if (exoTail !== player) return@launch
+                        val before = residual
                         residual = medianResidual(player)
+                        // Divergence (rebond au-delà du point de départ) :
+                        // inutile d'insister, la passe suivante repartirait
+                        // dans l'autre sens — le contrôle final tranche.
+                        if (kotlin.math.abs(residual) >= kotlin.math.abs(before)) break
                     }
                     // Résidu toujours trop grand malgré les recalages —
                     // rejoue comme élision s'entendraient : arrivée franche.
