@@ -1422,10 +1422,12 @@ object PlayerCore {
      */
     private const val MAX_TAIL_DRIFT_MS = 150L
 
-    /** Écart de raccord visé après recalage MUET : sous ~40 ms, l'oreille
-     *  fusionne les deux sources ; au-delà, un rejeu/une élision s'entend
-     *  comme un saut sur de la musique rythmée. */
-    private const val SEAM_TOLERANCE_MS = 40L
+    /** Écart de raccord visé après le glissement fin : sous ~12 ms, le
+     *  rejeu/l'élision passe sous le seuil de fusion de l'oreille — le
+     *  raccord est perçu comme continu, même sur de la musique rythmée.
+     *  (Un seek ne peut pas l'atteindre : granularité d'une trame, ~26 ms
+     *  en MP3 — d'où l'alignement par la VITESSE.) */
+    private const val SEAM_TOLERANCE_MS = 12L
 
     /**
      * Latence d'amorçage de la sortie audio du second lecteur, mesurée sur
@@ -1445,6 +1447,19 @@ object PlayerCore {
      *  départs froids, surcompensait les départs chauds et ÉLIDAIT
      *  ~80-120 ms au raccord, audible comme un saut de disque. */
     @Volatile private var tailStartupLagWarmMs = 40L
+
+    /** Écart direct-queue MÉDIAN sur cinq lectures espacées de 10 ms :
+     *  les positions interpolées gigotent de quelques ms, une lecture
+     *  unique ferait osciller le recalage autour du zéro. */
+    private suspend fun medianResidual(tail: ExoPlayer): Long {
+        val reads = LongArray(5)
+        for (i in reads.indices) {
+            reads[i] = exo.currentPosition - tail.currentPosition
+            if (i < reads.lastIndex) delay(10L)
+        }
+        reads.sort()
+        return reads[2]
+    }
 
     /**
      * Second lecteur muet et sans focus audio, préparé sur le même item que
@@ -1802,19 +1817,18 @@ object PlayerCore {
                             .putLong("tailStartupLagWarm", tailStartupLagWarmMs)
                             .apply()
                     }
-                    // Recalage MUET itératif : la queue est encore à volume
-                    // zéro — tant que l'écart dépasse le seuil d'inaudibilité
-                    // (~40 ms), on la re-cale et on re-mesure, sans que rien
-                    // ne s'entende. C'est ce qui remplace l'ancienne
-                    // tolérance sèche de 150 ms : un rejeu/une élision de
-                    // 100-150 ms au raccord s'entendait comme un saut de
-                    // disque sur de la musique rythmée.
-                    var fixes = 0
-                    while (tailAudible &&
-                        kotlin.math.abs(residual) > SEAM_TOLERANCE_MS &&
-                        fixes < 2
-                    ) {
-                        fixes++
+                    // Recalage MUET en deux temps — la queue est encore à
+                    // volume zéro, rien de tout ceci ne s'entend :
+                    //  1. GROSSIER (seek) : un seek a la granularité d'une
+                    //     trame audio (~26 ms en MP3), il ne peut que
+                    //     rapprocher — jamais annuler l'écart ;
+                    //  2. FIN (vitesse) : comme un DJ cale ses platines, la
+                    //     queue glisse à ±4 % jusqu'à écart quasi nul — la
+                    //     vitesse, elle, n'a aucune granularité. Sous
+                    //     [SEAM_TOLERANCE_MS], le raccord est inaudible
+                    //     même sur de la musique rythmée.
+                    residual = medianResidual(player)
+                    if (tailAudible && kotlin.math.abs(residual) > 120L) {
                         val lagNow = if (warm) tailStartupLagWarmMs
                         else tailStartupLagMs
                         val again = exo.currentPosition + lagNow
@@ -1829,20 +1843,59 @@ object PlayerCore {
                             // Jamais repartie après le recalage : raccord
                             // invérifiable, arrivée franche plutôt que sale.
                             tailAudible = false
+                        } else {
+                            residual = medianResidual(player)
+                        }
+                    }
+                    // Glissement fin — réservé aux transitions AUTOMATIQUES :
+                    // un geste (suivant, seek) attend une réponse immédiate,
+                    // et son raccord change de contenu de toute façon.
+                    var slides = 0
+                    while (tailAudible && !fromGesture &&
+                        kotlin.math.abs(residual) > SEAM_TOLERANCE_MS &&
+                        slides < 3
+                    ) {
+                        slides++
+                        // residual > 0 : la queue est en retard sur le
+                        // direct → accélérer ; < 0 → ralentir. À ±4 %,
+                        // combler r ms demande r × 25 ms de glissement.
+                        val speeding = residual > 0
+                        try {
+                            player.setPlaybackSpeed(if (speeding) 1.04f else 0.96f)
+                        } catch (_: Exception) {
                             break
                         }
-                        residual = exo.currentPosition - player.currentPosition
+                        val slideMs = (kotlin.math.abs(residual) * 25L)
+                            .coerceIn(40L, 1_200L)
+                        val t0 = android.os.SystemClock.elapsedRealtime()
+                        while (android.os.SystemClock.elapsedRealtime() - t0 <
+                            slideMs
+                        ) {
+                            delay(20L)
+                            if (exoTail !== player) return@launch
+                        }
+                        try {
+                            player.setPlaybackSpeed(1f)
+                        } catch (_: Exception) {
+                        }
+                        // Position stabilisée avant la mesure suivante
+                        delay(40L)
+                        if (exoTail !== player) return@launch
+                        residual = medianResidual(player)
                     }
                     // Résidu toujours trop grand malgré les recalages —
                     // rejoue comme élision s'entendraient : arrivée franche.
                     if (tailAudible && kotlin.math.abs(residual) > MAX_TAIL_DRIFT_MS) {
                         transLog(
                             "bascule sèche : résidu ${residual} ms après " +
-                                "$fixes recalage(s)"
+                                "recalages ($slides glissement(s))"
                         )
                         tailAudible = false
-                    } else if (fixes > 0) {
-                        transLog("raccord recalé x$fixes, résidu $residual ms")
+                    } else if (tailAudible) {
+                        transLog(
+                            "raccord aligné : résidu $residual ms " +
+                                "($slides glissement(s))"
+                        )
                     }
                     if (tailAudible) {
                         // Même timbre que le principal : l'égaliseur et les
