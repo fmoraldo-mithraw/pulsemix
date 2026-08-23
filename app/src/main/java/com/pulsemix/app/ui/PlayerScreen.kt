@@ -593,8 +593,11 @@ fun PlayerScreen(
                     added = emptySet()
                     track?.let { suggestions = vm.suggestionsFor(it) }
                 }
-                ElevatedCard(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                // Feuille du bas, pas une carte en ligne : l'écran lecteur
+                // ne défile pas, et la carte s'ouvrait SOUS le bord de
+                // l'écran — invisible, le bouton semblait mort.
+                ModalBottomSheet(onDismissRequest = { showSuggestions = false }) {
+                    Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 "Ça enchaînerait bien :",
@@ -682,6 +685,7 @@ fun PlayerScreen(
                                 }
                             }
                         }
+                        Spacer(Modifier.height(24.dp))
                     }
                 }
             }
