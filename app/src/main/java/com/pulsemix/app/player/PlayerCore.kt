@@ -1841,6 +1841,14 @@ object PlayerCore {
                     // s'entendait aussi sur les seeks de la barre.
                     residual = medianResidual(player)
                     val residual0 = residual
+                    // BUDGET dur d'alignement : au-delà de ~3 s, on part en
+                    // fondu avec le résidu qu'on a. L'alignement mange la
+                    // fenêtre du fondu (12 s), et un fondu recalculé sur ce
+                    // qui reste s'effondrait à 1-2 s — l'entrant BONDISSAIT
+                    // à plein volume en plein milieu de la transition. Un
+                    // résidu de 20-30 ms est moins pire qu'un fondu écrasé.
+                    val alignDeadline =
+                        android.os.SystemClock.elapsedRealtime() + 3_000L
                     if (tailAudible && kotlin.math.abs(residual) > 350L) {
                         val target = player.currentPosition + residual
                         if (target > 0) {
@@ -1862,7 +1870,8 @@ object PlayerCore {
                     val maxSlides = if (fromGesture) 2 else 4
                     while (tailAudible &&
                         kotlin.math.abs(residual) > SEAM_TOLERANCE_MS &&
-                        slides < maxSlides
+                        slides < maxSlides &&
+                        android.os.SystemClock.elapsedRealtime() < alignDeadline
                     ) {
                         slides++
                         // residual > 0 : la queue est en retard sur le
