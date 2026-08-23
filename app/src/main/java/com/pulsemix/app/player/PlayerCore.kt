@@ -1817,56 +1817,52 @@ object PlayerCore {
                             .putLong("tailStartupLagWarm", tailStartupLagWarmMs)
                             .apply()
                     }
-                    // Recalage MUET en deux temps — la queue est encore à
-                    // volume zéro, rien de tout ceci ne s'entend :
-                    //  1. GROSSIER (seek) : un seek a la granularité d'une
-                    //     trame audio (~26 ms en MP3), il ne peut que
-                    //     rapprocher — jamais annuler l'écart ;
-                    //  2. FIN (vitesse) : comme un DJ cale ses platines, la
-                    //     queue glisse à ±4 % jusqu'à écart quasi nul — la
-                    //     vitesse, elle, n'a aucune granularité. Sous
-                    //     [SEAM_TOLERANCE_MS], le raccord est inaudible
-                    //     même sur de la musique rythmée.
+                    // Recalage MUET par glissement de vitesse — la queue
+                    // est à volume zéro, rien ne s'entend. Le journal a
+                    // montré que les seeks de recalage AJOUTENT un
+                    // décrochage imprévisible (~100-250 ms de re-tampon
+                    // pendant que le direct avance) : on ne re-seek donc
+                    // qu'au-delà de 350 ms, et tout le reste se rattrape à
+                    // la vitesse (±8 %, aucun décrochage, aucune
+                    // granularité), gestes COMPRIS — le clic de raccord
+                    // s'entendait aussi sur les seeks de la barre.
                     residual = medianResidual(player)
-                    if (tailAudible && kotlin.math.abs(residual) > 120L) {
-                        val lagNow = if (warm) tailStartupLagWarmMs
-                        else tailStartupLagMs
-                        val again = exo.currentPosition + lagNow
-                        player.seekTo(again)
-                        var w2 = 0L
-                        while (w2 < 400L && player.currentPosition <= again) {
-                            delay(20L)
-                            w2 += 20L
-                            if (exoTail !== player) return@launch
-                        }
-                        if (player.currentPosition <= again) {
-                            // Jamais repartie après le recalage : raccord
-                            // invérifiable, arrivée franche plutôt que sale.
-                            tailAudible = false
-                        } else {
-                            residual = medianResidual(player)
+                    val residual0 = residual
+                    if (tailAudible && kotlin.math.abs(residual) > 350L) {
+                        val target = player.currentPosition + residual
+                        if (target > 0) {
+                            player.seekTo(target)
+                            var w2 = 0L
+                            while (w2 < 500L && player.currentPosition <= target) {
+                                delay(20L)
+                                w2 += 20L
+                                if (exoTail !== player) return@launch
+                            }
+                            if (player.currentPosition <= target) {
+                                tailAudible = false
+                            } else {
+                                residual = medianResidual(player)
+                            }
                         }
                     }
-                    // Glissement fin — réservé aux transitions AUTOMATIQUES :
-                    // un geste (suivant, seek) attend une réponse immédiate,
-                    // et son raccord change de contenu de toute façon.
                     var slides = 0
-                    while (tailAudible && !fromGesture &&
+                    val maxSlides = if (fromGesture) 2 else 4
+                    while (tailAudible &&
                         kotlin.math.abs(residual) > SEAM_TOLERANCE_MS &&
-                        slides < 3
+                        slides < maxSlides
                     ) {
                         slides++
                         // residual > 0 : la queue est en retard sur le
-                        // direct → accélérer ; < 0 → ralentir. À ±4 %,
-                        // combler r ms demande r × 25 ms de glissement.
+                        // direct → accélérer ; < 0 → ralentir. À ±8 %,
+                        // combler r ms demande r × 12,5 ms de glissement.
                         val speeding = residual > 0
                         try {
-                            player.setPlaybackSpeed(if (speeding) 1.04f else 0.96f)
+                            player.setPlaybackSpeed(if (speeding) 1.08f else 0.92f)
                         } catch (_: Exception) {
                             break
                         }
-                        val slideMs = (kotlin.math.abs(residual) * 25L)
-                            .coerceIn(40L, 1_200L)
+                        val slideMs = (kotlin.math.abs(residual) * 25L / 2L)
+                            .coerceIn(40L, 2_000L)
                         val t0 = android.os.SystemClock.elapsedRealtime()
                         while (android.os.SystemClock.elapsedRealtime() - t0 <
                             slideMs
@@ -1887,14 +1883,15 @@ object PlayerCore {
                     // rejoue comme élision s'entendraient : arrivée franche.
                     if (tailAudible && kotlin.math.abs(residual) > MAX_TAIL_DRIFT_MS) {
                         transLog(
-                            "bascule sèche : résidu ${residual} ms après " +
-                                "recalages ($slides glissement(s))"
+                            "bascule sèche : résidu ${residual0} -> ${residual} ms " +
+                                "($slides glissement(s))"
                         )
                         tailAudible = false
                     } else if (tailAudible) {
                         transLog(
-                            "raccord aligné : résidu $residual ms " +
-                                "($slides glissement(s))"
+                            "raccord aligné : résidu ${residual0} -> ${residual} ms " +
+                                "($slides glissement(s)" +
+                                (if (fromGesture) ", geste)" else ")")
                         )
                     }
                     if (tailAudible) {

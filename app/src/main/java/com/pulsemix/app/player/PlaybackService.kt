@@ -70,7 +70,12 @@ class PlaybackService : MediaSessionService() {
     private fun updateNotification() {
         val session = mediaSession ?: return
         val player = session.player
-        if (player.mediaItemCount == 0) return
+        // Même sans morceau chargé, on poste : un démarrage par
+        // startForegroundService (bouton du casque via MediaButtonReceiver,
+        // appli à l'arrêt) EXIGE un startForeground sous ~5 s, sinon le
+        // système tue l'appli (ForegroundServiceDidNotStartInTimeException,
+        // vu en crash_log). L'ancien retour anticipé laissait ce contrat
+        // sans réponse.
         val playing = player.isPlaying
         val meta = player.mediaMetadata
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -113,6 +118,11 @@ class PlaybackService : MediaSessionService() {
             if (playing) {
                 startForeground(NOTIF_ID, notif)
             } else {
+                // Passage premier plan puis détachement immédiat : le
+                // contrat de startForegroundService est honoré (pas de
+                // crash), la notification reste, et le service redevient
+                // arrêtable par le système.
+                startForeground(NOTIF_ID, notif)
                 stopForeground(STOP_FOREGROUND_DETACH)
                 getSystemService(NotificationManager::class.java)
                     ?.notify(NOTIF_ID, notif)
