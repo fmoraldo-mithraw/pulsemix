@@ -168,6 +168,21 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Lance un mix « comme ce morceau » (même style/énergie). */
     fun startSimilar(seed: Track, djMode: Boolean) {
+        // Le morceau-graine est CELUI qui joue (hors DJ, position ExoPlayer
+        // fiable) : le mix/set similaire reprend là où la lecture en était
+        // au lieu de recommencer le morceau. Position lue ICI, sur le main
+        // thread, avant de partir en calcul.
+        val resumeMs = if (
+            PlayerCore.mode.value != com.pulsemix.app.player.PlayerMode.DJ &&
+            PlayerCore.currentTrack.value?.uri == seed.uri &&
+            PlayerCore.isPlaying.value
+        ) {
+            try {
+                PlayerCore.exo.currentPosition
+            } catch (_: Exception) {
+                0L
+            }
+        } else 0L
         viewModelScope.launch(Dispatchers.Default) {
             val plan = MixEngine.similarPlan(tracks.value, seed, dj = djMode)
             // Mémorisé AVEC le morceau-graine : en fin de mix,
@@ -190,8 +205,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                         PlayerCore.launchMessage.value =
                             "Aucun autre morceau analysé : impossible de " +
                                 "construire un mix similaire."
-                    djMode -> PlayerCore.startDj(plan)
-                    else -> PlayerCore.startMix(plan)
+                    djMode -> PlayerCore.startDj(
+                        plan, firstSeekMs = resumeMs.takeIf { it > 3_000L }
+                    )
+                    else -> PlayerCore.startMix(
+                        plan, startPositionMs = if (resumeMs > 3_000L) resumeMs else 0L
+                    )
                 }
             }
         }

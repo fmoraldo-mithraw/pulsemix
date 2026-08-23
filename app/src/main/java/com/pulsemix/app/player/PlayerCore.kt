@@ -838,7 +838,10 @@ object PlayerCore {
         persistState()
     }
 
-    fun startMix(mixPlan: MixEngine.MixPlan) {
+    /** @param startPositionMs position de départ dans le PREMIER morceau
+     *  du plan (0 = début) : « mix sur ce morceau » reprend là où la
+     *  lecture en était au lieu de recommencer le morceau. */
+    fun startMix(mixPlan: MixEngine.MixPlan, startPositionMs: Long = 0L) {
         resetAutoNextForLaunch()
         stopTail()
         if (mixPlan.phases.sumOf { it.tracks.size } == 0) {
@@ -861,7 +864,9 @@ object PlayerCore {
         phaseStartIndices = starts
         queueTracks = flat
 
-        exo.setMediaItems(flat.map { mediaItem(it) }, 0, 0)
+        exo.setMediaItems(
+            flat.map { mediaItem(it) }, 0, startPositionMs.coerceAtLeast(0L)
+        )
         exo.shuffleModeEnabled = false
         exo.repeatMode = Player.REPEAT_MODE_OFF
         exo.volume = 1f
@@ -872,7 +877,15 @@ object PlayerCore {
         persistState()
     }
 
-    fun startDj(mixPlan: MixEngine.MixPlan, fromPhase: Int = 0, rehearsal: Boolean = false) {
+    /** @param firstSeekMs position de reprise dans le PREMIER morceau du
+     *  set (null = comportement normal) : « DJ sur ce morceau » reprend
+     *  là où la lecture en était au lieu de repartir du début. */
+    fun startDj(
+        mixPlan: MixEngine.MixPlan,
+        fromPhase: Int = 0,
+        rehearsal: Boolean = false,
+        firstSeekMs: Long? = null
+    ) {
         resetAutoNextForLaunch()
         stopTail()
         if (mixPlan.phases.isEmpty()) return
@@ -931,7 +944,7 @@ object PlayerCore {
         // Aucune commande manuelle (performance) n'est héritée d'un set
         // précédent — le moteur remet les siennes à zéro dans start().
         resetPerformance()
-        mixer.start(mixPlan, currentPhase.value, rehearsal)
+        mixer.start(mixPlan, currentPhase.value, rehearsal, firstSeekMs)
         persistState()
     }
 

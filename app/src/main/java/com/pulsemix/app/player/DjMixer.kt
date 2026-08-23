@@ -597,6 +597,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     @Volatile private var currentSegIndex = 0
     @Volatile private var startSegIndex = 0
     @Volatile private var rehearsal = false
+    // Reprise du premier morceau à cette position (consommée à l'ouverture
+    // du premier deck, puis remise à null)
+    @Volatile private var pendingFirstSeekMs: Long? = null
     @Volatile private var recorder: MixRecorder? = null
     /**
      * AudioTrack du run en cours, posé par runMix (où il reste une variable
@@ -660,9 +663,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
      * est avancé jusqu'à ses ~15 dernières secondes, on n'entend que les
      * jonctions.
      */
-    fun start(plan: MixEngine.MixPlan, startPhase: Int = 0, rehearsalMode: Boolean = false) {
+    /** @param firstSeekMs position de reprise dans le premier morceau
+     *  (null = départ normal du fichier) : « DJ sur ce morceau » reprend
+     *  la lecture là où elle en était. */
+    fun start(
+        plan: MixEngine.MixPlan,
+        startPhase: Int = 0,
+        rehearsalMode: Boolean = false,
+        firstSeekMs: Long? = null
+    ) {
         stop()
         rehearsal = rehearsalMode
+        pendingFirstSeekMs = firstSeekMs
         this.plan = plan
         segments = plan.phases.flatMapIndexed { pi, phase ->
             phase.tracks.filter { it.analyzed && it.bpm > 0f }.map { Segment(it, pi) }
@@ -1524,7 +1536,28 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         try {
             audioTrack.play()
             ui.post { listener.onSessionReady(audioTrack.audioSessionId) }
-            deckA = openNextValid(startSegIndex, 1f, fromStart = true)
+            // Reprise « DJ sur ce morceau » : le premier deck repart de la
+            // position où la lecture en était (mécanique seekFromMs du
+            // déplacement manuel) au lieu du début du fichier. Sous 3 s,
+            // autant repartir du début proprement.
+            val resume = pendingFirstSeekMs
+            pendingFirstSeekMs = null
+            deckA = if (resume != null && resume > 3_000L) {
+                val seg = segments[startSegIndex]
+                val factor =
+                    phaseLengthFactor.getOrElse(seg.phaseIndex) { 1f }
+                val d = Deck(
+                    startSegIndex, seg, 1f, factor,
+                    playToEnd = startSegIndex == segments.size - 1,
+                    seekFromMs = resume
+                )
+                if (d.open()) d else {
+                    d.close()
+                    openNextValid(startSegIndex, 1f, fromStart = true)
+                }
+            } else {
+                openNextValid(startSegIndex, 1f, fromStart = true)
+            }
             if (deckA == null) {
                 djLog("aucun deck n'a pu s'ouvrir au lancement (décodage impossible ?)")
                 return
