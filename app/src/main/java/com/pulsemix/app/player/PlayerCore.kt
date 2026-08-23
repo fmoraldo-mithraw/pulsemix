@@ -1616,6 +1616,16 @@ object PlayerCore {
         } catch (_: Exception) {
             null
         }
+        // Atterrissage DIRECT dans la fenêtre (un geste pose la lecture à
+        // moins de 12 s de la fin, morceau court…) : un message positionné
+        // DERRIÈRE la position courante ne se délivre jamais — la lecture
+        // ne repasse pas par ce point. Constaté au journal : fondu
+        // rattrapé par le ticker filet à 6 s au lieu de 12, donc raccourci
+        // de moitié. Ce qui est déjà dépassé se tire tout de suite (les
+        // rappels revérifient toutes les gardes, y compris « trop tard »).
+        val pos = exo.currentPosition
+        if (pos >= prearmAt) handler.post { onPrearmPositionReached(gen) }
+        if (pos >= fadeAt) handler.post { onCrossfadePositionReached(gen) }
     }
 
     /** Point de pré-armement atteint : mêmes gardes que le ticker, fenêtre
