@@ -3134,16 +3134,46 @@ object PlayerCore {
         autoScope.launch(Dispatchers.IO) { diagLog(message) }
     }
 
-    private fun diagLog(message: String) {
+    /**
+     * Journal partagé, ouvert aux autres pièces du lecteur (moteur DJ) :
+     * même fichier, même rotation, et surtout même écriture HORS du fil
+     * appelant — le thread audio du mixeur ne doit jamais toucher le
+     * disque. Le tag distingue la source dans le journal exporté.
+     */
+    internal fun engineLog(tag: String, message: String) {
+        autoScope.launch(Dispatchers.IO) { diagLog(message, tag) }
+    }
+
+    private fun diagLog(message: String, tag: String = "PlayerCore") {
         try {
             for (dir in listOfNotNull(
                 appContext.filesDir, appContext.getExternalFilesDir(null)
             )) {
                 val f = java.io.File(dir, "service_log.txt")
-                if (f.length() > 64_000) f.delete()
-                f.appendText("${java.util.Date()}: [PlayerCore] $message\n")
+                trimDiagFile(f)
+                f.appendText("${java.util.Date()}: [$tag] $message\n")
             }
         } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Rotation du journal : au-delà de 96 ko on ne GARDE QUE la fin
+     * (~48 ko). L'effacement pur d'avant jetait justement l'historique
+     * qu'on vient chercher — un journal exporté après une longue session
+     * pouvait avoir perdu l'incident.
+     */
+    internal fun trimDiagFile(f: java.io.File) {
+        try {
+            if (f.length() <= 96_000L) return
+            val tail = f.readText().takeLast(48_000)
+            // Repartir d'une ligne entière, pas du milieu de l'une d'elles.
+            f.writeText(tail.substringAfter('\n', tail))
+        } catch (_: Exception) {
+            try {
+                f.delete()
+            } catch (_: Exception) {
+            }
         }
     }
 

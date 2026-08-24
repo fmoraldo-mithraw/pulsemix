@@ -154,7 +154,9 @@ class PlaybackService : MediaSessionService() {
             try {
                 for (dir in listOfNotNull(filesDir, getExternalFilesDir(null))) {
                     val f = java.io.File(dir, "service_log.txt")
-                    if (f.length() > 64_000) f.delete()
+                    // Rotation partagée avec PlayerCore : on garde la fin du
+                    // journal au lieu de tout effacer (cf. trimDiagFile).
+                    PlayerCore.trimDiagFile(f)
                     f.appendText(line)
                 }
             } catch (_: Exception) {

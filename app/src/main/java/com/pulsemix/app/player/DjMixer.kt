@@ -399,6 +399,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
          * ancrées sur son ancre, pas sur son départ.
          * Fonction PURE (companion, internal, testée en JVM).
          */
+        /** Nom lisible d'un KIND_*, pour le journal de diagnostic. */
+        internal fun kindName(kind: Int): String = when (kind) {
+            KIND_CUT -> "coupe+écho"
+            KIND_HARMONIC -> "blend harmonique"
+            KIND_DARK -> "sweep grave"
+            KIND_EQ -> "échange de basses"
+            KIND_DROP -> "drop-swap"
+            else -> "sweep aigu"
+        }
+
         internal fun nextPhraseBeat(phase: Double, offsetBeats: Double): Double =
             ceil((phase - offsetBeats) / 16.0) * 16.0 + offsetBeats
 
@@ -862,6 +872,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         @Volatile var closed = false
         @Volatile var decoderDone = false
         @Volatile var srcSr = 0
+        /** Frames source réclamées alors que le décodeur n'avait rien
+         *  fourni (famine) : c'est du son manquant, et la cause la plus
+         *  probable d'une saccade en jonction — compté pour le journal. */
+        @Volatile var starvedFrames = 0L
         // ~4 s de son décodé d'avance : quand on change d'appli, le
         // chargement de l'autre appli accapare le CPU et les décodeurs
         // prennent du retard — cette réserve absorbe le pic sans saccade.
@@ -1239,6 +1253,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     // Famine du décodeur : décroître doucement vers le silence
                     // (tenir une valeur fixe produisait un bourdonnement type
                     // bégaiement sous forte charge CPU)
+                    starvedFrames++
                     prevL = nextL; prevR = nextR
                     nextL *= 0.98f; nextR *= 0.98f
                     return true
@@ -1347,20 +1362,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     // ------------------------------------------------------------- mix loop
 
-    private fun runMix(gen: Int) {
-        // Priorité temps-réel audio : Thread.MAX_PRIORITY (Java) n'influence
-        // pas l'ordonnanceur Linux — écran verrouillé, le CPU ralentit et le
-        // thread se faisait voler des cycles (saccades).
-        try {
-            android.os.Process.setThreadPriority(
-                android.os.Process.THREAD_PRIORITY_URGENT_AUDIO
-            )
-        } catch (_: Exception) {
-        }
+    /**
+     * Sortie audio du moteur DJ. Extraite de [runMix] parce qu'elle sert
+     * DEUX fois : à l'ouverture du set, et pour la reconstruire si le
+     * système la tue en cours de route (cf. l'écriture qui échoue).
+     */
+    private fun newAudioTrack(): AudioTrack {
         val minBuf = AudioTrack.getMinBufferSize(
             OUT_SR, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_FLOAT
         )
-        val audioTrack = AudioTrack.Builder()
+        return AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -1383,6 +1394,22 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 max(minBuf * 3, 256 * 1024) + OUT_EXTRA_BYTES
             )
             .build()
+    }
+
+    private fun runMix(gen: Int) {
+        // Priorité temps-réel audio : Thread.MAX_PRIORITY (Java) n'influence
+        // pas l'ordonnanceur Linux — écran verrouillé, le CPU ralentit et le
+        // thread se faisait voler des cycles (saccades).
+        try {
+            android.os.Process.setThreadPriority(
+                android.os.Process.THREAD_PRIORITY_URGENT_AUDIO
+            )
+        } catch (_: Exception) {
+        }
+        // `var` : une sortie audio peut MOURIR en cours de route (redémarrage
+        // du serveur audio, changement de route après une longue pause) — on
+        // la reconstruit alors une fois plutôt que de tourner à vide.
+        var audioTrack = newAudioTrack()
         // Exposé à stop() pour débloquer une écriture bloquante en cours ;
         // la propriété (création ET release, dans le finally) reste ici.
         liveAudioTrack = audioTrack
@@ -1392,6 +1419,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         outLatencyMs = (
             audioTrack.bufferSizeInFrames.toLong() * 1000L / OUT_SR
             ).coerceIn(0L, 2_000L)
+        diag(
+            "set démarré : ${segments.size} passage(s), " +
+                "transitions pro=${if (proMode) "oui" else "non"}, " +
+                "tampon de sortie ${outLatencyMs} ms"
+        )
+        // Sous-alimentations de la sortie (le matériel a manqué de son) :
+        // relevé au fil du set, c'est LA mesure d'une saccade réelle.
+        var underrunsSeen = 0
 
         var deckA: Deck? = null
         var deckB: Deck? = null
@@ -1402,6 +1437,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var fadeStartF = -1L
         var fadeLenF = 0L
         var fadeKindF = KIND_NORMAL
+        // Photos prises au DÉPART d'une transition, relues à son terme :
+        // ce qui a manqué au décodeur du sortant, ce que le matériel a
+        // manqué de son, et jusqu'où le limiteur a dû écraser le mélange
+        // (deux morceaux qui s'additionnent, c'est là qu'il travaille).
+        var fadeStarvedA = 0L
+        var fadeUnderrunAt = 0
+        var limMinInFade = 1f
         // Swap net des basses (KIND_EQ / KIND_HARMONIC) : frame du « 1 »
         // où le sortant cède ses basses d'un geste (-1 = geste progressif
         // historique) et durée de la rampe anti-clic (~1 temps), tous
@@ -1576,9 +1618,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 // imperceptible à 5 réveils par seconde.
                 if (paused) {
                     audioTrack.pause()
+                    val pausedAt = android.os.SystemClock.elapsedRealtime()
                     while (paused && running && gen == runGeneration) Thread.sleep(200)
                     if (!running) break
                     audioTrack.play()
+                    // Une reprise après des heures de pause n'a rien d'anodin
+                    // (décodeurs et sortie audio dormaient) : c'est le genre
+                    // de contexte qu'on veut voir dans le journal quand une
+                    // jonction se passe mal juste après.
+                    val pausedMs = android.os.SystemClock.elapsedRealtime() - pausedAt
+                    if (pausedMs > 60_000L) {
+                        diag("reprise après ${pausedMs / 60_000L} min de pause")
+                    }
                 }
 
                 val a = deckA ?: break
@@ -1764,6 +1815,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     val b = ready.deck
                     val pj2 = pendingJump
                     if (b == null) {
+                        // Le passage suivant n'a pas pu s'ouvrir : le set
+                        // saute ce morceau (ou s'arrête s'il était le
+                        // dernier) — ça s'entend, ça se journalise.
+                        diag("ouverture impossible du passage suivant : morceau sauté")
                         failedForSeg = a.segIndex
                         if (ready.jumping) pendingJump = -1
                     } else if (pj2 != -1 && pj2 != ready.jumpTarget) {
@@ -1817,12 +1872,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // le fondu entier après l'attente. Saut manuel : dès
                         // la prochaine mesure, l'utilisateur attend une
                         // réponse rapide.
-                        var start = framesGlobal + when {
+                        // Le libellé accompagne le décalage : c'est lui qui
+                        // part au journal (une allocation par transition,
+                        // jamais dans la boucle par bloc).
+                        val (quantOff, quant) = when {
                             !ready.jumping && toPhrase + fadeF <=
-                                a.remainingOut + loopSlack -> toPhrase
-                            toBar <= a.remainingOut + OUT_SR -> toBar
-                            else -> toBeat
+                                a.remainingOut + loopSlack -> toPhrase to "phrase"
+                            toBar <= a.remainingOut + OUT_SR -> toBar to "mesure"
+                            else -> toBeat to "temps"
                         }
+                        var start = framesGlobal + quantOff
                         if (start < framesGlobal) start = framesGlobal
                         // La boucle de sortie prolonge le deck A sous le
                         // fondu : la capacité inclut UNE répétition de boucle
@@ -1907,6 +1966,21 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         b.startedAtFrame = fadeStartF
                         deckB = b
                         pendingJump = -1
+                        // Une jonction DJ ne laissait AUCUNE trace : quand
+                        // une transition sonnait mal, le journal ne disait
+                        // ni son type, ni sa durée, ni son calage. Une
+                        // ligne par transition (≈ une par minute) suffit.
+                        diag(
+                            "transition « ${a.track.title} » → « ${b.track.title} » : " +
+                                "${kindName(fadeKindF)}, fondu " +
+                                "${fadeLenF * 1000L / OUT_SR} ms, calée sur $quant, " +
+                                "pré-roll ${preF * 1000L / OUT_SR} ms, " +
+                                "tempo entrant ×${"%.3f".format(b.curRate)}" +
+                                if (ready.jumping) ", geste" else ""
+                        )
+                        fadeStarvedA = a.starvedFrames
+                        fadeUnderrunAt = audioTrack.underrunCount
+                        limMinInFade = 1f
                     }
                 }
 
@@ -1918,6 +1992,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 if (b != null) {
                     if (na == 0 && framesGlobal < fadeStartF) {
                         // Deck A épuisé plus tôt que prévu : démarrer B tout de suite
+                        diag(
+                            "le sortant s'est tari avant l'heure : fondu avancé de " +
+                                "${(fadeStartF - framesGlobal) * 1000L / OUT_SR} ms " +
+                                "(calage sur la phrase perdu)"
+                        )
                         fadeStartF = framesGlobal
                         b.startedAtFrame = framesGlobal
                         // Le sortant s'est tu : libérer tout de suite les
@@ -2430,6 +2509,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     out[i * 2] = (lb * limGain).coerceIn(-1f, 1f)
                     out[i * 2 + 1] = (rb * limGain).coerceIn(-1f, 1f)
                 }
+                // Travail du limiteur pendant la jonction : une lecture par
+                // BLOC (jamais par échantillon). Un écrasement marqué
+                // s'entend comme une baisse de niveau au milieu du fondu —
+                // deux morceaux à plein régime s'additionnent.
+                if (fadeStartF >= 0 && framesGlobal >= fadeStartF &&
+                    limGain < limMinInFade
+                ) {
+                    limMinInFade = limGain
+                }
+
                 // Verrouillage actif : si les kicks des deux decks dérivent
                 // pendant le fade, micro-corriger le rate de l'entrant.
                 if (fadeActive && bd != null && framesGlobal >= fadeStartF) {
@@ -2462,7 +2551,35 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     else 0f
                     bassGain += 0.02f * (target - bassGain)
                 }
-                audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
+                val wrote =
+                    audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
+                if (wrote < 0) {
+                    // Sortie audio morte (serveur audio redémarré, route
+                    // perdue pendant une longue pause...). Sans ce test, la
+                    // boucle tournait à pleine vitesse CPU sur une sortie
+                    // muette : le set défilait en silence, sans une trace.
+                    // On la reconstruit UNE fois ; si ça ne repart pas, on
+                    // s'arrête proprement plutôt que de faire semblant.
+                    diag("écriture audio en échec (code $wrote) : sortie reconstruite")
+                    djLog("AudioTrack.write a renvoyé $wrote")
+                    val rebuilt = try {
+                        audioTrack.release()
+                        newAudioTrack().also { it.play() }
+                    } catch (e: Exception) {
+                        djLog("reconstruction de la sortie impossible : ${e.message}")
+                        null
+                    }
+                    if (rebuilt == null) {
+                        diag("sortie audio irrécupérable : set interrompu")
+                        running = false
+                        break
+                    }
+                    audioTrack = rebuilt
+                    liveAudioTrack = rebuilt
+                    // Pas de `continue` : le bloc perdu est perdu, mais la
+                    // suite (avance de framesGlobal, grille de beats) doit
+                    // rester cohérente avec ce que les decks ont déjà lu.
+                }
                 recorder?.write(out, BLOCK_FRAMES * 2)
                 framesGlobal += BLOCK_FRAMES
                 a.advancePhase(BLOCK_FRAMES)
@@ -2490,6 +2607,24 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     currentSegIndex = b.segIndex
                     announce(b)
                     deckA = rehearsalSkip(b)
+                    // Bilan de la jonction qu'on vient d'entendre. Silencieux
+                    // quand tout va bien : une ligne n'apparaît QUE s'il y a
+                    // eu du son manquant, une sous-alimentation de la sortie
+                    // ou un écrasement notable du limiteur.
+                    val starvedMs = if (a.srcSr > 0)
+                        (a.starvedFrames - fadeStarvedA) * 1000L / a.srcSr else 0L
+                    val under = audioTrack.underrunCount - fadeUnderrunAt
+                    underrunsSeen += under
+                    val squashDb = if (limMinInFade < 0.999f)
+                        20.0 * kotlin.math.log10(limMinInFade.toDouble()) else 0.0
+                    if (starvedMs > 5L || under > 0 || squashDb < -1.0) {
+                        diag(
+                            "jonction terminée avec : " +
+                                "famine décodeur ${starvedMs} ms, " +
+                                "sous-alimentations $under, " +
+                                "limiteur ${"%.1f".format(squashDb)} dB"
+                        )
+                    }
                 }
 
                 // Début/fin de transition annoncés à l'UI (activation du
@@ -2552,6 +2687,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 running = false
                 transitionActive = false
             }
+            // Bilan du set : le total des sous-alimentations dit d'un coup
+            // d'œil si la sortie a manqué de son pendant l'écoute, et la
+            // part tombée pendant les jonctions si c'est là que ça a lâché.
+            val totalUnder = try {
+                audioTrack.underrunCount
+            } catch (_: Exception) {
+                -1
+            }
+            diag(
+                "set ${if (natural) "terminé" else "arrêté"} : " +
+                    "$totalUnder sous-alimentation(s) de la sortie, " +
+                    "dont $underrunsSeen en jonction"
+            )
             try {
                 audioTrack.stop()
             } catch (_: Exception) {
@@ -2562,6 +2710,21 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 // concerne pas — la livrer mettait le set suivant en pause.
                 if (gen == runGeneration) listener.onStopped(natural)
             }
+        }
+    }
+
+    /**
+     * Journal de marche du moteur DJ : écrit dans le MÊME fichier que
+     * PlayerCore (service_log.txt), pour que l'export « Journal » montre
+     * les transitions DJ à leur place dans la chronologie — jusqu'ici il
+     * n'y avait AUCUNE trace des jonctions DJ, seulement des pannes.
+     * L'écriture part sur le fil d'entrées-sorties de PlayerCore : le
+     * thread audio n'attend rien.
+     */
+    private fun diag(message: String) {
+        try {
+            PlayerCore.engineLog("DJ", message)
+        } catch (_: Exception) {
         }
     }
 
