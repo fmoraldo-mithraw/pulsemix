@@ -375,6 +375,7 @@ object PlayerCore {
         exo = ExoPlayer.Builder(appContext, bigBufferRenderers())
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
+        exo.addAnalyticsListener(underrunWatch("principal"))
         exo.setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -1484,15 +1485,24 @@ object PlayerCore {
      * dispose le décodeur quand une autre appli au premier plan accapare
      * le CPU : en dessous, la musique saccadait dès que le téléphone
      * ramait. Aucune latence ajoutée à l'usage : le volume (fondus) et
-     * la pause s'appliquent sur la SORTIE, pas sur le tampon — seul le
-     * cran de vitesse manuel met ~2 s à s'entendre, le tampon déjà
-     * écrit s'écoulant à l'ancienne vitesse.
+     * la pause s'appliquent sur la SORTIE, pas sur le tampon.
      *
-     * RÉSERVÉE AU LECTEUR PRINCIPAL. La queue de raccord garde le tampon
-     * par défaut : son alignement se fait par glissements de vitesse, et
-     * la vitesse logicielle ne prend effet qu'à l'écriture — derrière
-     * 2 s de tampon, un glissement serait mesuré 2 s trop tard et la
-     * boucle d'alignement (budget 3 s) ne convergerait jamais.
+     * Pour les DEUX lecteurs — le principal ET la queue de raccord : la
+     * queue est audible à plein volume pendant les 12 s de chaque fondu,
+     * la laisser sur le petit tampon la faisait saccader là où le
+     * principal tenait (journal : raccord aligné à 11 ms et saccade
+     * entendue quand même).
+     *
+     * La vitesse passe par l'AudioTrack (setPlaybackParams) et non par le
+     * ré-échantillonneur logiciel : appliquée par le mélangeur système au
+     * son DÉJÀ mis en tampon, elle prend effet en quelques dizaines de ms
+     * quelle que soit la taille du tampon. Indispensable aux glissements
+     * d'alignement de la queue (mesure → correction → re-mesure en
+     * ~500 ms) ; en logiciel, l'effet n'atteindrait la sortie qu'après
+     * 2 s et la boucle divergerait. Bonus : le cran de vitesse manuel
+     * reste instantané. media3 corrige la position rapportée en
+     * conséquence (setAudioTrackPlaybackSpeed) — les mesures de résidu
+     * restent justes.
      */
     private fun bigBufferRenderers(): DefaultRenderersFactory =
         object : DefaultRenderersFactory(appContext) {
@@ -1510,6 +1520,27 @@ object PlayerCore {
                         .build()
                 )
                 .build()
+        }.setEnableAudioTrackPlaybackParams(true)
+
+    /**
+     * Vigie des sous-alimentations : le système signale chaque fois qu'un
+     * lecteur n'a pas fourni le son à temps — LA mesure objective d'une
+     * saccade réellement entendue. Journalisée avec sa source : on sait
+     * enfin QUI a saccadé (principal ou queue) et quand.
+     */
+    private fun underrunWatch(who: String) =
+        object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+            override fun onAudioUnderrun(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                bufferSize: Int,
+                bufferSizeMs: Long,
+                elapsedSinceLastFeedMs: Long
+            ) {
+                transLog(
+                    "sous-alimentation audio ($who) : tampon $bufferSizeMs ms, " +
+                        "$elapsedSinceLastFeedMs ms sans données"
+                )
+            }
         }
 
     /**
@@ -1520,7 +1551,10 @@ object PlayerCore {
      * toute l'intro).
      */
     private fun newTailPlayer(track: Track): ExoPlayer =
-        ExoPlayer.Builder(appContext).build().apply {
+        ExoPlayer.Builder(appContext, bigBufferRenderers()).build().apply {
+            // La queue est audible pendant tout le fondu : ses saccades
+            // se journalisent comme celles du principal.
+            addAnalyticsListener(underrunWatch("queue"))
             // Surtout pas de focus audio : il est déjà tenu par le
             // lecteur principal, le redemander couperait le son.
             setAudioAttributes(
