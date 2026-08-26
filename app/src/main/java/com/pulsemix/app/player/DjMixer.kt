@@ -1388,10 +1388,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             .setTransferMode(AudioTrack.MODE_STREAM)
             // Réserve de sortie : c'est le temps dont dispose le thread de
             // mixage quand le système lui prend le CPU (ouverture d'une
-            // autre appli, GC...). 0,3 s ajoutés aux ~0,75 s de base après
-            // des saccades constatées à l'usage.
+            // autre appli, GC...). Portée de ~1 s à ~2 s de PCM float
+            // stéréo (8 octets par frame) : à 1 s, la musique saccadait
+            // encore dès que le téléphone ramait. La latence des annonces
+            // et des gestes suit outLatencyMs, rien d'autre à toucher.
             .setBufferSizeInBytes(
-                max(minBuf * 3, 256 * 1024) + OUT_EXTRA_BYTES
+                max(minBuf * 3, OUT_SR * 2 * 8) + OUT_EXTRA_BYTES
             )
             .build()
     }
@@ -1418,7 +1420,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // le titre changerait une seconde avant qu'on entende le morceau.
         outLatencyMs = (
             audioTrack.bufferSizeInFrames.toLong() * 1000L / OUT_SR
-            ).coerceIn(0L, 2_000L)
+            ).coerceIn(0L, 3_000L)
         diag(
             "set démarré : ${segments.size} passage(s), " +
                 "transitions pro=${if (proMode) "oui" else "non"}, " +

@@ -10,8 +10,12 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.PlayerMessage
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioTrackBufferSizeProvider
 import com.pulsemix.app.R
 import com.pulsemix.app.data.PlaybackState
 import com.pulsemix.app.data.PlaybackStateStore
@@ -368,7 +372,7 @@ object PlayerCore {
             prefs.getFloat("eqTreble", 0f)
         )
 
-        exo = ExoPlayer.Builder(appContext)
+        exo = ExoPlayer.Builder(appContext, bigBufferRenderers())
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
         exo.setAudioAttributes(
@@ -1475,6 +1479,40 @@ object PlayerCore {
     }
 
     /**
+     * Fabrique de renderers avec un tampon audio de ~2 s, au lieu des
+     * 250-750 ms par défaut de media3. Cette réserve est le temps dont
+     * dispose le décodeur quand une autre appli au premier plan accapare
+     * le CPU : en dessous, la musique saccadait dès que le téléphone
+     * ramait. Aucune latence ajoutée à l'usage : le volume (fondus) et
+     * la pause s'appliquent sur la SORTIE, pas sur le tampon — seul le
+     * cran de vitesse manuel met ~2 s à s'entendre, le tampon déjà
+     * écrit s'écoulant à l'ancienne vitesse.
+     *
+     * RÉSERVÉE AU LECTEUR PRINCIPAL. La queue de raccord garde le tampon
+     * par défaut : son alignement se fait par glissements de vitesse, et
+     * la vitesse logicielle ne prend effet qu'à l'écriture — derrière
+     * 2 s de tampon, un glissement serait mesuré 2 s trop tard et la
+     * boucle d'alignement (budget 3 s) ne convergerait jamais.
+     */
+    private fun bigBufferRenderers(): DefaultRenderersFactory =
+        object : DefaultRenderersFactory(appContext) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): AudioSink = DefaultAudioSink.Builder(context)
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                .setAudioTrackBufferSizeProvider(
+                    DefaultAudioTrackBufferSizeProvider.Builder()
+                        .setMinPcmBufferDurationUs(2_000_000)
+                        .setMaxPcmBufferDurationUs(2_000_000)
+                        .build()
+                )
+                .build()
+        }
+
+    /**
      * Second lecteur muet et sans focus audio, préparé sur le même item que
      * le principal (rognage d'intro compris : avec « sauter les intros »,
      * les positions du principal sont relatives au point de rognage — une
@@ -1877,6 +1915,7 @@ object PlayerCore {
                         }
                     }
                     var slides = 0
+                    var diverged = false
                     val maxSlides = if (fromGesture) 2 else 4
                     while (tailAudible &&
                         kotlin.math.abs(residual) > SEAM_TOLERANCE_MS &&
@@ -1918,10 +1957,19 @@ object PlayerCore {
                         if (exoTail !== player) return@launch
                         val before = residual
                         residual = medianResidual(player)
-                        // Divergence (rebond au-delà du point de départ) :
-                        // inutile d'insister, la passe suivante repartirait
-                        // dans l'autre sens — le contrôle final tranche.
-                        if (kotlin.math.abs(residual) >= kotlin.math.abs(before)) break
+                        // Divergence (le résidu a GROSSI pendant la passe).
+                        // Deux causes très différentes : une oscillation
+                        // (insister ferait rebondir sans fin), ou un simple
+                        // accroc de charge — la queue a calé un instant
+                        // pendant que le téléphone ramait, et le journal a
+                        // montré des raccords abandonnés à 40-70 ms pour ça
+                        // (32 -> 72 ms au premier glissement). On tolère UN
+                        // accroc : la passe suivante recorrige ; deux
+                        // divergences, là c'est une oscillation, on arrête.
+                        if (kotlin.math.abs(residual) >= kotlin.math.abs(before)) {
+                            if (diverged) break
+                            diverged = true
+                        }
                     }
                     // Résidu toujours trop grand malgré les recalages —
                     // rejoue comme élision s'entendraient : arrivée franche.
