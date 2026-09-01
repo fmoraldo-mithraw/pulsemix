@@ -193,7 +193,7 @@ class DjMixerSpecTest {
     fun `pro - tempo non calable - coupe courte meme avec un drop`() {
         val rate = DjMixer.computeRate(128f, 100f)
         val (s, kind) = DjMixer.fadeSpecPro(
-            track("a", 128f), 1f,
+            track("a", 128f, energyMean = 0.2f), 1f,
             track("b", 100f, energyMean = 0.2f),
             rate = rate, jumping = false, lastKind = -1, dropStreak = 0,
             nextSections = dropAt(60_000L), anchorMs = 60_000L
@@ -206,7 +206,7 @@ class DjMixerSpecTest {
     fun `pro - drop a une mesure de l ancre - drop swap`() {
         // Drop pile sur l'ancre : le cas nominal du pré-roll
         val (s, kind) = DjMixer.fadeSpecPro(
-            track("a", 128f), 1f,
+            track("a", 128f, energyMean = 0.2f), 1f,
             track("b", 128f, energyMean = 0.2f),
             rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
             nextSections = dropAt(60_000L), anchorMs = 60_000L
@@ -215,7 +215,7 @@ class DjMixerSpecTest {
         assertEquals(DjMixer.KIND_DROP, kind)
         // À ± une mesure (1 875 ms à 128 BPM) : encore un drop-swap
         val (_, k2) = DjMixer.fadeSpecPro(
-            track("a", 128f), 1f,
+            track("a", 128f, energyMean = 0.2f), 1f,
             track("b", 128f, energyMean = 0.2f),
             rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
             nextSections = dropAt(61_800L), anchorMs = 60_000L
@@ -223,7 +223,7 @@ class DjMixerSpecTest {
         assertEquals(DjMixer.KIND_DROP, k2)
         // Au-delà d'une mesure : plus de drop-swap
         val (_, k3) = DjMixer.fadeSpecPro(
-            track("a", 128f), 1f,
+            track("a", 128f, energyMean = 0.2f), 1f,
             track("b", 128f, energyMean = 0.2f),
             rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
             nextSections = dropAt(64_000L), anchorMs = 60_000L
@@ -236,7 +236,7 @@ class DjMixerSpecTest {
         // Un drop-swap sur de l'ambient serait ridicule : l'entrant calme
         // retombe sur la palette douce de fadeSpec, drop détecté ou pas.
         val (_, kind) = DjMixer.fadeSpecPro(
-            track("a", 128f), 1f,
+            track("a", 128f, energyMean = 0.2f), 1f,
             track("b", 128f, energyMean = 0.05f),
             rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
             nextSections = dropAt(60_000L), anchorMs = 60_000L
@@ -245,8 +245,22 @@ class DjMixerSpecTest {
     }
 
     @Test
+    fun `pro - sortant calme - jamais de drop swap`() {
+        // Le geste tient le SORTANT à plein volume pendant que l'entrant
+        // monte dessous : sur de l'acoustique ou du chanté posé, c'est
+        // intenable — même quand l'entrant, lui, a un vrai drop.
+        val (_, kind) = DjMixer.fadeSpecPro(
+            track("a", 128f, energyMean = 0.05f), 1f,
+            track("b", 128f, energyMean = 0.2f),
+            rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
+            nextSections = dropAt(60_000L), anchorMs = 60_000L
+        )
+        assertTrue(kind != DjMixer.KIND_DROP)
+    }
+
+    @Test
     fun `pro - deux drops d affilee permis - le troisieme force un blend`() {
-        val a = track("a", 128f)
+        val a = track("a", 128f, energyMean = 0.2f)
         val b = track("b", 128f, energyMean = 0.2f)
         // Après UN drop-swap : encore permis (le geste standard en festival)
         val (_, second) = DjMixer.fadeSpecPro(
