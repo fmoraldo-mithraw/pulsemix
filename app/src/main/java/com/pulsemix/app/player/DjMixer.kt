@@ -76,6 +76,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val MAX_FADE_RATIO = 0.15
         const val MAX_FADE_S = 8.0
         const val MIN_FADE_S = 2.0
+        // Ouverture du deck entrant : combien de temps AVANT le fondu, et
+        // quelle réserve décodée exiger avant de le confier au mixeur.
+        // 3 s d'avance et un seul chunk décodé ne suffisaient pas — le
+        // deck entrant abordait le fondu sans réserve.
+        const val PREOPEN_LEAD_S = 8L
+        const val PREBUFFER_FRAMES = 88_200 // ~2 s à 44,1 kHz
+        const val PREBUFFER_DEADLINE_MS = 3_000L
         // Jonctions adaptatives : long blend quand tempos calés et tonalités
         // compatibles, coupe franche quand le calage est impossible.
         const val FADE_LOCKED_HARMONIC_S = 18.0
@@ -1037,6 +1044,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         private var loopLen = 0
         private var loopXfade = 0
         private var loopedOut = 0L
+        /** Total rejoué par la boucle de SORTIE depuis l'ouverture du deck
+         *  (jamais remis à zéro, contrairement à [loopedOut]) : une boucle
+         *  qui tourne sous un fondu s'entend comme un saut, elle doit se
+         *  lire dans le journal. */
+        @Volatile var loopTotalOut = 0L
+            private set
         // Gain de passe : la première répétition joue pleine, chaque
         // répétition SUPPLÉMENTAIRE s'atténue (x0,82, plancher 0,35).
         // Le plan ne compte que sur une répétition ; au-delà, c'est un
@@ -1273,6 +1286,38 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             return true
         }
 
+        /**
+         * Attend que le deck ait une vraie réserve décodée avant d'être
+         * confié au mixeur. [open] ne garantissait QUE le premier chunk —
+         * quelques dizaines de millisecondes : le deck entrant abordait
+         * donc son fondu sans avance, et le moindre à-coup du décodeur
+         * s'entendait comme un trou PENDANT la transition, au pire
+         * moment. Appelée depuis le fil d'ouverture (« DjOpen »), jamais
+         * depuis le fil audio.
+         *
+         * S'arrête dès que la réserve est atteinte, que la file est pleine
+         * (le décodeur attend alors qu'on consomme : rien de mieux à
+         * espérer), que le morceau est entièrement décodé, ou au bout de
+         * [deadlineMs] — mieux vaut une transition à l'heure avec peu
+         * d'avance qu'une transition en retard.
+         */
+        fun prebuffer(minFrames: Int, deadlineMs: Long) {
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            while (!closed && !decoderDone &&
+                queue.remainingCapacity() > 0 &&
+                android.os.SystemClock.elapsedRealtime() - t0 < deadlineMs
+            ) {
+                var frames = 0
+                for (c in queue) frames += c.size / 2
+                if (frames >= minFrames) return
+                try {
+                    Thread.sleep(20L)
+                } catch (_: InterruptedException) {
+                    return
+                }
+            }
+        }
+
         val totalOutFrames: Long
             get() = ((logicalEndMs - startMs) / 1000.0 * OUT_SR / rate).toLong()
 
@@ -1344,6 +1389,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         loopPassGain = max(0.35f, loopPassGain * 0.82f)
                     }
                     loopedOut++
+                    loopTotalOut++
                     out++
                     framesOut++
                     continue
@@ -1492,6 +1538,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // manqué de son, et jusqu'où le limiteur a dû écraser le mélange
         // (deux morceaux qui s'additionnent, c'est là qu'il travaille).
         var fadeStarvedA = 0L
+        var fadeStarvedB = 0L
+        var fadeLoopedA = 0L
         var fadeUnderrunAt = 0
         var limMinInFade = 1f
         // Swap net des basses (KIND_EQ / KIND_HARMONIC) : frame du « 1 »
@@ -1815,9 +1863,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // dessus (Deck.init), les deux restent cohérents.
                         val fadeS = clampFadeS(rawFadeS, a.totalOutFrames)
                         val fadeF = (fadeS * OUT_SR).toLong()
-                        // 3 s d'avance : le deck est prêt (et pré-décodé)
-                        // avant l'heure du fondu
-                        if (jumping || a.remainingOut <= fadeF + 3L * OUT_SR) {
+                        // Avance d'ouverture : le deck entrant doit être
+                        // prêt ET pré-décodé avant l'heure du fondu (cf.
+                        // PREOPEN_LEAD_S). Son décodeur se bloque de
+                        // lui-même dès la file pleine : ouvrir tôt ne
+                        // coûte rien, et évite que les deux décodeurs se
+                        // disputent le CPU pile pendant la transition.
+                        if (jumping ||
+                            a.remainingOut <= fadeF + PREOPEN_LEAD_S * OUT_SR
+                        ) {
                             opening = true
                             val jt = pendingJump
                             thread(name = "DjOpen") {
@@ -1828,6 +1882,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 val b = openNextValid(
                                     nextIdx, rate,
                                     preFadeS = if (jumping) 0.0 else fadeS
+                                )
+                                // Réserve décodée avant de le confier au
+                                // mixeur : c'est ce fil-ci qui attend, le
+                                // fil audio ne voit qu'un deck déjà prêt.
+                                b?.prebuffer(
+                                    PREBUFFER_FRAMES, PREBUFFER_DEADLINE_MS
                                 )
                                 openResult.set(OpenResult(b, fadeS, fadeKind, jumping, jt))
                             }
@@ -2034,6 +2094,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 if (ready.jumping) ", geste" else ""
                         )
                         fadeStarvedA = a.starvedFrames
+                        fadeStarvedB = b.starvedFrames
+                        fadeLoopedA = a.loopTotalOut
                         fadeUnderrunAt = audioTrack.underrunCount
                         limMinInFade = 1f
                     }
@@ -2666,16 +2728,31 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     // quand tout va bien : une ligne n'apparaît QUE s'il y a
                     // eu du son manquant, une sous-alimentation de la sortie
                     // ou un écrasement notable du limiteur.
-                    val starvedMs = if (a.srcSr > 0)
+                    // Les DEUX decks sont mesurés : c'est l'ENTRANT qui
+                    // risque le plus la famine (décodeur tout juste
+                    // lancé), et ne compter que le sortant rendait un
+                    // « famine 0 ms » rassurant pendant que l'arrivant
+                    // faisait des trous.
+                    val starvedA = if (a.srcSr > 0)
                         (a.starvedFrames - fadeStarvedA) * 1000L / a.srcSr else 0L
+                    val starvedB = if (b.srcSr > 0)
+                        (b.starvedFrames - fadeStarvedB) * 1000L / b.srcSr else 0L
+                    // Boucle de sortie du sortant SOUS le fondu : la même
+                    // cellule qui se répète s'entend comme un saut.
+                    val loopedMs =
+                        (a.loopTotalOut - fadeLoopedA) * 1000L / OUT_SR
                     val under = audioTrack.underrunCount - fadeUnderrunAt
                     underrunsSeen += under
                     val squashDb = if (limMinInFade < 0.999f)
                         20.0 * kotlin.math.log10(limMinInFade.toDouble()) else 0.0
-                    if (starvedMs > 5L || under > 0 || squashDb < -1.0) {
+                    if (starvedA > 5L || starvedB > 5L || loopedMs > 100L ||
+                        under > 0 || squashDb < -1.0
+                    ) {
                         diag(
                             "jonction terminée avec : " +
-                                "famine décodeur ${starvedMs} ms, " +
+                                "famine sortant ${starvedA} ms, " +
+                                "famine entrant ${starvedB} ms, " +
+                                "boucle de sortie ${loopedMs} ms, " +
                                 "sous-alimentations $under, " +
                                 "limiteur ${"%.1f".format(squashDb)} dB"
                         )
