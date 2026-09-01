@@ -66,6 +66,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // s'efface — jamais deux morceaux entiers en même temps.
         const val FADE_NORMAL_S = 14.0
         const val FADE_JUMP_S = 5.0
+        // Fenêtre de calage du pitch fader. ±4 % au lieu de ±8 % : au-delà,
+        // l'étirement s'entend comme un désaccordage sur tout ce qui est
+        // chanté ou acoustique, pour un gain de calage nul (cf. computeRate).
+        const val MIN_LOCK_RATE = 0.96f
+        const val MAX_LOCK_RATE = 1.04f
+        // Plafond des jonctions, relatif au passage sortant puis absolu
+        // (cf. clampFadeS) : ~4 mesures à 128 BPM.
+        const val MAX_FADE_RATIO = 0.15
+        const val MAX_FADE_S = 8.0
+        const val MIN_FADE_S = 2.0
         // Jonctions adaptatives : long blend quand tempos calés et tonalités
         // compatibles, coupe franche quand le calage est impossible.
         const val FADE_LOCKED_HARMONIC_S = 18.0
@@ -151,10 +161,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             if (effBpm <= 0f || nextBpm <= 0f) return 1f
             val base = effBpm / nextBpm
             val candidates = floatArrayOf(base, base * 2f, base / 2f)
-            var best = base.coerceIn(0.92f, 1.08f)
+            // Rien de calable dans la fenêtre : tempo NATUREL. Étirer un
+            // morceau de 8 % sans que les temps se calent pour autant ne
+            // servait à rien — ça ne faisait que le désaccorder (0,92 =
+            // presque un demi-ton), et le journal en était plein sur des
+            // morceaux chantés. fadeSpec voit alors le non-calage et
+            // choisit une coupe courte, ce qu'un DJ ferait aussi.
+            var best = 1f
             var bestDist = Float.MAX_VALUE
             for (c in candidates) {
-                if (c in 0.92f..1.08f) {
+                if (c in MIN_LOCK_RATE..MAX_LOCK_RATE) {
                     val d = kotlin.math.abs(c - 1f)
                     if (d < bestDist) {
                         bestDist = d
@@ -163,6 +179,31 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 }
             }
             return best
+        }
+
+        /**
+         * Plafonne la durée d'une jonction à la taille du passage joué.
+         *
+         * Les durées de [fadeSpec] (14 s, 18 s en blend harmonique) sont
+         * calibrées pour des morceaux entiers de 3 à 5 minutes. Sur des
+         * passages d'une minute — ce que joue un set PulseMix — elles
+         * faisaient jouer DEUX morceaux ensemble pendant un quart à un
+         * tiers du set, chant sur chant : le journal montrait des fondus
+         * de 17 à 19 s entre des passages de 46 à 65 s. D'où le plafond :
+         * jamais plus de [MAX_FADE_RATIO] du passage sortant, jamais plus
+         * de [MAX_FADE_S]. Un fondu déjà plus court n'est pas rallongé.
+         *
+         * Fonction PURE (companion, internal, testée en JVM).
+         *
+         * @param segmentFrames durée TOTALE du passage sortant, en frames
+         *   de sortie (Deck.totalOutFrames).
+         */
+        internal fun clampFadeS(fadeS: Double, segmentFrames: Long): Double {
+            if (segmentFrames <= 0L) return fadeS
+            val segmentS = segmentFrames.toDouble() / OUT_SR
+            val cap = min(MAX_FADE_S, segmentS * MAX_FADE_RATIO)
+                .coerceAtLeast(MIN_FADE_S)
+            return min(fadeS, cap)
         }
 
         /**
@@ -399,6 +440,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
          * ancrées sur son ancre, pas sur son départ.
          * Fonction PURE (companion, internal, testée en JVM).
          */
+        internal fun nextPhraseBeat(phase: Double, offsetBeats: Double): Double =
+            ceil((phase - offsetBeats) / 16.0) * 16.0 + offsetBeats
+
         /** Nom lisible d'un KIND_*, pour le journal de diagnostic. */
         internal fun kindName(kind: Int): String = when (kind) {
             KIND_CUT -> "coupe+écho"
@@ -408,9 +452,6 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             KIND_DROP -> "drop-swap"
             else -> "sweep aigu"
         }
-
-        internal fun nextPhraseBeat(phase: Double, offsetBeats: Double): Double =
-            ceil((phase - offsetBeats) / 16.0) * 16.0 + offsetBeats
 
         /**
          * Phase (en temps) du swap NET de basses : la dernière frontière
@@ -513,7 +554,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     abs(ratio - 0.5f) * 2f
                 )
                 if (lockErr > 0.005f) return FADE_CUT_S to KIND_CUT
-                if (dropStreak < 2 && next.energyMean >= DROP_MIN_ENERGY) {
+                // Les DEUX morceaux doivent être des morceaux de club :
+                // le geste consiste à tenir le sortant à plein pendant que
+                // l'entrant monte dessous, ce qui ne pardonne rien sur du
+                // chanté ou de l'acoustique — le journal montrait des
+                // drop-swaps sur du Rolling Stones et du Buena Vista.
+                if (dropStreak < 2 && next.energyMean >= DROP_MIN_ENERGY &&
+                    current.energyMean >= DROP_MIN_ENERGY
+                ) {
                     val barMs = 4.0 * 60_000.0 / next.bpm
                     for (s in nextSections) {
                         if (s.kind == StructureDetector.SectionKind.DROP &&
@@ -1742,7 +1790,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // la structure de l'entrant (décodée une fois, en
                         // cache) et de son ancre — recalculée comme dans
                         // Deck.init, c'est là que le drop tombera.
-                        val (fadeS, fadeKind) = if (proMode) {
+                        val (rawFadeS, fadeKind) = if (proMode) {
                             if (proSectionsIdx != nextIdx) {
                                 proSectionsIdx = nextIdx
                                 proSections = if (nx.structure.isEmpty())
@@ -1761,6 +1809,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         } else fadeSpec(
                             a.track, a.curRate, nx, rate, jumping, lastFadeKind
                         )
+                        // Plafond relatif au passage sortant : c'est ICI,
+                        // avant l'ouverture du deck, que la durée doit être
+                        // arrêtée — le pré-roll de l'entrant est calculé
+                        // dessus (Deck.init), les deux restent cohérents.
+                        val fadeS = clampFadeS(rawFadeS, a.totalOutFrames)
                         val fadeF = (fadeS * OUT_SR).toLong()
                         // 3 s d'avance : le deck est prêt (et pré-décodé)
                         // avant l'heure du fondu

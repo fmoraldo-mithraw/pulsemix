@@ -35,7 +35,7 @@ class DjMixerSpecTest {
     // -------------------------------------------------------- computeRate
 
     @Test
-    fun `bpm proches - rate proportionnel dans les 8 pourcents`() {
+    fun `bpm proches - rate proportionnel dans les 4 pourcents`() {
         // 126 -> 128 : l'entrant est accéléré de 128/126 pour se caler
         assertEquals(128f / 126f, DjMixer.computeRate(128f, 126f), EPS)
         // 130 -> 126 : ralenti
@@ -51,18 +51,60 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `ecart trop grand - rate borne aux 8 pourcents`() {
-        // 128 vs 100 : ni direct ni double/moitié ne rentre dans ±8 % ;
-        // le rate est borné à la limite du pitch fader (1.08), et c'est
-        // fadeSpec qui transformera ce non-calage en coupe (CUT).
-        assertEquals(1.08f, DjMixer.computeRate(128f, 100f), EPS)
-        assertEquals(0.92f, DjMixer.computeRate(100f, 128f), EPS)
+    fun `ecart trop grand - tempo naturel, pas d'etirement inutile`() {
+        // 128 vs 100 : ni direct ni double/moitié ne rentre dans ±4 %.
+        // Étirer quand même désaccordait le morceau SANS caler les temps :
+        // on le joue à son tempo, et c'est fadeSpec qui transforme ce
+        // non-calage en coupe courte (CUT).
+        assertEquals(1f, DjMixer.computeRate(128f, 100f), EPS)
+        assertEquals(1f, DjMixer.computeRate(100f, 128f), EPS)
+    }
+
+    @Test
+    fun `ecart de 6 pourcents - plus de calage, tempo naturel`() {
+        // 128 vs 121 (~5,8 %) : calable dans l'ancienne fenêtre de ±8 %,
+        // plus dans celle de ±4 %.
+        assertEquals(1f, DjMixer.computeRate(128f, 121f), EPS)
     }
 
     @Test
     fun `bpm inconnu - rate neutre`() {
         assertEquals(1f, DjMixer.computeRate(0f, 120f), EPS)
         assertEquals(1f, DjMixer.computeRate(120f, 0f), EPS)
+    }
+
+    // ---------------------------------------------------------- clampFadeS
+
+    @Test
+    fun `passage d'une minute - le blend de 18 s est ramene au plafond`() {
+        // 60 s de passage : 15 % = 9 s, plafonné à MAX_FADE_S (8 s).
+        val seg = 60L * DjMixer.OUT_SR
+        assertEquals(
+            DjMixer.MAX_FADE_S,
+            DjMixer.clampFadeS(DjMixer.FADE_LOCKED_HARMONIC_S, seg), 1e-9
+        )
+    }
+
+    @Test
+    fun `passage court - le plafond suit la proportion`() {
+        // 30 s de passage : 15 % = 4,5 s, sous le plafond absolu.
+        val seg = 30L * DjMixer.OUT_SR
+        assertEquals(4.5, DjMixer.clampFadeS(DjMixer.FADE_NORMAL_S, seg), 1e-9)
+    }
+
+    @Test
+    fun `passage minuscule - jamais sous le plancher`() {
+        val seg = 5L * DjMixer.OUT_SR
+        assertEquals(
+            DjMixer.MIN_FADE_S,
+            DjMixer.clampFadeS(DjMixer.FADE_NORMAL_S, seg), 1e-9
+        )
+    }
+
+    @Test
+    fun `fondu deja court - jamais rallonge`() {
+        val seg = 120L * DjMixer.OUT_SR
+        assertEquals(3.0, DjMixer.clampFadeS(3.0, seg), 1e-9)
     }
 
     // ----------------------------------------------------------- fadeSpec
@@ -79,8 +121,8 @@ class DjMixerSpecTest {
 
     @Test
     fun `lockErr eleve - coupe courte`() {
-        // 128 vs 100 : même avec le rate borné à 1.08 (108 BPM effectifs),
-        // les tempos ne sont pas verrouillés -> coupe + echo-out
+        // 128 vs 100 : joué à son tempo naturel (rate 1), les tempos ne
+        // sont pas verrouillés -> coupe + echo-out
         val rate = DjMixer.computeRate(128f, 100f)
         val (s, kind) = DjMixer.fadeSpec(
             track("a", 128f), 1f, track("b", 100f),
