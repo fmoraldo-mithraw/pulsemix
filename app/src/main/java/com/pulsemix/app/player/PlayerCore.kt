@@ -376,13 +376,7 @@ object PlayerCore {
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
         exo.addAnalyticsListener(underrunWatch("principal"))
-        exo.setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(C.USAGE_MEDIA)
-                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                .build(),
-            /* handleAudioFocus = */ true
-        )
+        exo.setAudioAttributes(audioAttrs(), /* handleAudioFocus = */ true)
         exo.setHandleAudioBecomingNoisy(true)
 
         exo.addListener(object : Player.Listener {
@@ -1551,14 +1545,9 @@ object PlayerCore {
             // se journalisent comme celles du principal.
             addAnalyticsListener(underrunWatch("queue"))
             // Surtout pas de focus audio : il est déjà tenu par le
-            // lecteur principal, le redemander couperait le son.
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .build(),
-                /* handleAudioFocus = */ false
-            )
+            // lecteur principal, le redemander couperait le son. Même
+            // canal que le principal (média, ou alarme pendant le réveil).
+            setAudioAttributes(audioAttrs(), /* handleAudioFocus = */ false)
             setMediaItem(mediaItem(track))
             seekTo(exo.currentPosition)
             // Muet et à l'arrêt tant qu'il n'a pas de quoi jouer : ouvrir le
@@ -3035,6 +3024,42 @@ object PlayerCore {
     private fun resetAutoNextForLaunch() {
         autoNextSuppressed = false
         clearAutoNext()
+        // Un lancement qui ne vient pas du réveil rend la sortie au canal
+        // média : le réveil est fini dès que l'utilisateur lance autre chose.
+        if (alarmAudio && !alarmLaunching) setAlarmAudio(false)
+    }
+
+    // ---------------------------------------------------- canal du réveil
+
+    /**
+     * Pendant le réveil, la musique sort sur le canal ALARME (usage
+     * `USAGE_ALARM`, volume « alarme ») et non sur le canal média : il ne
+     * dépend pas du volume média — souvent à zéro au coucher — et traverse
+     * « ne pas déranger » / l'heure du coucher, qui peuvent couper le
+     * média. C'est le canal des applications de réveil, pour ces raisons.
+     * S'applique au lecteur principal, à la queue de raccord (construite
+     * avec le même canal) et au moteur DJ (AudioTrack construit au start).
+     */
+    @Volatile private var alarmAudio = false
+
+    /** Vrai pendant que [AlarmClock] lance sa lecture : les lancements de
+     *  cette fenêtre ne rendent pas le canal média (cf. resetAutoNextForLaunch). */
+    @Volatile internal var alarmLaunching = false
+
+    private fun audioAttrs(): AudioAttributes =
+        AudioAttributes.Builder()
+            .setUsage(if (alarmAudio) C.USAGE_ALARM else C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+
+    internal fun setAlarmAudio(on: Boolean) {
+        if (!initialized || alarmAudio == on) return
+        alarmAudio = on
+        try {
+            exo.setAudioAttributes(audioAttrs(), /* handleAudioFocus = */ true)
+        } catch (_: Exception) {
+        }
+        mixer.setAlarmUsage(on)
     }
 
     /**

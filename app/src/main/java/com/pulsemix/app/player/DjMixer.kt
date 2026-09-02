@@ -1499,6 +1499,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
      * DEUX fois : à l'ouverture du set, et pour la reconstruire si le
      * système la tue en cours de route (cf. l'écriture qui échoue).
      */
+    /** Canal du réveil (USAGE_ALARM) au lieu du média : posé par
+     *  PlayerCore avant le lancement du set, lu à la construction de la
+     *  sortie — un set déjà en cours garde son canal. */
+    @Volatile private var alarmUsage = false
+
+    fun setAlarmUsage(on: Boolean) {
+        alarmUsage = on
+    }
+
     private fun newAudioTrack(): AudioTrack {
         val minBuf = AudioTrack.getMinBufferSize(
             OUT_SR, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_FLOAT
@@ -1506,7 +1515,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         return AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setUsage(
+                        if (alarmUsage) AudioAttributes.USAGE_ALARM
+                        else AudioAttributes.USAGE_MEDIA
+                    )
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )

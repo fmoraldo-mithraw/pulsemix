@@ -235,9 +235,12 @@ object AlarmClock {
         stopFallbackRingtone()
         try {
             PlayerCore.stopPlayback()
+            // Retour au canal média : le réveil est fini
+            PlayerCore.setAlarmAudio(false)
         } catch (_: Exception) {
         }
         restoreVolume(context)
+        log("réveil arrêté")
     }
 
     // ------------------------------------------------- volume média rendu
@@ -264,7 +267,7 @@ object AlarmClock {
         if (v == null) return
         try {
             context.getSystemService(AudioManager::class.java)
-                ?.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+                ?.setStreamVolume(WAKE_STREAM, v, 0)
         } catch (_: Exception) {
         }
     }
@@ -349,12 +352,33 @@ object AlarmClock {
         }
 
         GlobalScope.launch(Dispatchers.Main) {
+            var launched = false
             try {
+                log("sonnerie : mix « ${mixId.value} », rampe ${rampMinutes.value} min")
                 val store = com.pulsemix.app.Graph.store
-                store.loaded.first { it }
+                // Bibliothèque pas lue au bout de 30 s (disque lent, fichier
+                // énorme) : on ne reste pas muet, la sonnerie de secours part.
+                val loaded = kotlinx.coroutines.withTimeoutOrNull(30_000L) {
+                    store.loaded.first { it }
+                }
+                if (loaded == null) {
+                    log("bibliothèque pas chargée à temps : sonnerie de secours")
+                    startFallbackRingtone(context)
+                    return@launch
+                }
                 val all = store.tracks.value.filter { !it.excluded }
+                log("bibliothèque chargée : ${all.size} morceau(x) jouable(s)")
+                // La musique sort sur le canal ALARME pendant le réveil : il
+                // ne dépend pas du volume média (souvent à zéro au coucher)
+                // et passe à travers « ne pas déranger » / heure du coucher,
+                // qui peuvent couper le canal média. Posé AVANT le lancement,
+                // rendu au canal média quand le réveil est arrêté ou quand
+                // l'utilisateur lance autre chose (PlayerCore).
+                PlayerCore.alarmLaunching = true
+                PlayerCore.setAlarmAudio(true)
                 startRamp(context)
                 if (all.isEmpty()) {
+                    log("bibliothèque vide : sonnerie de secours")
                     startFallbackRingtone(context)
                     return@launch
                 }
@@ -365,6 +389,7 @@ object AlarmClock {
                         PlayerCore.playDouce(all, 0.35f)
                         // Aucun morceau assez doux : réveil quand même
                         if (PlayerCore.launchMessage.value != null) {
+                            log("aucun morceau doux : lecture aléatoire")
                             PlayerCore.playNormal(wakeOrder(all.shuffled()), 0)
                         }
                     }
@@ -381,18 +406,49 @@ object AlarmClock {
                                 PlayerCore.MixSpec(plan.id, true, null, null)
                             )
                         } else {
+                            log("plan « $id » introuvable : lecture aléatoire")
                             PlayerCore.playNormal(wakeOrder(all.shuffled()), 0)
                         }
                     }
                 }
-            } catch (_: Exception) {
+                launched = true
+                log("lancement demandé (${mixId.value})")
+            } catch (e: Exception) {
+                // Une exception ici laissait la notification affichée et
+                // le téléphone MUET, sans une trace : journalisée, et la
+                // sonnerie de secours prend le relais.
+                log("échec du lancement : ${e::class.java.simpleName} ${e.message}")
+                startFallbackRingtone(context)
             } finally {
+                PlayerCore.alarmLaunching = false
                 onDone()
                 try {
                     wl.release()
                 } catch (_: Exception) {
                 }
             }
+            // Filet sonore : si rien ne joue 20 s après le lancement (focus
+            // audio refusé, fichier illisible, plan vide), on sonne quand
+            // même. Un réveil muet est le pire des échecs pour un réveil.
+            if (launched) {
+                delay(20_000L)
+                if (!PlayerCore.isPlaying.value && fallback == null) {
+                    log("rien ne joue 20 s après le lancement : sonnerie de secours")
+                    startFallbackRingtone(context)
+                } else if (PlayerCore.isPlaying.value) {
+                    log("lecture en cours 20 s après le lancement")
+                }
+            }
+        }
+    }
+
+    /** Journal du réveil (service_log.txt, tag [Réveil]) : chaque étape
+     *  laisse une trace, pour ne plus jamais chercher pourquoi il est resté
+     *  muet. */
+    private fun log(message: String) {
+        try {
+            PlayerCore.engineLog("Réveil", message)
+        } catch (_: Exception) {
         }
     }
 
@@ -401,25 +457,34 @@ object AlarmClock {
      * max) jusqu'au maximum, sur [rampMinutes] minutes. Si l'utilisateur
      * touche au volume entre-temps, on le laisse maître et on arrête.
      */
+    /** Canal sonore du réveil : ALARME (voir launchNow), pas média. */
+    private const val WAKE_STREAM = AudioManager.STREAM_ALARM
+
     @OptIn(DelicateCoroutinesApi::class)
     private fun startRamp(context: Context) {
         rampJob?.cancel()
         val am = context.getSystemService(AudioManager::class.java) ?: return
-        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val start = (max / 8).coerceAtLeast(1)
+        val max = am.getStreamMaxVolume(WAKE_STREAM)
+        // Plancher à un quart du maximum (et jamais sous 2 crans) : à un
+        // huitième, sur les 15 crans habituels, le réveil partait au cran
+        // 1 — inaudible depuis la table de nuit, vécu comme « aucune
+        // musique ». La rampe monte ensuite jusqu'au maximum.
+        val start = (max / 4).coerceAtLeast(2).coerceAtMost(max)
         try {
             // Mémorisé avant d'y toucher : le réveil rendra ce volume.
             // Copié en prefs dans la foulée : si le processus meurt avant
             // stopRinging, la variable disparaît avec lui et c'est la copie
             // qui permettra de rendre le volume (init / restoreVolume).
             if (volumeBeforeAlarm == null) {
-                val before = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                val before = am.getStreamVolume(WAKE_STREAM)
                 volumeBeforeAlarm = before
                 context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                     .edit().putInt(KEY_VOLUME_BEFORE, before).apply()
             }
-            am.setStreamVolume(AudioManager.STREAM_MUSIC, start, 0)
-        } catch (_: Exception) {
+            am.setStreamVolume(WAKE_STREAM, start, 0)
+            log("volume alarme : $start/$max, montée vers $max")
+        } catch (e: Exception) {
+            log("volume impossible à régler : ${e.message}")
             return
         }
         val steps = max - start
@@ -430,14 +495,14 @@ object AlarmClock {
             for (s in 1..steps) {
                 delay(stepMs)
                 val cur = try {
-                    am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    am.getStreamVolume(WAKE_STREAM)
                 } catch (_: Exception) {
                     return@launch
                 }
                 if (cur != expected) return@launch // volume touché à la main
                 expected = start + s
                 try {
-                    am.setStreamVolume(AudioManager.STREAM_MUSIC, expected, 0)
+                    am.setStreamVolume(WAKE_STREAM, expected, 0)
                 } catch (_: Exception) {
                     return@launch
                 }
