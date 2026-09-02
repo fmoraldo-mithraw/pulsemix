@@ -1563,8 +1563,8 @@ object PlayerCore {
                 .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 .setAudioTrackBufferSizeProvider(
                     DefaultAudioTrackBufferSizeProvider.Builder()
-                        .setMinPcmBufferDurationUs(TAIL_BUFFER_MS * 1_000L)
-                        .setMaxPcmBufferDurationUs(TAIL_BUFFER_MS * 1_000L)
+                        .setMinPcmBufferDurationUs((TAIL_BUFFER_MS * 1_000L).toInt())
+                        .setMaxPcmBufferDurationUs((TAIL_BUFFER_MS * 1_000L).toInt())
                         .build()
                 )
                 .build()
