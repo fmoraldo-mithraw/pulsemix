@@ -1421,10 +1421,21 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 preRollMs(anchor, Math.round(preFadeS * 1000.0), track.bpm, sections)
             else 0L
             startMs = when {
-                // Déplacement manuel : au moins 10 s à jouer après le point
-                // visé, sinon le deck n'aurait pas de quoi tenir le fondu
-                seekFromMs != null ->
-                    seekFromMs.coerceIn(0L, max(0L, end - 10_000L))
+                // Déplacement manuel : garder de quoi faire une VRAIE
+                // transition après le point visé — l'avance d'ouverture du
+                // deck suivant plus quatre mesures de fondu (~16 s à
+                // 120 BPM). Avec l'ancienne marge de 10 s, un déplacement
+                // vers la fin du passage laissait la jonction automatique
+                // se faire en 1,8 s (journal 10). Dernier passage : vraie
+                // fin, pas de transition derrière, la marge courte suffit.
+                seekFromMs != null -> {
+                    val tail = if (playToEnd || track.bpm <= 0f) 10_000L
+                    else max(
+                        10_000L,
+                        ((PREOPEN_LEAD_S + 4.0 * barSeconds(track.bpm)) * 1000.0).toLong()
+                    )
+                    seekFromMs.coerceIn(0L, max(0L, end - tail))
+                }
                 playFromStart ->
                     if (PlayerCore.skipIntros.value && track.musicStartMs > 1_500L)
                         track.musicStartMs

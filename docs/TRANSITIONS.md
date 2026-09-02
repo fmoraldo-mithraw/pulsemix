@@ -388,7 +388,7 @@ annonce du morceau à l'interface **différée de la latence de sortie**
 |---|---|
 | **Suivant** | vraie transition battue vers le morceau d'après le deck actif — ou d'après la transition en vol ; 2 mesures, départ à la prochaine mesure. |
 | **Précédent** | transition vers le passage précédent ; au premier, repart de son début. |
-| **Barre de progression** | un second deck est ouvert **sur le même morceau** à la position visée, et on y fait une transition de **deux mesures**. Prend la main sur une ouverture en cours ; ignoré si une transition est déjà en vol (L4). |
+| **Barre de progression** | un second deck est ouvert **sur le même morceau** à la position visée, et on y fait une transition de **deux mesures**. Point visé borné pour laisser une **vraie transition** derrière (avance d'ouverture 8 s + quatre mesures, ~16 s à 120 BPM ; 10 s sur le dernier passage) — avant, un déplacement vers la fin laissait la jonction se faire en 1,8 s. Prend la main sur une ouverture en cours ; ignoré si une transition est déjà en vol (L4). |
 | **Mixer maintenant** | = suivant. |
 | **Crossfader manuel** | pendant une transition : la position remplace la progression du fondu ; hors transition : n'atténue que le deck actif. Saisie et retour « Auto » en rampe de 250 ms. |
 | **Kill basses A/B**, **boucle de sortie manuelle**, **nudge tempo**, **boucle live**, **effets live** | inchangés (voir code) ; rendus par le moteur, donc **entendus après la latence de sortie (~2,3 s)** — voir §6, L12. |
