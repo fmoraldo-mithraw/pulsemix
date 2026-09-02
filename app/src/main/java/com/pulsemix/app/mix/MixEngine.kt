@@ -188,6 +188,13 @@ object MixEngine {
         val deltaHalf = abs(cand.bpm / 2f - prev.bpm) / ref * 100f
         val deltaDouble = abs(cand.bpm * 2f - prev.bpm) / ref * 100f
         delta = min(delta, min(deltaHalf + 4f, deltaDouble + 4f))
+        // MARCHE à la fenêtre de calage du moteur DJ (±4 % par deck, calage
+        // partagé : 8 % d'écart entre les deux morceaux) : en deçà, les
+        // deux se battent ensemble ; au-delà, c'est une coupe sèche. Un
+        // coût linéaire ne voyait pas cette falaise — 5 % coûtait à peine
+        // plus que 3 % — et les plans enchaînaient des morceaux non
+        // mixables sans le savoir.
+        if (delta > LOCK_WINDOW_PCT) delta += 6f
         // Direction souhaitée
         val dir = if (ascending) prev.bpm - cand.bpm else cand.bpm - prev.bpm
         val dirPenalty = if (dir > 0) dir * 0.15f else 0f
@@ -284,6 +291,9 @@ object MixEngine {
 
     /** Durée minimale d'un mix ou d'un set DJ : en dessous d'une heure,
      *  le set s'arrête au moment où la soirée démarre. */
+    /** Écart de tempo (%) au-delà duquel le moteur DJ ne bat plus deux
+     *  morceaux ensemble (2 × ±4 %, calage partagé) : marche du coût. */
+    const val LOCK_WINDOW_PCT = 8f
     const val MIN_MIX_MINUTES = 60
     const val MIN_MIX_MS = MIN_MIX_MINUTES * 60_000L
 

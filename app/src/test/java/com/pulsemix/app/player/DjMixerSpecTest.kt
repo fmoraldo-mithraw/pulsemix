@@ -107,6 +107,139 @@ class DjMixerSpecTest {
         assertEquals(3.0, DjMixer.clampFadeS(3.0, seg), 1e-9)
     }
 
+    // ------------------------------------------------------------ fadeBars
+    // Durées en MESURES, par technique, bornées par le passage sortant.
+
+    @Test
+    fun `fadeBars - coupe 2, blend 4, harmonique 4 ou 6 selon le passage`() {
+        assertEquals(2, DjMixer.fadeBars(DjMixer.KIND_CUT, 32.0))
+        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_NORMAL, 32.0))
+        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_EQ, 32.0))
+        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_DROP, 32.0))
+        // Harmonique : 4 mesures sur un passage d'une minute (32 mesures),
+        // 6 sur un long passage (≥ 48 mesures)
+        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_HARMONIC, 32.0))
+        assertEquals(6, DjMixer.fadeBars(DjMixer.KIND_HARMONIC, 48.0))
+    }
+
+    @Test
+    fun `fadeBars - jamais plus d un cinquieme du passage, jamais moins d une mesure`() {
+        // 12 mesures de passage : 20 % = 2,4 -> 2 mesures
+        assertEquals(2, DjMixer.fadeBars(DjMixer.KIND_NORMAL, 12.0))
+        // 4 mesures : 0,8 -> plancher 1
+        assertEquals(1, DjMixer.fadeBars(DjMixer.KIND_HARMONIC, 4.0))
+    }
+
+    @Test
+    fun `barSeconds - 128 BPM = 1,875 s`() {
+        assertEquals(1.875, DjMixer.barSeconds(128f), 1e-9)
+    }
+
+    // ---------------------------------------------------------- splitRates
+    // Calage PARTAGÉ : chaque deck fait la moitié du chemin (en log).
+
+    @Test
+    fun `splitRates - ecart de 3 pourcents partage en deux`() {
+        val (rA, rB) = DjMixer.splitRates(128f, 124f)
+        // Tempo cible = moyenne géométrique ~125,98 : A ralentit, B accélère
+        assertTrue(rA < 1f && rB > 1f)
+        assertEquals(128f * rA, 124f * rB, 1e-3f) // mêmes tempos effectifs
+        assertTrue(rA >= DjMixer.MIN_LOCK_RATE && rB <= DjMixer.MAX_LOCK_RATE)
+    }
+
+    @Test
+    fun `splitRates - jusqu a 8 pourcents d ecart, calable ; au-dela, tempos naturels`() {
+        // 128 vs 118,5 (~7,7 %) : ~3,9 % chacun, encore dans la fenêtre
+        val (rA, rB) = DjMixer.splitRates(128f, 118.5f)
+        assertTrue(rA != 1f && rB != 1f)
+        // 128 vs 100 : impossible sans désaccorder — chacun à son tempo
+        assertEquals(1f to 1f, DjMixer.splitRates(128f, 100f))
+    }
+
+    @Test
+    fun `splitRates - double et moitie de tempo admis pour l entrant`() {
+        // 128 vs 64 : B en double-time (128), aucun étirement
+        val (rA, rB) = DjMixer.splitRates(128f, 64f)
+        assertEquals(1f, rA, EPS)
+        assertEquals(1f, rB, EPS)
+        assertEquals(1f to 1f, DjMixer.splitRates(0f, 120f))
+    }
+
+    // ----------------------------------------------------------- anchorFor
+    // Ancre du passage : début du DROP le plus proche du meilleur passage.
+
+    @Test
+    fun `anchorFor - debut du drop a portee de phrase`() {
+        // Phrase à 128 BPM = 7,5 s ; le drop commence 4 s après le meilleur
+        // passage : c'est lui l'ancre, pas le premier beat du passage.
+        val s = listOf(
+            section(40_000L, 64_000L, StructureDetector.SectionKind.BUILD),
+            section(64_000L, 120_000L, StructureDetector.SectionKind.DROP)
+        )
+        assertEquals(
+            64_000L,
+            DjMixer.anchorFor(60_000L, 60_000L, 61_000L, 128f, 240_000L, s)
+        )
+    }
+
+    @Test
+    fun `anchorFor - sans drop proche - premier beat du passage, sinon son debut`() {
+        val far = listOf(
+            section(0L, 100_000L, StructureDetector.SectionKind.INTRO),
+            section(100_000L, 200_000L, StructureDetector.SectionKind.DROP)
+        )
+        assertEquals(
+            61_000L,
+            DjMixer.anchorFor(60_000L, 60_000L, 61_000L, 128f, 240_000L, far)
+        )
+        // Premier beat hors du passage : début du passage
+        assertEquals(
+            60_000L,
+            DjMixer.anchorFor(60_000L, 60_000L, 10_000L, 128f, 240_000L, emptyList())
+        )
+    }
+
+    // ------------------------------------------------ fadeSpec : structure
+    // Technique choisie selon la section d'où l'on sort / où l'on entre.
+
+    @Test
+    fun `fadeSpec - on sort d un drop - jamais de sweep grave`() {
+        val a = track("a", 128f, centroid = 3_000f) // sortant brillant : pool à sweep grave
+        val b = track("b", 128f)
+        repeat(3) { last ->
+            val (_, kind) = DjMixer.fadeSpec(
+                a, 1f, b, 1f, jumping = false, lastKind = last - 1,
+                exitKind = StructureDetector.SectionKind.DROP
+            )
+            assertTrue(kind != DjMixer.KIND_DARK)
+        }
+    }
+
+    @Test
+    fun `fadeSpec - on sort d un break - jamais de coupe`() {
+        // Deux morceaux percussifs et énergiques : pool avec coupe
+        val a = track("a", 128f, energyMean = 0.2f, sustainRatio = 0.2f)
+        val b = track("b", 128f, energyMean = 0.2f, sustainRatio = 0.2f)
+        repeat(3) { last ->
+            val (_, kind) = DjMixer.fadeSpec(
+                a, 1f, b, 1f, jumping = false, lastKind = last - 1,
+                exitKind = StructureDetector.SectionKind.BREAK
+            )
+            assertTrue(kind != DjMixer.KIND_CUT)
+        }
+    }
+
+    @Test
+    fun `preRoll - structure sans montee avant l ancre - zero`() {
+        // Structure connue, pas de BUILD adjacente : un pré-roll partirait
+        // n'importe où dans un couplet — le deck part sur son ancre.
+        val s = listOf(
+            section(0L, 60_000L, StructureDetector.SectionKind.BREAK),
+            section(60_000L, 120_000L, StructureDetector.SectionKind.DROP)
+        )
+        assertEquals(0L, DjMixer.preRollMs(60_000L, 14_000L, 120f, s))
+    }
+
     // ----------------------------------------------------------- fadeSpec
 
     @Test
@@ -315,7 +448,7 @@ class DjMixerSpecTest {
     @Test
     fun `dropGains - montee plafonnee puis bascule nette`() {
         // Montée (st = 0) : sortant quasi plein, entrant plafonné à 0,5
-        assertEquals(0.95f, DjMixer.dropGainA(0f), EPS)
+        assertEquals(DjMixer.DROP_HOLD_A, DjMixer.dropGainA(0f), EPS)
         assertEquals(0f, DjMixer.dropGainB(0f, 0f), EPS)
         var x = 0f
         while (x <= 1f) {

@@ -141,8 +141,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Drop-swap : pendant la montée le sortant reste la star (quasi
         // plein), l'entrant monte en fond plafonné à mi-volume — la
         // tension vient de ce déséquilibre, le release de son inversion.
-        const val DROP_HOLD_A = 0.95f
+        // 0,8 et non 0,95 : à 0,95 + 0,5 la somme dépassait 1 et le limiteur
+        // rabotait ~2 dB PENDANT la montée — le niveau baissait au moment
+        // où la tension devait grimper, l'inverse de l'intention.
+        const val DROP_HOLD_A = 0.8f
         const val DROP_CAP_B = 0.5f
+        // Jonctions en MESURES (cf. fadeBars) : jamais plus de cette part
+        // du passage sortant, comptée en mesures.
+        const val MAX_FADE_RATIO_BARS = 0.2
         // Seuil d'énergie de l'entrant pour oser un drop-swap : sur un
         // morceau mou, la coupe tomberait dans le vide.
         const val DROP_MIN_ENERGY = 0.12f
@@ -213,6 +219,96 @@ class DjMixer(private val context: Context, private val listener: Listener) {
          * @param segmentFrames durée TOTALE du passage sortant, en frames
          *   de sortie (Deck.totalOutFrames).
          */
+        /** Durée d'une mesure (4 temps) en secondes. */
+        internal fun barSeconds(bpm: Float): Double = 4.0 * 60.0 / bpm
+
+        /**
+         * Durée d'une jonction en MESURES, par technique : un DJ compte 2, 4
+         * ou 8 mesures, pas des secondes — 8 s à 90 BPM font trois mesures,
+         * une jonction qui ne tombe sur aucune structure musicale. Coupe :
+         * 2 mesures ; blend harmonique : 4, 6 sur un long passage (≥ 48
+         * mesures) ; le reste : 4. Bornée à [MAX_FADE_RATIO_BARS] du passage
+         * sortant, jamais moins d'une mesure. Fonction PURE (testée en JVM).
+         */
+        internal fun fadeBars(kind: Int, segmentBars: Double): Int {
+            val nominal = when (kind) {
+                KIND_CUT -> 2
+                KIND_HARMONIC -> if (segmentBars >= 48.0) 6 else 4
+                else -> 4
+            }
+            val cap = floor(segmentBars * MAX_FADE_RATIO_BARS).toInt().coerceAtLeast(1)
+            return min(nominal, cap)
+        }
+
+        /**
+         * Calage de tempo PARTAGÉ entre les deux decks : plutôt que d'étirer
+         * l'entrant de tout l'écart, chacun fait la moitié du chemin (en
+         * log : tempo cible = moyenne géométrique des tempos naturels, avec
+         * double/moitié de tempo admis pour l'entrant). Pour la même
+         * altération audible de ±4 % par deck, la plage calable double. Hors
+         * plage : (1, 1) — chacun à son tempo naturel, fadeSpec coupera.
+         * @return (rate du sortant, rate de l'entrant), relatifs aux tempos
+         *   NATURELS des deux morceaux. Fonction PURE (testée en JVM).
+         */
+        internal fun splitRates(bpmA: Float, bpmB: Float): Pair<Float, Float> {
+            if (bpmA <= 0f || bpmB <= 0f) return 1f to 1f
+            var bestB = bpmB
+            var bestD = Float.MAX_VALUE
+            for (k in floatArrayOf(1f, 2f, 0.5f)) {
+                val b = bpmB * k
+                val d = abs(kotlin.math.ln(bpmA / b))
+                if (d < bestD) {
+                    bestD = d
+                    bestB = b
+                }
+            }
+            val t = kotlin.math.sqrt(bpmA * bestB)
+            val rA = t / bpmA
+            val rB = t / bestB
+            return if (rA in MIN_LOCK_RATE..MAX_LOCK_RATE &&
+                rB in MIN_LOCK_RATE..MAX_LOCK_RATE
+            ) rA to rB else 1f to 1f
+        }
+
+        /**
+         * Ancre du passage fort : le DÉBUT de la section DROP la plus proche
+         * du meilleur passage (à ± une phrase) quand la structure est
+         * connue — le « 1 » du drop, recalé sur le saut de basses à
+         * l'analyse — sinon le premier beat détecté dans le passage, sinon
+         * son début. Un deck qui démarre sur un vrai début de section sonne
+         * juste ; « le premier beat de la meilleure minute » pouvait tomber
+         * au milieu d'un couplet. Fonction PURE (testée en JVM).
+         */
+        internal fun anchorFor(
+            bestStartMs: Long,
+            segmentMs: Long,
+            firstBeatMs: Long,
+            bpm: Float,
+            durationMs: Long,
+            sections: List<StructureDetector.Section>
+        ): Long {
+            if (bpm > 0f && sections.isNotEmpty()) {
+                val phraseMs = 16.0 * 60_000.0 / bpm
+                val drop = sections
+                    .filter {
+                        it.kind == StructureDetector.SectionKind.DROP &&
+                            abs(it.startMs - bestStartMs) <= phraseMs &&
+                            it.startMs <= durationMs - 15_000L
+                    }
+                    .minByOrNull { abs(it.startMs - bestStartMs) }
+                if (drop != null) return drop.startMs
+            }
+            return if (firstBeatMs in bestStartMs..(bestStartMs + segmentMs)) firstBeatMs
+            else bestStartMs
+        }
+
+        /** Section qui contient l'instant [ms] (null sans structure). */
+        internal fun sectionAt(
+            sections: List<StructureDetector.Section>,
+            ms: Long
+        ): StructureDetector.SectionKind? =
+            sections.firstOrNull { ms >= it.startMs && ms < it.endMs }?.kind
+
         internal fun clampFadeS(fadeS: Double, segmentFrames: Long): Double {
             if (segmentFrames <= 0L) return fadeS
             val segmentS = segmentFrames.toDouble() / OUT_SR
@@ -249,7 +345,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             next: Track,
             rate: Float,
             jumping: Boolean,
-            lastKind: Int
+            lastKind: Int,
+            // Section d'où l'on SORT (fin du passage du sortant) et section
+            // où l'on ENTRE (ancre de l'entrant), quand la structure est
+            // connue : ce qui compte pour choisir le geste est local à la
+            // jonction, pas le caractère moyen des deux morceaux.
+            exitKind: StructureDetector.SectionKind? = null,
+            entryKind: StructureDetector.SectionKind? = null
         ): Pair<Double, Int> {
             if (jumping) return FADE_JUMP_S to KIND_EQ
             val effA = current.bpm * curRate
@@ -317,12 +419,34 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     12.0 to KIND_EQ
                 )
             }
+            // Structure LOCALE à la jonction, quand elle est connue :
+            //  - on sort d'un DROP (temps fort) : geste franc — coupe ou
+            //    échange de basses, jamais l'étouffement lent d'un sweep
+            //    grave, qui laisserait le climax mourir sous l'entrant ;
+            //  - on sort d'un BREAK / d'une OUTRO (le morceau s'est déjà
+            //    calmé) : blend long, jamais de coupe — il n'y a plus
+            //    d'attaque sur laquelle une coupe sonnerait voulue ;
+            //  - on entre directement dans un DROP (pas de montée avant) :
+            //    l'entrant doit arriver franc, pas filtré sur des mesures.
+            val local: List<Pair<Double, Int>> = when {
+                exitKind == StructureDetector.SectionKind.DROP -> {
+                    val p = pool.filter { it.second != KIND_DARK }
+                    if (p.none { it.second == KIND_CUT || it.second == KIND_EQ })
+                        p + (FADE_CUT_S to KIND_CUT) else p
+                }
+                exitKind == StructureDetector.SectionKind.BREAK ||
+                    exitKind == StructureDetector.SectionKind.OUTRO ->
+                    pool.filter { it.second != KIND_CUT }.ifEmpty { pool }
+                entryKind == StructureDetector.SectionKind.DROP ->
+                    pool.filter { it.second != KIND_DARK }.ifEmpty { pool }
+                else -> pool
+            }
             // Tirage stable par paire de morceaux, sans répéter la technique
             // de la transition précédente
             var idx = ((current.uri.hashCode() * 31 + next.uri.hashCode())
-                ushr 1) % pool.size
-            if (pool[idx].second == lastKind) idx = (idx + 1) % pool.size
-            return pool[idx]
+                ushr 1) % local.size
+            if (local[idx].second == lastKind && local.size > 1) idx = (idx + 1) % local.size
+            return local[idx]
         }
 
         /**
@@ -420,12 +544,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             if (bars <= 0L) return 0L
             if (sections.isNotEmpty()) {
                 var buildStartMs = -1L
-                var anchorIn: StructureDetector.Section? = null
                 for (s in sections) {
                     if (s.kind == StructureDetector.SectionKind.BUILD &&
                         abs(s.endMs - anchorMs) <= barMs
                     ) buildStartMs = s.startMs
-                    if (anchorMs >= s.startMs && anchorMs < s.endMs) anchorIn = s
                 }
                 if (buildStartMs >= 0L) {
                     // Montée adjacente à l'ancre : le pré-roll entre au
@@ -434,12 +556,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     val cap = floor((anchorMs - buildStartMs) / barMs).toLong()
                     if (bars > cap) bars = cap
                     if (bars <= 0L) return 0L
-                } else if (anchorIn != null &&
-                    anchorIn.kind == StructureDetector.SectionKind.DROP &&
-                    anchorMs - anchorIn.startMs > barMs
-                ) {
-                    // Ancre en plein milieu d'un temps fort, sans montée
-                    // avant : structure dégénérée, pas de pré-roll.
+                } else {
+                    // Structure connue mais PAS de montée avant l'ancre :
+                    // un pré-roll démarrerait N mesures plus tôt, n'importe
+                    // où dans un couplet. Le pré-roll n'entre que dans une
+                    // montée ; sinon le deck part sur son ancre.
                     return 0L
                 }
             }
@@ -556,7 +677,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             lastKind: Int,
             dropStreak: Int,
             nextSections: List<StructureDetector.Section>,
-            anchorMs: Long
+            anchorMs: Long,
+            exitKind: StructureDetector.SectionKind? = null
         ): Pair<Double, Int> {
             if (jumping) return FADE_JUMP_S to KIND_EQ
             val effA = current.bpm * curRate
@@ -585,7 +707,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     }
                 }
             }
-            return fadeSpec(current, curRate, next, rate, jumping, lastKind)
+            return fadeSpec(
+                current, curRate, next, rate, jumping, lastKind,
+                exitKind, sectionAt(nextSections, anchorMs)
+            )
         }
 
         // Crossfader manuel (panneau « Performance ») : durée de la rampe
@@ -1223,11 +1348,29 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             liveRemain = liveLen
         }
 
+        /** Tempo cible posé avant la PROCHAINE transition (calage partagé,
+         *  splitRates) : le deck y glisse en douceur pendant l'avance
+         *  d'ouverture ; null = tempo naturel (× cran de vitesse). Fil
+         *  audio seulement. */
+        var pretargetRate: Float? = null
+
+        /** Section (structure) d'où ce deck SORT : celle qui contient la
+         *  fin de son passage. null sans structure. */
+        val exitKind: StructureDetector.SectionKind?
+
         init {
             val best = track.bestStartMs.coerceIn(0L, max(0L, track.durationMs - 15_000L))
             val beat = track.firstBeatMs
-            // Ancre sur le premier beat du passage fort
-            val anchor = if (beat in best..(best + track.segmentMs)) beat else best
+            // Structure décodée UNE fois : l'ancre (anchorFor), le calage de
+            // fin (snapEndToStructure) et le pré-roll (preRollMs) la lisent.
+            // Vide (ancienne analyse) : comportement historique.
+            val sections = if (track.structure.isEmpty()) emptyList()
+            else StructureDetector.decode(track.structure)
+            // Ancre : début du DROP le plus proche du passage fort quand la
+            // structure le connaît, sinon premier beat du passage
+            val anchor = anchorFor(
+                best, track.segmentMs, beat, track.bpm, track.durationMs, sections
+            )
             // Modulation par phase, puis ré-arrondi aux phrases de 16 temps
             // pour que la fin reste sur une frontière musicale.
             var segMs = (track.segmentMs * lengthFactor).toLong()
@@ -1253,12 +1396,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // Quand le morceau a une structure détectée, la fin de passage
             // est calée sur la frontière de section la plus proche (fin d'un
             // temps fort de préférence) : la transition part d'une vraie fin
-            // de phrase. Structure décodée une fois : le calage de fin
-            // (snapEndToStructure) ET le pré-roll d'entrée (preRollMs) la
-            // lisent. Vide (ancienne analyse) : les deux se replient sur le
-            // comportement historique.
-            val sections = if (track.structure.isEmpty()) emptyList()
-            else StructureDetector.decode(track.structure)
+            // de phrase.
             val end = if (playToEnd && track.durationMs > anchor)
                 track.durationMs
             else snapEndToStructure(
@@ -1298,6 +1436,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     .toDouble()
             else 0.0
             logicalEndMs = end
+            exitKind = sectionAt(sections, end - 1)
             progressFrom = if (seekFromMs != null && end > anchor)
                 ((startMs - anchor).toFloat() / (end - anchor))
                     .coerceIn(0f, 0.98f)
@@ -1840,7 +1979,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 //    (~11 %/s), l'utilisateur doit entendre son geste.
                 if (deckB == null) {
                     val level = PlayerCore.speedLevel.value
-                    val target = 1f + 0.08f * level
+                    // Base = sa part du calage à venir (pretargetRate) ou
+                    // le tempo naturel ; le cran de vitesse s'y multiplie.
+                    val pre = a.pretargetRate
+                    val target = (pre ?: 1f) * (1f + 0.08f * level)
                     if (level != lastSpeedLevel) {
                         lastSpeedLevel = level
                         manualRamp = true
@@ -1848,6 +1990,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     if (abs(a.curRate - target) < 1e-4f) manualRamp = false
                     if (manualRamp) {
                         a.nudgeTowardNatural(0.005f, framesGlobal, target)
+                    } else if (pre != null) {
+                        // Glissement vers sa part du calage : ~2 %/s, assez
+                        // lent pour ne pas s'entendre, assez vite pour être
+                        // en place avant que le fondu soit programmé.
+                        a.nudgeTowardNatural(2f * NATURAL_STEP, framesGlobal, target)
                     } else if (framesGlobal > fadeEndF + SETTLE_FRAMES) {
                         a.nudgeTowardNatural(NATURAL_STEP, framesGlobal, target)
                     }
@@ -1926,8 +2073,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             )
                             // getAndSet : un résultat non encore consommé
                             // (ouverture supplantée) est refermé, jamais fuité.
+                            // Deux MESURES pour un déplacement : 8 s de deux
+                            // endroits du même morceau superposés, c'était
+                            // long ; deux mesures suffisent à se déplacer en
+                            // musique. Sans tempo : la durée historique.
+                            val bpmEff = segments[segIdx].track.bpm * curRate
+                            val seekFadeS = if (bpmEff > 0f) 2 * barSeconds(bpmEff)
+                            else SEEK_FADE_S
                             openResult.getAndSet(
-                                OpenResult(ok, SEEK_FADE_S, KIND_EQ, true, -1, og)
+                                OpenResult(ok, seekFadeS, KIND_EQ, true, -1, og)
                             )?.deck?.close()
                         }
                     }
@@ -1946,36 +2100,61 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     }
                     if (nextIdx < segments.size && failedForSeg != a.segIndex) {
                         val nx = segments[nextIdx].track
-                        val rate = computeRate(a.track.bpm * a.curRate, nx.bpm)
-                        // Mode pro : sélection fadeSpecPro, qui a besoin de
-                        // la structure de l'entrant (décodée une fois, en
-                        // cache) et de son ancre — recalculée comme dans
-                        // Deck.init, c'est là que le drop tombera.
+                        // Calage PARTAGÉ (splitRates) : chaque deck fait la
+                        // moitié du chemin. Le sortant glisse vers sa part
+                        // pendant l'avance d'ouverture (cf. pretargetRate),
+                        // l'entrant ouvre directement à la sienne ; hors
+                        // plage, (1, 1) et fadeSpec coupera. Saut manuel :
+                        // pas le temps de glisser, l'entrant prend tout.
+                        val (rateA0, rateB0) = splitRates(a.track.bpm, nx.bpm)
+                        val rateA = if (jumping) a.curRate else rateA0
+                        val rate = if (jumping)
+                            computeRate(a.track.bpm * a.curRate, nx.bpm) else rateB0
+                        // Structure de l'entrant (décodée une fois, en cache)
+                        // et son ancre — recalculée comme dans Deck.init :
+                        // c'est là que le drop tombera. Sert au mode pro ET
+                        // au choix local de la technique (section d'entrée).
+                        if (proSectionsIdx != nextIdx) {
+                            proSectionsIdx = nextIdx
+                            proSections = if (nx.structure.isEmpty())
+                                emptyList()
+                            else StructureDetector.decode(nx.structure)
+                        }
+                        val best = nx.bestStartMs
+                            .coerceIn(0L, max(0L, nx.durationMs - 15_000L))
+                        val anchor = anchorFor(
+                            best, nx.segmentMs, nx.firstBeatMs, nx.bpm,
+                            nx.durationMs, proSections
+                        )
                         val (rawFadeS, fadeKind) = if (proMode) {
-                            if (proSectionsIdx != nextIdx) {
-                                proSectionsIdx = nextIdx
-                                proSections = if (nx.structure.isEmpty())
-                                    emptyList()
-                                else StructureDetector.decode(nx.structure)
-                            }
-                            val best = nx.bestStartMs
-                                .coerceIn(0L, max(0L, nx.durationMs - 15_000L))
-                            val anchor = if (nx.firstBeatMs in
-                                best..(best + nx.segmentMs)
-                            ) nx.firstBeatMs else best
                             fadeSpecPro(
-                                a.track, a.curRate, nx, rate, jumping,
-                                lastFadeKind, dropStreak, proSections, anchor
+                                a.track, rateA, nx, rate, jumping,
+                                lastFadeKind, dropStreak, proSections, anchor,
+                                a.exitKind
                             )
                         } else fadeSpec(
-                            a.track, a.curRate, nx, rate, jumping, lastFadeKind
+                            a.track, rateA, nx, rate, jumping, lastFadeKind,
+                            a.exitKind, sectionAt(proSections, anchor)
                         )
-                        // Plafond relatif au passage sortant : c'est ICI,
-                        // avant l'ouverture du deck, que la durée doit être
-                        // arrêtée — le pré-roll de l'entrant est calculé
-                        // dessus (Deck.init), les deux restent cohérents.
-                        val fadeS = clampFadeS(rawFadeS, a.totalOutFrames)
+                        // Durée en MESURES du sortant (fadeBars) : arrêtée
+                        // ICI, avant l'ouverture du deck — le pré-roll de
+                        // l'entrant est calculé dessus (Deck.init), les deux
+                        // restent cohérents. Sans tempo : plafond en secondes.
+                        val bpmEff = a.track.bpm * a.curRate
+                        val fadeS = if (bpmEff > 0f) {
+                            val barS = barSeconds(bpmEff)
+                            val segBars = a.totalOutFrames.toDouble() / OUT_SR / barS
+                            (if (jumping) 2 else fadeBars(fadeKind, segBars)) * barS
+                        } else clampFadeS(rawFadeS, a.totalOutFrames)
                         val fadeF = (fadeS * OUT_SR).toLong()
+                        // Le sortant commence à glisser vers sa part du
+                        // calage un peu avant l'ouverture : à ~2 %/s, il y
+                        // est bien avant que le fondu soit programmé.
+                        if (!jumping) {
+                            a.pretargetRate = if (
+                                a.remainingOut <= fadeF + (PREOPEN_LEAD_S + 4L) * OUT_SR
+                            ) rateA0 else null
+                        }
                         // Avance d'ouverture : le deck entrant doit être
                         // prêt ET pré-décodé avant l'heure du fondu (cf.
                         // PREOPEN_LEAD_S). Son décodeur se bloque de
@@ -2108,20 +2287,44 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // d'EXÉCUTION (fader manuel tenu, deck lent à
                         // s'ouvrir), pas un budget de plan.
                         val loopSlack = (8.0 * period).toLong()
-                        // Ordre de préférence : phrase > mesure > temps.
-                        // Attendre la phrase n'est permis que si le reste du
-                        // passage + une répétition de boucle tiennent ENCORE
-                        // le fondu entier après l'attente. Saut manuel : dès
-                        // la prochaine mesure, l'utilisateur attend une
-                        // réponse rapide.
-                        // Le libellé accompagne le décalage : c'est lui qui
-                        // part au journal (une allocation par transition,
-                        // jamais dans la boucle par bloc).
+                        val barF0 = (4.0 * period).toLong().coerceAtLeast(1L)
+                        // LA PHRASE D'ABORD. Une transition qui part au
+                        // milieu d'une phrase est exactement ce qui fait
+                        // amateur : plutôt que d'y renoncer quand la phrase
+                        // suivante ne laisse plus la place au fondu, on
+                        // ADAPTE LE FONDU — la phrase précédente est-elle
+                        // encore devant nous ? on part là, fondu un peu plus
+                        // long (au plus deux mesures de plus) ; sinon on
+                        // attend la phrase suivante avec un fondu raccourci
+                        // (jamais sous une mesure). Mesure et temps ne
+                        // restent que pour les sauts manuels (réponse rapide)
+                        // et les cas sans matière. Le libellé part au
+                        // journal (une allocation par transition, jamais
+                        // dans la boucle par bloc).
+                        val budget = a.remainingOut + loopSlack
+                        var fadeUse = fadeF
                         val (quantOff, quant) = when {
-                            !ready.jumping && toPhrase + fadeF <=
-                                a.remainingOut + loopSlack -> toPhrase to "phrase"
-                            toBar <= a.remainingOut + OUT_SR -> toBar to "mesure"
-                            else -> toBeat to "temps"
+                            ready.jumping ->
+                                if (toBar <= a.remainingOut + OUT_SR) toBar to "mesure"
+                                else toBeat to "temps"
+                            toPhrase + fadeF <= budget -> toPhrase to "phrase"
+                            else -> {
+                                val toPrev = ((nextPhrase - 16.0 - phaseNow) * period).toLong()
+                                val longer = a.remainingOut - toPrev
+                                val shorter = budget - toPhrase
+                                when {
+                                    toPrev >= 0L && longer <= fadeF + 2L * barF0 -> {
+                                        fadeUse = longer
+                                        toPrev to "phrase (fondu allongé)"
+                                    }
+                                    shorter >= barF0 -> {
+                                        fadeUse = shorter
+                                        toPhrase to "phrase (fondu raccourci)"
+                                    }
+                                    toBar <= a.remainingOut + OUT_SR -> toBar to "mesure"
+                                    else -> toBeat to "temps"
+                                }
+                            }
                         }
                         var start = framesGlobal + quantOff
                         if (start < framesGlobal) start = framesGlobal
@@ -2130,7 +2333,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         val maxLen = a.remainingOut + loopSlack -
                                 (start - framesGlobal) - OUT_SR / 10
                         fadeStartF = start
-                        fadeLenF = min(fadeF, max(OUT_SR / 4L, maxLen))
+                        fadeLenF = min(fadeUse, max(OUT_SR / 4L, maxLen))
                         // Durée arrondie à la mesure la plus proche (4 temps
                         // du sortant) : la jonction dure un nombre entier de
                         // mesures et retombe sur une frontière musicale.
