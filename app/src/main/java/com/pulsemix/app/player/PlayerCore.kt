@@ -1101,6 +1101,7 @@ object PlayerCore {
     private var pauseFadeJob: Job? = null
 
     fun togglePlayPause() {
+        endAlarmAudioOnGesture("pause/reprise")
         // Mode DJ restauré (ou terminé) : le moteur n'est pas lancé, on
         // redémarre au début de la phase courante.
         if (mode.value == PlayerMode.DJ && !mixer.isRunning) {
@@ -1182,6 +1183,7 @@ object PlayerCore {
     }
 
     fun next() {
+        endAlarmAudioOnGesture("suivant")
         // Tout changement voulu rend caduque la marque « fin déjà fondue » :
         // si on revient plus tard sur ce morceau, sa fin doit l'être encore.
         crossfadedFrom = null
@@ -1229,6 +1231,7 @@ object PlayerCore {
     }
 
     fun previous() {
+        endAlarmAudioOnGesture("précédent")
         // On peut revenir sur un morceau dont la fin a déjà été fondue : sa
         // fin doit pouvoir l'être à nouveau.
         crossfadedFrom = null
@@ -2637,6 +2640,7 @@ object PlayerCore {
      * morceau à l'endroit visé et y fait une vraie transition.
      */
     fun seekToFractionSmooth(f: Float) {
+        endAlarmAudioOnGesture("déplacement")
         val frac = f.coerceIn(0f, 1f)
         if (mode.value == PlayerMode.DJ) {
             // Moteur arrêté : la demande ne serait jamais consommée, et
@@ -3415,9 +3419,33 @@ object PlayerCore {
         alarmAudio = on
         try {
             exo.setAudioAttributes(audioAttrs(), /* handleAudioFocus = */ true)
+            // Changer les attributs vide le tampon de sortie (~2 s) sans
+            // reculer le décodeur : sans ce seek sur place, la musique
+            // sautait deux secondes en avant. Inaudible en pause ; en
+            // lecture, un court blanc, une fois.
+            if (mode.value != PlayerMode.DJ && exo.playbackState == Player.STATE_READY) {
+                exo.seekTo(exo.currentPosition)
+            }
         } catch (_: Exception) {
         }
+        // Une queue pré-armée porte les attributs de sa construction :
+        // congédiée, le ticker la refait sur le bon canal si besoin.
+        if (!on) releasePrepared()
         mixer.setAlarmUsage(on)
+    }
+
+    /**
+     * Fin du canal alarme sur un GESTE de l'utilisateur (pause, reprise,
+     * suivant, précédent, déplacement, arrêt) : réveillé, il reprend la
+     * main, la musique redevient du média. Indispensable : Android diffuse
+     * le canal alarme sur le haut-parleur ET le Bluetooth à la fois — un
+     * réveil jamais « arrêté » laissait la journée entière sortir des deux
+     * (journal : « mon téléphone et le Bluetooth lisent en même temps »).
+     */
+    private fun endAlarmAudioOnGesture(gesture: String) {
+        if (!alarmAudio || alarmLaunching) return
+        engineLog("Réveil", "canal média rendu ($gesture)")
+        setAlarmAudio(false)
     }
 
     /**
@@ -3635,6 +3663,11 @@ object PlayerCore {
     /** Coupe la lecture en cours (réveil arrêté / répété). */
     fun stopPlayback() {
         if (!initialized) return
+        // Arrêt = fin du réveil aussi (stopRinging passe par ici)
+        if (alarmAudio && !alarmLaunching) {
+            engineLog("Réveil", "canal média rendu (arrêt)")
+            setAlarmAudio(false)
+        }
         stopDjIfNeeded()
         try {
             exo.stop()

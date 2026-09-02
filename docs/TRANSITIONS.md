@@ -451,8 +451,28 @@ Il ne dépend pas du volume média, souvent à zéro au coucher, et traverse
 « ne pas déranger » / l'heure du coucher, qui peuvent couper le média. Rampe
 de ce volume d'un quart du maximum (jamais sous 2 crans) jusqu'au maximum
 sur *N* minutes (abandonnée si l'utilisateur touche au volume), puis
-lancement en Douce, en aléatoire, ou en set DJ. Retour au canal média quand
-le réveil est arrêté ou répété, et dès que l'utilisateur lance autre chose.
+lancement en Douce, en aléatoire, ou en set DJ.
+
+**Sortie externe branchée** (Bluetooth A2DP/SCO/BLE, casque filaire, USB,
+aide auditive — `chooseChannel`) : le réveil reste sur le **canal média**,
+dont la rampe pousse alors le volume. Sur le canal alarme, Android diffuse
+sur le haut-parleur du téléphone *en plus* de la sortie externe, les deux
+jouant en même temps.
+
+**Retour au canal média** : au premier geste sur le lecteur (pause/reprise,
+suivant, précédent, déplacement, arrêt — l'utilisateur est réveillé), à
+l'arrêt ou à la répétition du réveil, quand l'utilisateur lance autre
+chose, et de toute façon **rampe + 30 min** après le lancement. Avant, le
+canal alarme restait posé tant que le réveil n'était pas explicitement
+arrêté : une journée entière pouvait sortir du haut-parleur *et* du
+Bluetooth. Le changement en cours de lecture : côté ExoPlayer, nouveaux
+attributs puis seek sur place (changer les attributs vide le tampon de ~2 s
+sans reculer le décodeur) ; côté DJ, sortie **reconstruite au bloc sur la
+même session audio** (l'égaliseur suit), avec réécriture de ce que
+l'ancienne avait en tampon sans l'avoir joué (copie glissante `RING_FRAMES`,
+~4,5 s) — ni saut, ni blanc ; muet si cela tombe pendant une pause. Le même
+mécanisme sert à une sortie morte (`AudioTrack.write` < 0). Journal :
+`[Réveil] canal média rendu (geste)`, `[DJ] sortie audio reconstruite (…)`.
 
 **Filet sonore** : bibliothèque pas lue en 30 s, exception au lancement, ou
 rien qui ne joue 20 s après le lancement → sonnerie de secours du système.

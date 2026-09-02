@@ -60,6 +60,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     companion object {
         const val OUT_SR = 44100
         const val BLOCK_FRAMES = 2048
+
+        /** Copie glissante des derniers blocs ÉCRITS dans la sortie (~4,5 s,
+         *  multiple de BLOCK_FRAMES, plus que le plafond de 3 s du tampon) :
+         *  quand la sortie doit être reconstruite en cours de set, ce qui
+         *  était dans son tampon sans avoir été entendu est réécrit dans la
+         *  nouvelle — ni saut, ni blanc. */
+        const val RING_FRAMES = BLOCK_FRAMES * 96
         // Fondus longs (plusieurs mesures) pour « sentir arriver » le
         // morceau entrant : il pose d'abord ses basses seules (filtré),
         // et ne s'ouvre en pleine bande qu'au moment où le sortant
@@ -1669,18 +1676,31 @@ class DjMixer(private val context: Context, private val listener: Listener) {
      */
     /** Canal du réveil (USAGE_ALARM) au lieu du média : posé par
      *  PlayerCore avant le lancement du set, lu à la construction de la
-     *  sortie — un set déjà en cours garde son canal. */
+     *  sortie. Changé EN COURS de set, la sortie est reconstruite au bloc
+     *  suivant (voir rebuildOutput dans runMix) : Android diffuse le canal
+     *  alarme sur le haut-parleur ET le Bluetooth à la fois, on ne peut
+     *  pas y rester une fois le réveil passé. */
     @Volatile private var alarmUsage = false
 
+    /** Sortie à reconstruire au prochain bloc (canal changé en cours de set). */
+    @Volatile private var outputSwitchRequested = false
+
     fun setAlarmUsage(on: Boolean) {
+        if (alarmUsage == on) return
         alarmUsage = on
+        if (running) outputSwitchRequested = true
     }
 
-    private fun newAudioTrack(): AudioTrack {
+    /** [sessionId] : celui de la sortie précédente quand on la reconstruit,
+     *  pour que l'égaliseur (attaché à la session) suive. */
+    private fun newAudioTrack(
+        sessionId: Int = android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
+    ): AudioTrack {
         val minBuf = AudioTrack.getMinBufferSize(
             OUT_SR, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_FLOAT
         )
         return AudioTrack.Builder()
+            .setSessionId(sessionId)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(
@@ -1813,6 +1833,74 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // Volume appliqué sur l'AudioTrack (masterVolume + micro-fondus de
         // pause) : posé seulement quand il change.
         var trackVol = 1f
+        // Copie glissante des derniers blocs écrits (voir RING_FRAMES) et
+        // compte des frames écrites dans la sortie courante.
+        val ring = FloatArray(RING_FRAMES * 2)
+        var ringPos = 0
+        var framesWrittenOut = 0L
+
+        fun recordOut(buf: FloatArray) {
+            // RING_FRAMES est un multiple de BLOCK_FRAMES : jamais à cheval
+            System.arraycopy(buf, 0, ring, ringPos * 2, BLOCK_FRAMES * 2)
+            ringPos = (ringPos + BLOCK_FRAMES) % RING_FRAMES
+            framesWrittenOut += BLOCK_FRAMES
+        }
+
+        /**
+         * Reconstruit la sortie audio en cours de set — changement de canal
+         * (fin du réveil), ou sortie morte — sur la MÊME session audio
+         * (l'égaliseur suit), en y réécrivant ce que l'ancienne avait en
+         * tampon sans l'avoir encore joué : la musique reprend où
+         * l'oreille en était, au lieu de sauter d'un tampon entier (~2,3 s)
+         * en avant. [playing] faux pendant une pause : la nouvelle sortie
+         * attend la reprise. Faux si la sortie n'a pas pu être recréée.
+         */
+        fun rebuildOutput(reason: String, playing: Boolean): Boolean {
+            val old = audioTrack
+            val played = try {
+                old.playbackHeadPosition.toLong() and 0xffffffffL
+            } catch (_: Exception) {
+                framesWrittenOut
+            }
+            val unplayed = (framesWrittenOut - played).coerceIn(0L, RING_FRAMES.toLong())
+            val fresh = try {
+                newAudioTrack(old.audioSessionId)
+            } catch (e: Exception) {
+                djLog("reconstruction de la sortie impossible : ${e.message}")
+                return false
+            }
+            try {
+                old.pause()
+                old.flush()
+            } catch (_: Exception) {
+            }
+            try {
+                old.release()
+            } catch (_: Exception) {
+            }
+            try {
+                fresh.setVolume(trackVol)
+            } catch (_: Exception) {
+            }
+            // Réécriture bornée au tampon neuf : une écriture AVANT play()
+            // bloque dès qu'il est plein.
+            val cap = (fresh.bufferSizeInFrames - BLOCK_FRAMES).toLong().coerceAtLeast(0L)
+            val n = minOf(unplayed, cap).toInt()
+            var start = ((ringPos - n) % RING_FRAMES + RING_FRAMES) % RING_FRAMES
+            var left = n
+            while (left > 0) {
+                val chunk = minOf(left, RING_FRAMES - start)
+                fresh.write(ring, start * 2, chunk * 2, AudioTrack.WRITE_BLOCKING)
+                start = (start + chunk) % RING_FRAMES
+                left -= chunk
+            }
+            framesWrittenOut = n.toLong()
+            if (playing) fresh.play()
+            audioTrack = fresh
+            liveAudioTrack = fresh
+            diag("sortie audio reconstruite ($reason) : ${n * 1000L / OUT_SR} ms réécrits")
+            return true
+        }
         var failedForSeg = -1
         // Fin de set annoncée une seule fois (dernier passage, dernières
         // secondes) — désarmée si un saut ramène en arrière dans le plan.
@@ -1952,7 +2040,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     trackVol = 0f
                     audioTrack.pause()
                     val pausedAt = android.os.SystemClock.elapsedRealtime()
-                    while (paused && running && gen == runGeneration) Thread.sleep(200)
+                    while (paused && running && gen == runGeneration) {
+                        // Canal changé pendant la pause (fin du réveil) : le
+                        // meilleur moment, la sortie est muette.
+                        if (outputSwitchRequested) {
+                            outputSwitchRequested = false
+                            rebuildOutput("changement de canal en pause", playing = false)
+                        }
+                        Thread.sleep(200)
+                    }
                     if (!running) break
                     audioTrack.play()
                     rampTrackVolume(audioTrack, 0f, masterVolume, RESUME_FADE_MS)
@@ -3008,7 +3104,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     }
                     trackVol = mv
                 }
-                val wrote =
+                // Canal changé en cours de lecture (fin du réveil sans
+                // geste) : sortie reconstruite au bloc, ce qui était en
+                // tampon est réécrit — un accroc de quelques ms, une fois.
+                if (outputSwitchRequested) {
+                    outputSwitchRequested = false
+                    rebuildOutput("changement de canal", playing = true)
+                }
+                var wrote =
                     audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
                 if (wrote < 0) {
                     // Sortie audio morte (serveur audio redémarré, route
@@ -3019,27 +3122,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     // s'arrête proprement plutôt que de faire semblant.
                     diag("écriture audio en échec (code $wrote) : sortie reconstruite")
                     djLog("AudioTrack.write a renvoyé $wrote")
-                    val rebuilt = try {
-                        audioTrack.release()
-                        newAudioTrack().also {
-                            it.setVolume(trackVol)
-                            it.play()
-                        }
-                    } catch (e: Exception) {
-                        djLog("reconstruction de la sortie impossible : ${e.message}")
-                        null
-                    }
-                    if (rebuilt == null) {
+                    if (!rebuildOutput("écriture en échec", playing = true)) {
                         diag("sortie audio irrécupérable : set interrompu")
                         running = false
                         break
                     }
-                    audioTrack = rebuilt
-                    liveAudioTrack = rebuilt
-                    // Pas de `continue` : le bloc perdu est perdu, mais la
-                    // suite (avance de framesGlobal, grille de beats) doit
-                    // rester cohérente avec ce que les decks ont déjà lu.
+                    // Le bloc refusé repart dans la sortie neuve
+                    wrote = try {
+                        audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
+                    } catch (_: Exception) {
+                        -1
+                    }
                 }
+                if (wrote > 0) recordOut(out)
                 recorder?.write(out, BLOCK_FRAMES * 2)
                 framesGlobal += BLOCK_FRAMES
                 a.advancePhase(BLOCK_FRAMES)

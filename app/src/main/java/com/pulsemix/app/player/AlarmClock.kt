@@ -61,6 +61,18 @@ object AlarmClock {
     /** Volume média d'avant le réveil, copié en prefs (voir restoreVolume). */
     private const val KEY_VOLUME_BEFORE = "volumeBeforeAlarm"
 
+    /** Canal (stream) dont le volume a été touché, copié en prefs avec
+     *  KEY_VOLUME_BEFORE : à rendre sur le même canal après la mort du
+     *  processus. */
+    private const val KEY_WAKE_STREAM = "wakeStream"
+
+    /** Fin automatique du canal alarme après la rampe : au-delà, l'utilisateur
+     *  est réveillé, la musique redevient du média (voir chooseChannel). */
+    private const val ALARM_CHANNEL_GRACE_MS = 30 * 60_000L
+
+    /** Retour automatique au canal média (voir launchNow). */
+    private var channelJob: Job? = null
+
     private var loaded = false
     private var rampJob: Job? = null
 
@@ -232,6 +244,8 @@ object AlarmClock {
     private fun stopRinging(context: Context) {
         rampJob?.cancel()
         rampJob = null
+        channelJob?.cancel()
+        channelJob = null
         stopFallbackRingtone()
         try {
             PlayerCore.stopPlayback()
@@ -262,12 +276,13 @@ object AlarmClock {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val v = volumeBeforeAlarm
             ?: p.getInt(KEY_VOLUME_BEFORE, -1).takeIf { it >= 0 }
+        val stream = p.getInt(KEY_WAKE_STREAM, wakeStream)
         volumeBeforeAlarm = null
-        p.edit().remove(KEY_VOLUME_BEFORE).apply()
+        p.edit().remove(KEY_VOLUME_BEFORE).remove(KEY_WAKE_STREAM).apply()
         if (v == null) return
         try {
             context.getSystemService(AudioManager::class.java)
-                ?.setStreamVolume(WAKE_STREAM, v, 0)
+                ?.setStreamVolume(stream, v, 0)
         } catch (_: Exception) {
         }
     }
@@ -372,11 +387,25 @@ object AlarmClock {
                 // ne dépend pas du volume média (souvent à zéro au coucher)
                 // et passe à travers « ne pas déranger » / heure du coucher,
                 // qui peuvent couper le canal média. Posé AVANT le lancement,
-                // rendu au canal média quand le réveil est arrêté ou quand
-                // l'utilisateur lance autre chose (PlayerCore).
+                // rendu au canal média au premier geste sur le lecteur, à
+                // l'arrêt du réveil, quand l'utilisateur lance autre chose
+                // (PlayerCore), ou après la rampe + 30 min. SAUF sortie
+                // externe branchée (Bluetooth, casque, USB) : Android
+                // diffuse le canal alarme sur le haut-parleur EN PLUS de la
+                // sortie externe — on reste alors sur le canal média, dont
+                // la rampe pousse le volume.
+                val useAlarmChannel = chooseChannel(context)
                 PlayerCore.alarmLaunching = true
-                PlayerCore.setAlarmAudio(true)
+                PlayerCore.setAlarmAudio(useAlarmChannel)
                 startRamp(context)
+                channelJob?.cancel()
+                if (useAlarmChannel) {
+                    channelJob = GlobalScope.launch(Dispatchers.Main) {
+                        delay(rampMinutes.value.coerceIn(1, 15) * 60_000L + ALARM_CHANNEL_GRACE_MS)
+                        log("rampe + 30 min : canal média rendu")
+                        PlayerCore.setAlarmAudio(false)
+                    }
+                }
                 if (all.isEmpty()) {
                     log("bibliothèque vide : sonnerie de secours")
                     startFallbackRingtone(context)
@@ -457,14 +486,57 @@ object AlarmClock {
      * max) jusqu'au maximum, sur [rampMinutes] minutes. Si l'utilisateur
      * touche au volume entre-temps, on le laisse maître et on arrête.
      */
-    /** Canal sonore du réveil : ALARME (voir launchNow), pas média. */
-    private const val WAKE_STREAM = AudioManager.STREAM_ALARM
+    /** Canal sonore du réveil : ALARME (voir launchNow) — ou MÉDIA quand une
+     *  sortie externe est branchée (voir chooseChannel). */
+    private var wakeStream = AudioManager.STREAM_ALARM
+
+    /**
+     * Choisit le canal du réveil : alarme par défaut ; média si une sortie
+     * externe est branchée (Bluetooth, casque filaire, USB, aide
+     * auditive) — sur le canal alarme, Android l'enverrait AUSSI sur le
+     * haut-parleur du téléphone, les deux jouant en même temps. Vrai =
+     * canal alarme.
+     */
+    private fun chooseChannel(context: Context): Boolean {
+        val am = context.getSystemService(AudioManager::class.java)
+        val external = try {
+            am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                ?.firstOrNull { it.type in EXTERNAL_OUTPUT_TYPES }
+        } catch (_: Exception) {
+            null
+        }
+        wakeStream = if (external != null) AudioManager.STREAM_MUSIC
+        else AudioManager.STREAM_ALARM
+        if (external != null) {
+            log(
+                "sortie externe branchée (${external.productName}, type " +
+                    "${external.type}) : canal média, pas alarme"
+            )
+        }
+        return external == null
+    }
+
+    /** Types AudioDeviceInfo d'une sortie externe : Bluetooth A2DP/SCO,
+     *  casques et écouteurs filaires, USB, aide auditive, BLE (31+). */
+    private val EXTERNAL_OUTPUT_TYPES = setOf(
+        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+        android.media.AudioDeviceInfo.TYPE_USB_DEVICE,
+        android.media.AudioDeviceInfo.TYPE_USB_ACCESSORY,
+        android.media.AudioDeviceInfo.TYPE_HEARING_AID,
+        26, // TYPE_BLE_HEADSET
+        27, // TYPE_BLE_SPEAKER
+        30 // TYPE_BLE_BROADCAST
+    )
 
     @OptIn(DelicateCoroutinesApi::class)
     private fun startRamp(context: Context) {
         rampJob?.cancel()
         val am = context.getSystemService(AudioManager::class.java) ?: return
-        val max = am.getStreamMaxVolume(WAKE_STREAM)
+        val max = am.getStreamMaxVolume(wakeStream)
         // Plancher à un quart du maximum (et jamais sous 2 crans) : à un
         // huitième, sur les 15 crans habituels, le réveil partait au cran
         // 1 — inaudible depuis la table de nuit, vécu comme « aucune
@@ -476,13 +548,17 @@ object AlarmClock {
             // stopRinging, la variable disparaît avec lui et c'est la copie
             // qui permettra de rendre le volume (init / restoreVolume).
             if (volumeBeforeAlarm == null) {
-                val before = am.getStreamVolume(WAKE_STREAM)
+                val before = am.getStreamVolume(wakeStream)
                 volumeBeforeAlarm = before
                 context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    .edit().putInt(KEY_VOLUME_BEFORE, before).apply()
+                    .edit().putInt(KEY_VOLUME_BEFORE, before)
+                    .putInt(KEY_WAKE_STREAM, wakeStream).apply()
             }
-            am.setStreamVolume(WAKE_STREAM, start, 0)
-            log("volume alarme : $start/$max, montée vers $max")
+            am.setStreamVolume(wakeStream, start, 0)
+            log(
+                "volume ${if (wakeStream == AudioManager.STREAM_ALARM) "alarme" else "média"} : " +
+                    "$start/$max, montée vers $max"
+            )
         } catch (e: Exception) {
             log("volume impossible à régler : ${e.message}")
             return
@@ -495,14 +571,14 @@ object AlarmClock {
             for (s in 1..steps) {
                 delay(stepMs)
                 val cur = try {
-                    am.getStreamVolume(WAKE_STREAM)
+                    am.getStreamVolume(wakeStream)
                 } catch (_: Exception) {
                     return@launch
                 }
                 if (cur != expected) return@launch // volume touché à la main
                 expected = start + s
                 try {
-                    am.setStreamVolume(WAKE_STREAM, expected, 0)
+                    am.setStreamVolume(wakeStream, expected, 0)
                 } catch (_: Exception) {
                     return@launch
                 }
