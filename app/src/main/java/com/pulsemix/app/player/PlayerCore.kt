@@ -709,6 +709,14 @@ object PlayerCore {
                             (exoSpeed + 0.04f).coerceAtMost(targetSpeed)
                         else (exoSpeed - 0.04f).coerceAtLeast(targetSpeed)
                         exo.setPlaybackSpeed(exoSpeed)
+                        // La queue pré-alignée court à la même allure que le
+                        // direct, sinon elle dérive de 8 % par seconde de
+                        // cran ; la queue en fondu aussi, par cohérence.
+                        try {
+                            preparedAlignedPlayer?.setPlaybackSpeed(exoSpeed)
+                            exoTail?.setPlaybackSpeed(exoSpeed)
+                        } catch (_: Exception) {
+                        }
                     }
                 }
                 // Rampe des aigus : s'applique aux deux sessions EQ (exo + DJ)
@@ -1574,6 +1582,21 @@ object PlayerCore {
     private var preparedTail: ExoPlayer? = null
     private var preparedUri: String? = null
 
+    /**
+     * Alignement AU PRÉ-ARMEMENT : la queue pré-armée est lancée muette et
+     * recalée sur le direct dès son ouverture, une douzaine de secondes
+     * avant le fondu — sans budget de temps, personne n'attend. À l'heure
+     * du fondu, elle est déjà là, au bon endroit : la bascule est immédiate
+     * et le fondu garde toute sa fenêtre. Avant, l'alignement se faisait à
+     * l'heure du fondu avec 3 s de budget, et ces secondes étaient prises
+     * sur le fondu lui-même (un réglage de 10 s durait 7 à 10 s, au hasard
+     * de la charge). Les deux lecteurs tournent sur la même horloge audio
+     * à la même vitesse : une fois alignée, la queue le reste.
+     */
+    private var preparedAlignedPlayer: ExoPlayer? = null
+    private var preparedEq: android.media.audiofx.Equalizer? = null
+    private var alignJob: Job? = null
+
     /** Ouvre la queue d'avance pour le morceau en cours (fin approchante). */
     private fun prepareTailAhead() {
         val track = currentTrack.value ?: return
@@ -1584,15 +1607,127 @@ object PlayerCore {
             if (preparedUri == track.uri) return
             releasePrepared()
         }
-        preparedTail = try {
+        val p = try {
             newTailPlayer(track)
         } catch (_: Exception) {
             null
         }
-        preparedUri = if (preparedTail != null) track.uri else null
+        preparedTail = p
+        preparedUri = if (p != null) track.uri else null
+        if (p != null) {
+            // Égaliseur de la queue créé ICI, loin de l'instant de la
+            // bascule : insérer un AudioEffect dans la chaîne pile à la
+            // bascule pouvait faire cliquer le mixeur. Toujours créé : il
+            // sert aussi à l'échange de basses du fondu (fadeOutTail).
+            preparedEq = try {
+                android.media.audiofx.Equalizer(0, p.audioSessionId)
+                    .also { applyEqTo(it, includeFilter = true) }
+            } catch (_: Exception) {
+                null
+            }
+            alignJob?.cancel()
+            alignJob = autoScope.launch(Dispatchers.Main) { alignPrepared(p) }
+        }
+    }
+
+    /**
+     * Recale la queue pré-armée [player] sur le direct, en muet : même
+     * procédure que la bascule (seek compensé de la latence d'amorçage,
+     * attente du premier son, résidu médian, glissements de vitesse), mais
+     * sans budget serré — jusqu'à 6 glissements et 8 s. À l'arrivée, la
+     * queue TOURNE, muette, alignée : [preparedAlignedPlayer] la désigne.
+     * Abandonné sans bruit si la queue est congédiée entre-temps.
+     */
+    private suspend fun alignPrepared(player: ExoPlayer) {
+        fun gone() = preparedTail !== player
+        try {
+            // Prête ? (ouverture du fichier, mise en tampon)
+            var w = 0L
+            while (w < 4_000L && player.playbackState != Player.STATE_READY) {
+                delay(50L)
+                w += 50L
+                if (gone()) return
+            }
+            if (player.playbackState != Player.STATE_READY) return
+            player.volume = 0f
+            player.setPlaybackSpeed(exoSpeed)
+            player.seekTo(exo.currentPosition + tailStartupLagWarmMs)
+            player.play()
+            val start = player.currentPosition
+            var waited = 0L
+            while (waited < TAIL_START_TIMEOUT_MS && player.currentPosition <= start) {
+                delay(20L)
+                waited += 20L
+                if (gone()) return
+            }
+            if (player.currentPosition <= start) return
+            var residual = medianResidual(player)
+            val residual0 = residual
+            if (kotlin.math.abs(residual) > 350L) {
+                val target = player.currentPosition + residual
+                if (target > 0) {
+                    player.seekTo(target)
+                    var w2 = 0L
+                    while (w2 < 800L && player.currentPosition <= target) {
+                        delay(20L)
+                        w2 += 20L
+                        if (gone()) return
+                    }
+                    residual = medianResidual(player)
+                }
+            }
+            var slides = 0
+            var diverged = false
+            val deadline = android.os.SystemClock.elapsedRealtime() + 8_000L
+            while (kotlin.math.abs(residual) > SEAM_TOLERANCE_MS && slides < 6 &&
+                android.os.SystemClock.elapsedRealtime() < deadline
+            ) {
+                slides++
+                val speeding = residual > 0
+                player.setPlaybackSpeed(exoSpeed * (if (speeding) 1.08f else 0.92f))
+                val slideMs = (kotlin.math.abs(residual) * 10L).coerceIn(40L, 2_000L)
+                val t0 = android.os.SystemClock.elapsedRealtime()
+                while (android.os.SystemClock.elapsedRealtime() - t0 < slideMs) {
+                    delay(20L)
+                    if (gone()) return
+                }
+                player.setPlaybackSpeed(exoSpeed)
+                delay(80L)
+                if (gone()) return
+                val before = residual
+                residual = medianResidual(player)
+                if (kotlin.math.abs(residual) >= kotlin.math.abs(before)) {
+                    if (diverged) break
+                    diverged = true
+                }
+            }
+            if (gone()) return
+            if (kotlin.math.abs(residual) <= MAX_TAIL_DRIFT_MS) {
+                preparedAlignedPlayer = player
+                transLog(
+                    "queue pré-alignée : résidu ${residual0} -> ${residual} ms " +
+                        "($slides glissement(s))"
+                )
+            } else {
+                transLog(
+                    "queue pré-armée non alignée : résidu ${residual0} -> ${residual} ms"
+                )
+            }
+        } catch (_: Exception) {
+            // Lecteur congédié en plein vol : la bascule repartira à froid
+        }
     }
 
     private fun releasePrepared() {
+        alignJob?.cancel()
+        alignJob = null
+        preparedAlignedPlayer = null
+        val eq = preparedEq
+        preparedEq = null
+        try {
+            eq?.release()
+        } catch (_: Exception) {
+        }
         val p = preparedTail ?: return
         preparedTail = null
         preparedUri = null
@@ -1757,7 +1892,15 @@ object PlayerCore {
         // pré-armement ne servait jamais. Sortie du champ, elle échappe à ce
         // ménage ; charge à nous de la libérer sur tout chemin d'échec.
         val prearmed = preparedTail?.takeIf { preparedUri == track.uri }
+        // Déjà alignée et en marche (alignPrepared) : aucune manœuvre à
+        // refaire, la bascule sera immédiate. Son égaliseur suit.
+        val preAligned = prearmed != null && preparedAlignedPlayer === prearmed
+        val takenEq = if (prearmed != null) preparedEq else null
         if (prearmed != null) {
+            alignJob?.cancel()
+            alignJob = null
+            preparedAlignedPlayer = null
+            preparedEq = null
             preparedTail = null
             preparedUri = null
         }
@@ -1781,9 +1924,15 @@ object PlayerCore {
         // Recalage sur la position vive, comme pour un lecteur neuf.
         val reused = prearmed?.let { p ->
             try {
-                p.seekTo(fromMs)
+                // Pré-alignée : elle EST déjà sur le direct, un seek la
+                // désalignerait.
+                if (!preAligned) p.seekTo(fromMs)
                 p
             } catch (_: Exception) {
+                try {
+                    takenEq?.release()
+                } catch (_: Exception) {
+                }
                 try {
                     p.release()
                 } catch (_: Exception) {
@@ -1791,6 +1940,9 @@ object PlayerCore {
                 null
             }
         }
+        // Égaliseur repris avec la queue ; sans queue réutilisée, il n'y en
+        // a pas (créé à la bascule, voir plus bas).
+        val eqFromPrearm = if (reused != null) takenEq else null
         val player = reused ?: try {
             newTailPlayer(track).apply { seekTo(fromMs) }
         } catch (_: Exception) {
@@ -1865,7 +2017,10 @@ object PlayerCore {
                     val live = exo.currentPosition
                     val target = live +
                         (if (warm) tailStartupLagWarmMs else tailStartupLagMs)
-                    val compensated = target - player.currentPosition > 40L
+                    // Pré-alignée : déjà en marche sur le direct, ni seek ni
+                    // compensation — on ne fait que vérifier et basculer.
+                    val compensated = !preAligned &&
+                        target - player.currentPosition > 40L
                     if (compensated) player.seekTo(target)
                     // « Prêt » ne veut pas dire « audible » : on lance la
                     // queue EN MUET et on attend qu'elle avance vraiment —
@@ -1924,8 +2079,10 @@ object PlayerCore {
                     // qui reste s'effondrait à 1-2 s — l'entrant BONDISSAIT
                     // à plein volume en plein milieu de la transition. Un
                     // résidu de 20-30 ms est moins pire qu'un fondu écrasé.
-                    val alignDeadline =
-                        android.os.SystemClock.elapsedRealtime() + 3_000L
+                    // Pré-alignée : une simple vérification (0,8 s, deux
+                    // glissements au plus), la fenêtre du fondu reste entière.
+                    val alignDeadline = android.os.SystemClock.elapsedRealtime() +
+                        (if (preAligned) 800L else 3_000L)
                     if (tailAudible && kotlin.math.abs(residual) > 350L) {
                         val target = player.currentPosition + residual
                         if (target > 0) {
@@ -1945,7 +2102,7 @@ object PlayerCore {
                     }
                     var slides = 0
                     var diverged = false
-                    val maxSlides = if (fromGesture) 2 else 4
+                    val maxSlides = if (preAligned || fromGesture) 2 else 4
                     while (tailAudible &&
                         kotlin.math.abs(residual) > SEAM_TOLERANCE_MS &&
                         slides < maxSlides &&
@@ -1957,7 +2114,12 @@ object PlayerCore {
                         // combler r ms demande r × 12,5 ms de glissement.
                         val speeding = residual > 0
                         try {
-                            player.setPlaybackSpeed(if (speeding) 1.08f else 0.92f)
+                            // Relatif à la vitesse du direct (cran de vitesse
+                            // manuel compris) : la queue doit courir à la
+                            // même allure que lui, ±8 % le temps du glissement.
+                            player.setPlaybackSpeed(
+                                exoSpeed * (if (speeding) 1.08f else 0.92f)
+                            )
                         } catch (_: Exception) {
                             break
                         }
@@ -1976,12 +2138,12 @@ object PlayerCore {
                             if (exoTail !== player) return@launch
                         }
                         try {
-                            player.setPlaybackSpeed(1f)
+                            player.setPlaybackSpeed(exoSpeed)
                         } catch (_: Exception) {
                         }
                         // Position stabilisée avant la mesure suivante :
-                        // le retour à 1x met quelques dizaines de ms à se
-                        // refléter dans la position rapportée
+                        // le retour à la vitesse du direct met quelques
+                        // dizaines de ms à se refléter dans la position
                         delay(80L)
                         if (exoTail !== player) return@launch
                         val before = residual
@@ -2013,6 +2175,7 @@ object PlayerCore {
                         transLog(
                             "raccord aligné : résidu ${residual0} -> ${residual} ms " +
                                 "($slides glissement(s)" +
+                                (if (preAligned) ", pré-alignée" else "") +
                                 (if (fromGesture) ", geste)" else ")")
                         )
                     }
@@ -2026,7 +2189,14 @@ object PlayerCore {
                         // désactivé, applyEqTo le laisse off) pile à la
                         // bascule peut faire cliquer le mixeur — on s'en
                         // passe.
-                        eqTail = if (eqIsFlat()) null else try {
+                        // Repris du pré-armement quand il existe (créé loin de
+                        // la bascule). Sinon : toujours créé sur un
+                        // enchaînement automatique — l'échange de basses en a
+                        // besoin — et seulement si l'égaliseur n'est pas à
+                        // plat sur un geste (pas d'échange de basses, et
+                        // l'insertion à la bascule peut cliquer).
+                        eqTail = eqFromPrearm ?: if (fromGesture && eqIsFlat()) null
+                        else try {
                             android.media.audiofx.Equalizer(0, player.audioSessionId)
                                 .also { applyEqTo(it, includeFilter = true) }
                         } catch (_: Exception) {
@@ -2076,6 +2246,12 @@ object PlayerCore {
                 // silence : c'est exactement la microcoupure qu'on chasse.
                 // On s'en sépare et on arrive franchement.
                 if (!tailAudible) {
+                    // L'égaliseur repris du pré-armement n'a pas été adopté
+                    // (eqTail n'est posé que sur une queue audible) : libéré.
+                    try {
+                        eqFromPrearm?.release()
+                    } catch (_: Exception) {
+                    }
                     transLog("bascule sèche : queue jamais audible (timeout/dérive)")
                     pendingSwitch = null
                     releaseTail()
@@ -2140,8 +2316,11 @@ object PlayerCore {
                 fadeGain = 0f
                 applyVolume()
                 onSwitch()
-                fadeInMain(eff)
-                fadeOutTail(player, v0, eff)
+                // Échange de basses sur l'enchaînement automatique seulement :
+                // sur un geste (court, ou le même morceau déplacé), rien à
+                // échanger.
+                fadeInMain(eff, bassSwap = !fromGesture)
+                fadeOutTail(player, v0, eff, bassSwap = !fromGesture)
             }
         }
 
@@ -2184,8 +2363,53 @@ object PlayerCore {
         }
     }
 
-    /** Éteint progressivement la source sortante (equal-power). */
-    private fun fadeOutTail(player: ExoPlayer, v0: Float, fadeMs: Long) {
+    /**
+     * Échange de basses du fondu croisé ExoPlayer : deux lignes de basse
+     * qui cohabitent dix secondes, c'est ce qui rend un mix « boueux ». Le
+     * sortant perd ses graves (jusqu'à [BASS_SWAP_DB]) entre 25 % et 55 % du
+     * fondu, l'entrant les reçoit entre 35 % et 65 % — une seule ligne de
+     * basse à la fois, comme un DJ qui bascule son EQ. Réalisé avec les
+     * égaliseurs système des deux lecteurs (bandes < 250 Hz), sans toucher
+     * au réglage de l'utilisateur, qui s'y ajoute.
+     */
+    private const val BASS_SWAP_DB = -15f
+
+    /** Coupe des graves de l'ENTRANT pendant le fondu (dB ≤ 0), ajoutée à
+     *  l'égaliseur du principal par [applyEqTo]. */
+    private var mainBassCutDb = 0f
+
+    /** Progression 0..1 d'une rampe linéaire de [from] à [to] en x. */
+    private fun ramp01(x: Float, from: Float, to: Float): Float =
+        ((x - from) / (to - from)).coerceIn(0f, 1f)
+
+    /** Pose la coupe des graves [cutDb] sur l'égaliseur de la queue, par-dessus
+     *  le réglage utilisateur (bandes < 250 Hz seulement). */
+    private fun applyTailBassCut(eq: android.media.audiofx.Equalizer, cutDb: Float) {
+        try {
+            val (bass, _, _) = eqBands.value
+            val fl = filterLevel.value
+            val bassAdj = if (fl > 0) -10f * fl else 0f
+            val range = eq.bandLevelRange
+            if (cutDb != 0f) eq.enabled = true
+            for (i in 0 until eq.numberOfBands) {
+                if (eq.getCenterFreq(i.toShort()) / 1000 >= 250) continue
+                val db = bass + bassBoostExtraDb + bassAdj + cutDb
+                val level = (db * 100).toInt()
+                    .coerceIn(range[0].toInt(), range[1].toInt())
+                eq.setBandLevel(i.toShort(), level.toShort())
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Éteint progressivement la source sortante (equal-power).
+     *  @param bassSwap creuser ses graves pendant le fondu (voir BASS_SWAP_DB). */
+    private fun fadeOutTail(
+        player: ExoPlayer,
+        v0: Float,
+        fadeMs: Long,
+        bassSwap: Boolean = false
+    ) {
         tailJob?.cancel()
         tailJob = autoScope.launch(Dispatchers.Main) {
             // Progression calée sur l'HORLOGE réelle, pas sur le compte des
@@ -2195,6 +2419,7 @@ object PlayerCore {
             // étirement fait sauter des pas, la durée totale ne bouge pas.
             val t0 = android.os.SystemClock.elapsedRealtime()
             val dur = fadeMs.coerceAtLeast(1L).toFloat()
+            var lastCut = 0
             while (true) {
                 // La queue a pu être congédiée par un geste ou finir son
                 // fichier (STATE_ENDED) pendant un delay : ne pas toucher
@@ -2205,6 +2430,15 @@ object PlayerCore {
                 // La somme des deux sources garde un niveau constant, là où
                 // un fondu linéaire creuse au milieu
                 player.volume = v0 * kotlin.math.cos(x * (Math.PI / 2).toFloat())
+                // Graves du sortant : par pas de 1 dB, seulement quand ça change
+                val eq = eqTail
+                if (bassSwap && eq != null) {
+                    val cut = Math.round(BASS_SWAP_DB * ramp01(x, 0.25f, 0.55f))
+                    if (cut != lastCut) {
+                        lastCut = cut
+                        applyTailBassCut(eq, cut.toFloat())
+                    }
+                }
                 if (x >= 1f) break
                 delay(FADE_STEP_MS)
             }
@@ -2315,24 +2549,51 @@ object PlayerCore {
         )
     }
 
-    /** Monte le lecteur principal depuis le silence, en equal-power. */
-    private fun fadeInMain(fadeMs: Long) {
+    /** Monte le lecteur principal depuis le silence, en equal-power.
+     *  @param bassSwap l'entrant arrive sans ses graves et les reçoit entre
+     *  35 % et 65 % du fondu (voir BASS_SWAP_DB). */
+    private fun fadeInMain(fadeMs: Long, bassSwap: Boolean = false) {
         seekJob?.cancel()
         seekJob = autoScope.launch(Dispatchers.Main) {
             // Même ancrage sur l'horloge réelle que fadeOutTail : un thread
             // principal en retard saute des pas au lieu d'étirer la montée.
             val t0 = android.os.SystemClock.elapsedRealtime()
             val dur = fadeMs.coerceAtLeast(1L).toFloat()
-            while (true) {
-                val x = ((android.os.SystemClock.elapsedRealtime() - t0) / dur)
-                    .coerceAtMost(1f)
-                fadeGain = kotlin.math.sin(x * (Math.PI / 2).toFloat())
+            var lastCut = 0
+            try {
+                if (bassSwap) {
+                    mainBassCutDb = BASS_SWAP_DB
+                    lastCut = Math.round(BASS_SWAP_DB)
+                    applyEqTo(eqExo, includeFilter = true)
+                }
+                while (true) {
+                    val x = ((android.os.SystemClock.elapsedRealtime() - t0) / dur)
+                        .coerceAtMost(1f)
+                    fadeGain = kotlin.math.sin(x * (Math.PI / 2).toFloat())
+                    applyVolume()
+                    if (bassSwap) {
+                        val cut = Math.round(
+                            BASS_SWAP_DB * (1f - ramp01(x, 0.35f, 0.65f))
+                        )
+                        if (cut != lastCut) {
+                            lastCut = cut
+                            mainBassCutDb = cut.toFloat()
+                            applyEqTo(eqExo, includeFilter = true)
+                        }
+                    }
+                    if (x >= 1f) break
+                    delay(FADE_STEP_MS)
+                }
+                fadeGain = 1f
                 applyVolume()
-                if (x >= 1f) break
-                delay(FADE_STEP_MS)
+            } finally {
+                // Annulé par un geste ou terminé : les graves de l'entrant
+                // ne doivent jamais rester coupés.
+                if (mainBassCutDb != 0f) {
+                    mainBassCutDb = 0f
+                    applyEqTo(eqExo, includeFilter = true)
+                }
             }
-            fadeGain = 1f
-            applyVolume()
         }
     }
 
@@ -2507,13 +2768,18 @@ object PlayerCore {
                 trebAdj = -10f * -fl
                 midAdj = -6f * (-fl - 1).coerceAtLeast(0)
             }
+            // La coupe des graves du fondu (mainBassCutDb) ne concerne que
+            // le lecteur principal : sur les autres égaliseurs (DJ, queue),
+            // elle est nulle ou gérée à part (applyTailBassCut).
+            val fadeCut = if (eq === eqExo) mainBassCutDb else 0f
             eq.enabled = bass != 0f || mid != 0f || treble != 0f ||
-                bassBoostExtraDb != 0f || trebleExtraDb != 0f || fl != 0
+                bassBoostExtraDb != 0f || trebleExtraDb != 0f || fl != 0 ||
+                fadeCut != 0f
             val range = eq.bandLevelRange
             for (i in 0 until eq.numberOfBands) {
                 val centerHz = eq.getCenterFreq(i.toShort()) / 1000
                 val db = when {
-                    centerHz < 250 -> bass + bassBoostExtraDb + bassAdj
+                    centerHz < 250 -> bass + bassBoostExtraDb + bassAdj + fadeCut
                     centerHz < 4000 -> mid + midAdj
                     else -> treble + trebleExtraDb + trebAdj
                 }
