@@ -695,8 +695,10 @@ object PlayerCore {
                         sleepRemainingMs.value = null
                     }
                 }
+                // Tous modes : en DJ, applyVolume pilote le volume maître
+                // du moteur (fondu de sommeil), sinon celui d'ExoPlayer.
+                applyVolume()
                 if (mode.value != PlayerMode.DJ) {
-                    applyVolume()
                     // Boosts progressifs côté ExoPlayer (le moteur DJ les
                     // gère en interne, calé sur sa grille de beats)
                     // Rampes rapides : un cran (5 dB / 8 %) s'applique en ~1 s
@@ -1260,17 +1262,10 @@ object PlayerCore {
         }
     }
 
-    fun seekToFraction(f: Float) {
-        if (mode.value == PlayerMode.DJ) return
-        // Repositionnement explicite : le fondu de fin redevient possible,
-        // et tout ce qui attendait est réglé d'abord (même règle que les
-        // autres gestes).
-        crossfadedFrom = null
-        consumePendingBeforeGesture()
-        val d = exo.duration
-        if (d > 0) exo.seekTo((d * f.coerceIn(0f, 1f)).toLong())
-        persistState()
-    }
+    // Le déplacement dans le morceau passe UNIQUEMENT par
+    // seekToFractionSmooth (fondu croisé à la lecture, seek silencieux à
+    // l'arrêt) : l'ancien chemin direct, que l'interface n'appelait plus,
+    // contournait le fondu et la purge des bascules en attente.
 
     private var seekJob: Job? = null
 
@@ -2377,12 +2372,20 @@ object PlayerCore {
     }
 
     private fun applyVolume() {
-        if (mode.value == PlayerMode.DJ) return // piste silencieuse à 0
-        var v = normGain(currentTrack.value)
+        // Minuterie de sommeil : fondu sur les 30 dernières secondes
         val rem = sleepRemainingMs.value
-        if (rem != null && rem < 30_000L) v *= (rem / 30_000f).coerceIn(0f, 1f)
-        // Fondu d'entrée en cours : il s'applique par-dessus tout le reste
-        v *= fadeGain
+        val sleep = if (rem != null && rem < 30_000L)
+            (rem / 30_000f).coerceIn(0f, 1f) else 1f
+        if (mode.value == PlayerMode.DJ) {
+            // ExoPlayer joue la piste silencieuse à 0 : c'est le volume
+            // maître du moteur qui porte le fondu de sommeil — sans lui,
+            // la pause tombait sans les 30 s de descente promises.
+            mixer.setMasterVolume(sleep)
+            return
+        }
+        // Normalisation × sommeil × fondu d'entrée (qui s'applique
+        // par-dessus tout le reste)
+        val v = normGain(currentTrack.value) * sleep * fadeGain
         exo.volume = v.coerceIn(0f, 1f)
     }
 
@@ -2390,7 +2393,7 @@ object PlayerCore {
         normalizeVolume.value = enabled
         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
             .edit().putBoolean("normalizeVolume", enabled).apply()
-        if (mode.value != PlayerMode.DJ) applyVolume()
+        applyVolume()
     }
 
     /** minutes = null pour annuler. */
@@ -2402,7 +2405,7 @@ object PlayerCore {
             sleepDeadline = System.currentTimeMillis() + minutes * 60_000L
             sleepRemainingMs.value = minutes * 60_000L
         }
-        if (mode.value != PlayerMode.DJ) applyVolume()
+        applyVolume()
         ensureTicker()
     }
 

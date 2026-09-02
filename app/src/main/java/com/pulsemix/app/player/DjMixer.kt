@@ -83,6 +83,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val PREOPEN_LEAD_S = 8L
         const val PREBUFFER_FRAMES = 88_200 // ~2 s à 44,1 kHz
         const val PREBUFFER_DEADLINE_MS = 3_000L
+        // Même réserve pour un deck ouvert sur un GESTE (seek, suivant),
+        // mais l'attente est courte : l'utilisateur a appuyé, il attend.
+        const val GESTURE_PREBUFFER_DEADLINE_MS = 750L
+        // Micro-fondu de pause/reprise, sur le volume de l'AudioTrack
+        // (appliqué à la sortie, pas au tampon) : couper net fait un clic —
+        // ExoPlayer a le sien (120/150 ms), le moteur DJ n'en avait pas.
+        const val PAUSE_FADE_MS = 80L
+        const val RESUME_FADE_MS = 120L
         // Jonctions adaptatives : long blend quand tempos calés et tonalités
         // compatibles, coupe franche quand le calage est impossible.
         const val FADE_LOCKED_HARMONIC_S = 18.0
@@ -712,6 +720,36 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     fun setProMode(on: Boolean) {
         proMode = on
+    }
+
+    /**
+     * Volume maître du set, appliqué sur l'AudioTrack (donc à la sortie,
+     * sans la latence du tampon). Porte le fondu de la minuterie de
+     * sommeil, qu'`applyVolume` n'appliquait qu'aux modes ExoPlayer — en
+     * DJ la pause tombait sans les 30 s de descente. Posé par PlayerCore,
+     * lu une fois par bloc par le fil audio.
+     */
+    @Volatile private var masterVolume = 1f
+
+    fun setMasterVolume(v: Float) {
+        masterVolume = v.coerceIn(0f, 1f)
+    }
+
+    /**
+     * Rampe du volume de l'AudioTrack, par pas de 10 ms. Appelée par le
+     * fil audio uniquement autour de la pause/reprise (il s'apprête à
+     * dormir ou vient de se réveiller : le temps de la rampe, le tampon de
+     * ~2 s continue de jouer, la descente s'entend).
+     */
+    private fun rampTrackVolume(track: AudioTrack, from: Float, to: Float, ms: Long) {
+        val steps = max(1L, ms / 10L).toInt()
+        try {
+            for (i in 1..steps) {
+                track.setVolume(from + (to - from) * i / steps)
+                Thread.sleep(10L)
+            }
+        } catch (_: Exception) {
+        }
     }
     // Décalage entre ce qui est calculé et ce qui sort des haut-parleurs
     @Volatile private var outLatencyMs = 0L
@@ -1577,12 +1615,24 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             val fadeS: Double,
             val fadeKind: Int,
             val jumping: Boolean,
-            val jumpTarget: Int
+            val jumpTarget: Int,
+            // Génération d'ouverture (cf. openGen) : un résultat d'une
+            // génération passée est refermé sans être joué.
+            val gen: Int
         )
 
         val openResult =
             java.util.concurrent.atomic.AtomicReference<OpenResult?>(null)
         var opening = false
+        // Jeton des ouvertures en vol : un seek reçu pendant qu'un deck
+        // s'ouvre (8 s avant chaque transition, désormais) l'incrémente et
+        // prend la main — l'ancienne ouverture, quand elle aboutit, est
+        // refermée. Avant, le seek était simplement jeté : barre sourde
+        // pendant toute la fenêtre d'ouverture.
+        var openGen = 0
+        // Volume appliqué sur l'AudioTrack (masterVolume + micro-fondus de
+        // pause) : posé seulement quand il change.
+        var trackVol = 1f
         var failedForSeg = -1
         // Fin de set annoncée une seule fois (dernier passage, dernières
         // secondes) — désarmée si un saut ramène en arrière dans le plan.
@@ -1715,11 +1765,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 // pendant toute la pause ; la latence de reprise reste
                 // imperceptible à 5 réveils par seconde.
                 if (paused) {
+                    // Micro-fondu de pause : le tampon de sortie continue
+                    // de jouer pendant la rampe, la descente s'entend —
+                    // puis seulement la pause. Symétrique à la reprise.
+                    rampTrackVolume(audioTrack, trackVol, 0f, PAUSE_FADE_MS)
+                    trackVol = 0f
                     audioTrack.pause()
                     val pausedAt = android.os.SystemClock.elapsedRealtime()
                     while (paused && running && gen == runGeneration) Thread.sleep(200)
                     if (!running) break
                     audioTrack.play()
+                    rampTrackVolume(audioTrack, 0f, masterVolume, RESUME_FADE_MS)
+                    trackVol = masterVolume
                     // Une reprise après des heures de pause n'a rien d'anodin
                     // (décodeurs et sortie audio dormaient) : c'est le genre
                     // de contexte qu'on veut voir dans le journal quand une
@@ -1797,11 +1854,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 val ps = pendingSeek
                 if (ps >= 0f) {
                     pendingSeek = -1f
-                    if (deckB == null && !opening) {
+                    if (deckB == null) {
+                        // Une ouverture en vol (le deck suivant, ouvert
+                        // 8 s avant sa transition, ou un seek précédent)
+                        // est supplantée : nouvelle génération, son résultat
+                        // sera refermé à l'arrivée. Le geste le plus récent
+                        // gagne — un saut en attente aussi s'efface.
+                        if (opening) openGen++
+                        pendingJump = -1
                         val from = a.startMs
                         val to = a.logicalEndMs
                         val at = from + ((to - from) * ps).toLong()
                         opening = true
+                        val og = openGen
                         val curRate = a.curRate
                         val segIdx = a.segIndex
                         val factor = phaseLengthFactor
@@ -1813,9 +1878,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 seekFromMs = at
                             )
                             val ok = if (d.open()) d else { d.close(); null }
-                            openResult.set(
-                                OpenResult(ok, SEEK_FADE_S, KIND_EQ, true, -1)
+                            // Réserve décodée courte : le geste attend, mais
+                            // un deck sans avance faisait des trous.
+                            ok?.prebuffer(
+                                PREBUFFER_FRAMES, GESTURE_PREBUFFER_DEADLINE_MS
                             )
+                            // getAndSet : un résultat non encore consommé
+                            // (ouverture supplantée) est refermé, jamais fuité.
+                            openResult.getAndSet(
+                                OpenResult(ok, SEEK_FADE_S, KIND_EQ, true, -1, og)
+                            )?.deck?.close()
                         }
                     }
                 }
@@ -1874,6 +1946,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         ) {
                             opening = true
                             val jt = pendingJump
+                            val og = openGen
                             thread(name = "DjOpen") {
                                 // Pré-roll : transitions automatiques
                                 // seulement — sur un saut manuel,
@@ -1886,10 +1959,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 // Réserve décodée avant de le confier au
                                 // mixeur : c'est ce fil-ci qui attend, le
                                 // fil audio ne voit qu'un deck déjà prêt.
+                                // Attente courte sur un saut manuel :
+                                // quelqu'un attend.
                                 b?.prebuffer(
-                                    PREBUFFER_FRAMES, PREBUFFER_DEADLINE_MS
+                                    PREBUFFER_FRAMES,
+                                    if (jumping) GESTURE_PREBUFFER_DEADLINE_MS
+                                    else PREBUFFER_DEADLINE_MS
                                 )
-                                openResult.set(OpenResult(b, fadeS, fadeKind, jumping, jt))
+                                // getAndSet : un résultat non encore consommé
+                                // (ouverture supplantée) est refermé, jamais fuité.
+                                openResult.getAndSet(
+                                    OpenResult(b, fadeS, fadeKind, jumping, jt, og)
+                                )?.deck?.close()
                             }
                         }
                     } else if (nextIdx >= segments.size &&
@@ -1925,7 +2006,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 // Deck suivant prêt : programmer le fondu, aligné sur la
                 // grille de beats du deck A (de préférence fin de mesure).
                 val ready = openResult.getAndSet(null)
-                if (ready != null) {
+                if (ready != null && ready.gen != openGen) {
+                    // Ouverture périmée (un seek l'a supplantée) : refermée
+                    // sans être jouée. `opening` reste levé : l'ouverture
+                    // qui l'a remplacée est encore en vol.
+                    ready.deck?.close()
+                } else if (ready != null) {
                     opening = false
                     val b = ready.deck
                     val pj2 = pendingJump
@@ -2668,6 +2754,16 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     else 0f
                     bassGain += 0.02f * (target - bassGain)
                 }
+                // Volume maître (minuterie de sommeil) : sur l'AudioTrack,
+                // donc à la sortie — posé seulement quand il change.
+                val mv = masterVolume
+                if (mv != trackVol) {
+                    try {
+                        audioTrack.setVolume(mv)
+                    } catch (_: Exception) {
+                    }
+                    trackVol = mv
+                }
                 val wrote =
                     audioTrack.write(out, 0, BLOCK_FRAMES * 2, AudioTrack.WRITE_BLOCKING)
                 if (wrote < 0) {
@@ -2681,7 +2777,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     djLog("AudioTrack.write a renvoyé $wrote")
                     val rebuilt = try {
                         audioTrack.release()
-                        newAudioTrack().also { it.play() }
+                        newAudioTrack().also {
+                            it.setVolume(trackVol)
+                            it.play()
+                        }
                     } catch (e: Exception) {
                         djLog("reconstruction de la sortie impossible : ${e.message}")
                         null

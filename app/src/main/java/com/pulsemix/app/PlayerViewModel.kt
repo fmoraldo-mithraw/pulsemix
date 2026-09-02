@@ -842,7 +842,6 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun setShuffle(enabled: Boolean) = PlayerCore.setShuffle(enabled)
     val repeatMode = PlayerCore.repeatMode
     fun cycleRepeat() = PlayerCore.cycleRepeat()
-    fun seekTo(fraction: Float) = PlayerCore.seekToFraction(fraction)
 
     /** Déplacement validé (doigt relâché) : rejoint le point en fondu. */
     fun seekToSmooth(fraction: Float) = PlayerCore.seekToFractionSmooth(fraction)
