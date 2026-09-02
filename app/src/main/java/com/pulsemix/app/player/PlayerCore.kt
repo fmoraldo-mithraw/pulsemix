@@ -628,6 +628,8 @@ object PlayerCore {
                     // naturellement pendant la préparation, puis la bascule
                     // tardive rejouait sa fin et sautait un morceau. Trop
                     // tard, c'est trop tard : on laisse l'enchaînement direct.
+                    // Fin MUSICALE plutôt que fin de fichier (musicEndFor)
+                    val end = if (d > 0) musicEndFor(d) else d
                     if (crossfade.value && d > 0 && isPlaying.value &&
                         exo.hasNextMediaItem() && exoTail == null &&
                         currentTrack.value?.uri != crossfadedFrom &&
@@ -635,13 +637,13 @@ object PlayerCore {
                         // sinon un titre de 12 s sous un fondu de 10 s
                         // partait en fondu dès sa première seconde et
                         // n'était entendu que comme queue du suivant.
-                        d > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
-                        d - exo.currentPosition in
+                        end > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
+                        end - exo.currentPosition in
                         MIN_AUTO_CROSSFADE_REMAIN_MS..(CROSSFADE_MS + CROSSFADE_LEAD_MS)
                     ) {
                         transLog(
                             "fondu déclenché (ticker filet), reste " +
-                                "${d - exo.currentPosition} ms"
+                                "${end - exo.currentPosition} ms"
                         )
                         crossfadedFrom = currentTrack.value?.uri
                         crossfadeToNext()
@@ -655,7 +657,7 @@ object PlayerCore {
                         exo.hasNextMediaItem() && exoTail == null &&
                         preparedTail == null &&
                         currentTrack.value?.uri != crossfadedFrom &&
-                        d - exo.currentPosition in
+                        end - exo.currentPosition in
                         (CROSSFADE_MS + CROSSFADE_LEAD_MS + 1)..
                         (CROSSFADE_MS + CROSSFADE_LEAD_MS + PREARM_AHEAD_MS)
                     ) {
@@ -1438,6 +1440,24 @@ object PlayerCore {
         get() = 4_000L.coerceAtMost(CROSSFADE_MS + CROSSFADE_LEAD_MS - 3_000L)
 
     /**
+     * Fin MUSICALE du morceau en cours, dans le repère des positions du
+     * lecteur : la fin audible mesurée à l'analyse (`musicEndMs`) plutôt
+     * que la durée du fichier — un titre qui se termine par trois secondes
+     * de silence encodé ne fond plus « dans le vide », l'entrant arrive
+     * sous du son. Retenue seulement si elle est plausible (dans la
+     * seconde moitié, à moins de 20 s de la fin) ; sinon la durée [d].
+     * Avec « sauter les intros », les positions sont relatives au point
+     * de rognage : la fin l'est aussi.
+     */
+    private fun musicEndFor(d: Long): Long {
+        val t = currentTrack.value ?: return d
+        val clip = if (skipIntros.value && t.musicStartMs > 1_500L) t.musicStartMs else 0L
+        val end = t.musicEndMs - clip
+        return if (t.musicEndMs > 0L && end > d / 2 && end < d && d - end <= 20_000L) end
+        else d
+    }
+
+    /**
      * Écart résiduel (rejoue ou élision) au-delà duquel le fondu croisé est
      * abandonné au profit d'une arrivée franche. Grâce à la compensation
      * d'amorçage ([tailStartupLagMs]), le résidu typique est de quelques
@@ -1792,10 +1812,13 @@ object PlayerCore {
         // négatif), morceau plus long que la fenêtre, un suivant à
         // enchaîner.
         val d = exo.duration
-        if (d <= CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L) return
+        // Fin MUSICALE (musicEndFor) : le fondu vise la fin audible, pas le
+        // silence encodé qui peut la suivre.
+        val end = musicEndFor(d)
+        if (end <= CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L) return
         if (!exo.hasNextMediaItem()) return
         val index = exo.currentMediaItemIndex
-        val fadeAt = d - CROSSFADE_MS - CROSSFADE_LEAD_MS
+        val fadeAt = end - CROSSFADE_MS - CROSSFADE_LEAD_MS
         val prearmAt = (fadeAt - PREARM_AHEAD_MS / 2).coerceAtLeast(0L)
         val gen = crossfadeMsgGen
         prearmMessage = try {
@@ -1835,12 +1858,13 @@ object PlayerCore {
         if (gen != crossfadeMsgGen) return
         if (!initialized || mode.value == PlayerMode.DJ) return
         val d = exo.duration
+        val end = if (d > 0) musicEndFor(d) else d
         if (crossfade.value && d > 0 && isPlaying.value &&
             exo.hasNextMediaItem() && exoTail == null &&
             preparedTail == null &&
             currentTrack.value?.uri != crossfadedFrom &&
-            d > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
-            d - exo.currentPosition in
+            end > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
+            end - exo.currentPosition in
             (CROSSFADE_MS + CROSSFADE_LEAD_MS + 1)..
             (CROSSFADE_MS + CROSSFADE_LEAD_MS + PREARM_AHEAD_MS)
         ) {
@@ -1856,15 +1880,17 @@ object PlayerCore {
         if (gen != crossfadeMsgGen) return
         if (!initialized || mode.value == PlayerMode.DJ) return
         val d = exo.duration
+        val end = if (d > 0) musicEndFor(d) else d
         if (crossfade.value && d > 0 && isPlaying.value &&
             exo.hasNextMediaItem() && exoTail == null &&
             currentTrack.value?.uri != crossfadedFrom &&
-            d > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
-            d - exo.currentPosition in
+            end > CROSSFADE_MS + CROSSFADE_LEAD_MS + 3_000L &&
+            end - exo.currentPosition in
             MIN_AUTO_CROSSFADE_REMAIN_MS..(CROSSFADE_MS + CROSSFADE_LEAD_MS)
         ) {
             transLog(
-                "fondu déclenché (message), reste ${d - exo.currentPosition} ms"
+                "fondu déclenché (message), reste ${end - exo.currentPosition} ms" +
+                    (if (end != d) " (fin musicale, ${d - end} ms de silence évités)" else "")
             )
             crossfadedFrom = currentTrack.value?.uri
             crossfadeToNext()

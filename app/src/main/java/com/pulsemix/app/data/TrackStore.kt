@@ -31,6 +31,9 @@ data class Track(
     val firstBeatMs: Long = 0L,
     /** Début réel de la musique (saut des intros parlées/sketchs). */
     val musicStartMs: Long = 0L,
+    /** Fin MUSICALE (dernier instant audible avant le silence de fin) ; 0 =
+     *  inconnue. Le fondu croisé s'y cale plutôt que sur la durée du fichier. */
+    val musicEndMs: Long = 0L,
     val analyzed: Boolean = false,
     /** Mis en avant dans les sélections de mix. */
     val favorite: Boolean = false,
@@ -222,6 +225,7 @@ class TrackStore(context: Context) {
             o.put("segmentMs", t.segmentMs)
             o.put("firstBeatMs", t.firstBeatMs)
             o.put("musicStartMs", t.musicStartMs)
+            o.put("musicEndMs", t.musicEndMs)
             o.put("analyzed", t.analyzed)
             o.put("favorite", t.favorite)
             o.put("excluded", t.excluded)
@@ -256,6 +260,7 @@ class TrackStore(context: Context) {
             segmentMs = o.optLong("segmentMs", 60_000L),
             firstBeatMs = o.optLong("firstBeatMs", 0L),
             musicStartMs = o.optLong("musicStartMs", 0L),
+            musicEndMs = o.optLong("musicEndMs", 0L),
             analyzed = o.optBoolean("analyzed", false),
             favorite = o.optBoolean("favorite", false),
             excluded = o.optBoolean("excluded", false),

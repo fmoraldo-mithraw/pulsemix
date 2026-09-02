@@ -258,6 +258,7 @@ object LibraryScanner {
                                         firstBeatMs =
                                             lockedSeg?.firstBeatMs ?: features.firstBeatMs,
                                         musicStartMs = features.musicStartMs,
+                                        musicEndMs = features.musicEndMs,
                                         analyzed = lockedBpm != null || features.bpm > 0f,
                                         genre = genre,
                                         genreLocked = cur?.genreLocked == true,

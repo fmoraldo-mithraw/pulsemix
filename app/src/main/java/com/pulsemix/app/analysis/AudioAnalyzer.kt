@@ -41,8 +41,13 @@ class AudioAnalyzer {
          * saut de basses. C'est ce « 1 » que vise le drop-swap du moteur
          * DJ : la bibliothèque se met à niveau au prochain scan (lancé
          * automatiquement au démarrage).
+         *
+         * 4 : fin MUSICALE du morceau ([Features.musicEndMs]) — le dernier
+         * instant audible avant le silence encodé de fin. Le fondu croisé
+         * s'y cale : un titre qui finit par trois secondes de silence ne
+         * fond plus « dans le vide ».
          */
-        const val FEATURES_VERSION = 3
+        const val FEATURES_VERSION = 4
 
         /** Coupure du one-pole d'extraction des basses (~< 150 Hz) pour
          *  [Features.structure] : l'enveloppe des kicks et des sub. */
@@ -93,6 +98,9 @@ class AudioAnalyzer {
         val segmentMs: Long,
         val firstBeatMs: Long,
         val musicStartMs: Long,
+        /** Fin MUSICALE : dernier instant audible avant le silence encodé
+         *  de fin (0 = inconnue / pas de silence notable). */
+        val musicEndMs: Long,
         val durationMs: Long,
         /** Énergie du dernier tiers rapportée au premier : la montée. */
         val energySlope: Float,
@@ -155,6 +163,7 @@ class AudioAnalyzer {
             val (bestStartMs, segmentMs) = bestSegment(rms, blockMs, durationMs, bpm)
             val firstBeatMs = probeFirstBeat(context, uri, bestStartMs, bpm)
             val musicStartMs = detectMusicStart(rms, blockMs)
+            val musicEndMs = detectMusicEnd(rms, blockMs, durationMs)
 
             // Structure du morceau : le flux spectral est recalé sur la
             // grille des blocs RMS ; hors de la fenêtre FFT (l'analyse n'en
@@ -192,6 +201,7 @@ class AudioAnalyzer {
                 segmentMs = segmentMs,
                 firstBeatMs = firstBeatMs,
                 musicStartMs = musicStartMs,
+                musicEndMs = musicEndMs,
                 durationMs = durationMs,
                 energySlope = energySlope(rms),
                 dynamicSpread = dynamicSpread(rms),
@@ -813,6 +823,38 @@ class AudioAnalyzer {
      *    (< 55 % du niveau) — sinon c'est une intro musicale, on garde tout ;
      *  - saut plafonné à 90 s.
      */
+    /**
+     * Fin MUSICALE : dernier instant où le morceau sonne encore, avant le
+     * silence encodé de fin (blanc de mastering, fondu vers rien). Même
+     * lissage que [detectMusicStart] ; un bloc est « audible » au-dessus de
+     * 3 % du niveau musical (le 75e centile) — un fondu de fin naturel est
+     * ainsi suivi jusqu'à sa vraie extinction, pas coupé à mi-descente.
+     * @return la fin audible en ms, ou 0 si elle est à moins d'une seconde
+     *   de la fin réelle (rien à gagner) ou indéterminable.
+     */
+    private fun detectMusicEnd(rms: List<Float>, blockMs: Double, durationMs: Long): Long {
+        val n = rms.size
+        if (n < 40) return 0L
+        val k = max(1, (1000.0 / blockMs).roundToInt())
+        val smooth = FloatArray(n)
+        for (i in 0 until n) {
+            var s = 0f
+            var c = 0
+            for (j in max(0, i - k / 2)..min(n - 1, i + k / 2)) {
+                s += rms[j]; c++
+            }
+            smooth[i] = s / c
+        }
+        val sorted = smooth.sorted()
+        val musicLevel = sorted[(0.75 * (n - 1)).toInt()]
+        if (musicLevel <= 0f) return 0L
+        val floor = 0.03f * musicLevel
+        var last = n - 1
+        while (last > 0 && smooth[last] < floor) last--
+        val endMs = ((last + 1) * blockMs).toLong().coerceAtMost(durationMs)
+        return if (durationMs - endMs >= 1_000L) endMs else 0L
+    }
+
     private fun detectMusicStart(rms: List<Float>, blockMs: Double): Long {
         val n = rms.size
         if (n < 40) return 0L
