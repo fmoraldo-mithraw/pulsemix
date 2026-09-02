@@ -148,7 +148,7 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `splitRates - jusqu a 8 pourcents d ecart, calable ; au-dela, tempos naturels`() {
+    fun `splitRates - jusqu a 8 pourcents d ecart calable, au-dela tempos naturels`() {
         // 128 vs 118,5 (~7,7 %) : ~3,9 % chacun, encore dans la fenêtre
         val (rA, rB) = DjMixer.splitRates(128f, 118.5f)
         assertTrue(rA != 1f && rB != 1f)
