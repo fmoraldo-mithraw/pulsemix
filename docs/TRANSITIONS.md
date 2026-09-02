@@ -58,11 +58,21 @@ lecteur :
 
 Les deux lecteurs sont construits avec un **tampon de sortie de ~2 s** (au
 lieu des 250-750 ms par défaut de media3) : c'est le temps dont dispose le
-décodeur quand une autre application accapare le CPU. Leur **vitesse passe
-par l'AudioTrack** (`setPlaybackParams`) et non par le ré-échantillonneur
-logiciel : appliquée au son déjà en tampon, elle prend effet en quelques
-dizaines de millisecondes — indispensable à l'alignement (§2.4). La queue
-court toujours à la vitesse du principal (cran de vitesse compris).
+décodeur quand une autre application accapare le CPU. La vitesse du
+**principal** passe par l'AudioTrack (`setPlaybackParams`) : appliquée au
+son déjà en tampon, elle prend effet en quelques dizaines de millisecondes,
+le cran de vitesse manuel reste instantané. La **queue**, elle, reste en
+vitesse **logicielle** : media3 documente la vitesse plateforme comme
+« moins fiable », et le journal 9 l'a confirmé — la position rapportée de la
+queue partait d'environ une seconde à chaque glissement (48 → 787 ms,
+74 → 1146 ms), et une queue pré-alignée à −1 ms se retrouvait à 1,5 s à
+l'heure du fondu : bascule sèche à *chaque* transition. En logiciel, un
+changement de vitesse n'atteint la sortie qu'après la traversée du tampon
+(~2 s), mais la position rapportée en tient compte exactement (points de
+contrôle de media3) : les mesures de résidu sont justes, et l'alignement
+s'y adapte (§2.3, §2.4). La queue court toujours à la vitesse du principal
+(cran de vitesse compris) ; un changement de cran pendant un fondu ne
+l'atteint qu'avec ~2 s de retard.
 
 ### 2.2 Quand le fondu de fin de morceau se déclenche
 
@@ -110,19 +120,25 @@ au point `prearmAt` (6,5 s avant le fondu) sert de filet si le ticker a
 
 **Elle est alors lancée muette et alignée sur le direct** (`alignPrepared`) :
 seek compensé de la latence d'amorçage mesurée sur l'appareil
-(`tailStartupLagWarmMs`), attente du premier son, résidu médian, puis
-**glissements de vitesse** — jusqu'à six, sans budget serré, personne
-n'attend. À l'arrivée, la queue *tourne*, muette, alignée à quelques
-millisecondes ; les deux lecteurs partagent la même horloge audio à la
-même vitesse, elle le reste. Journal : `queue pré-alignée : résidu A -> B ms
-(N glissement(s))`.
+(`tailStartupLagWarmMs`), attente du premier son, résidu médian ; au-delà
+de `RESEEK_TOLERANCE_MS` (60 ms), un **seek de recalage compensé** (position
+courante + résidu + latence d'amorçage — sans cette compensation, chaque
+recalage laissait le résidu à +latence) ; puis des **glissements de vitesse
+lents** : ±8 % pendant ~11 × |résidu| ms, et surtout une attente de ~2,4 s
+(traversée du tampon) avant de re-mesurer — c'est le seul endroit où l'on a
+ce temps, personne n'attend. Budget 10 s, deux glissements au plus. À
+l'arrivée, la queue *tourne*, muette, alignée à quelques millisecondes ;
+les deux lecteurs partagent la même horloge audio à la même vitesse, elle le
+reste. Journal : `queue pré-alignée : résidu A -> B ms (N recalage(s),
+M glissement(s))`.
 
 À l'heure du fondu, la queue pré-alignée est prélevée telle quelle (pas de
-seek — il la désalignerait) : **vérification** rapide (0,8 s, deux
-glissements au plus) puis bascule. Le fondu garde ainsi **toute sa
-fenêtre** ; avant, l'alignement se faisait à l'heure du fondu avec 3 s de
-budget pris sur le fondu lui-même. Un geste (suivant/précédent/seek) peut
-réutiliser la queue pré-alignée s'il vise le même morceau.
+seek — il la désalignerait) : **vérification** rapide (un seul seek de
+recalage, et seulement si elle a dérivé au-delà de `MAX_TAIL_DRIFT_MS`)
+puis bascule. Le fondu garde ainsi **toute sa fenêtre** ; avant,
+l'alignement se faisait à l'heure du fondu avec 3 s de budget pris sur le
+fondu lui-même. Un geste (suivant/précédent/seek) peut réutiliser la queue
+pré-alignée s'il vise le même morceau.
 
 Une queue pré-armée pour un *autre* morceau, ou congédiée par une pause ou
 un geste, est libérée proprement (jamais d'instance ExoPlayer orpheline) ;
@@ -142,19 +158,21 @@ déroule à l'heure du fondu, avec budget :
    sèche) ;
 3. **résidu** direct − queue (médiane de 5 lectures espacées de 10 ms :
    positif = un bout rejouerait, négatif = un bout serait élidé) ;
-4. au-delà de 350 ms : un seek différentiel ; en deçà, glissements de
-   vitesse ±8 % **relatifs à la vitesse du direct**, chacun dimensionné à
-   ~80 % du résidu (amorti), 80 ms de stabilisation, jusqu'à 4 passes
-   (2 sur un geste). Une divergence (accroc de charge) est tolérée une
-   fois ; deux = oscillation, on arrête ;
-5. cible : `SEAM_TOLERANCE_MS` = 12 ms. Budget dur : 3 s ;
+4. au-delà de `RESEEK_TOLERANCE_MS` (60 ms) : **seek de recalage
+   compensé** (position courante + résidu + latence d'amorçage à chaud),
+   jusqu'à 2 passes (1 sur un geste), arrêt dès qu'une passe n'améliore
+   plus rien — la dispersion d'un seek compensé (±40 ms environ) est plus
+   petite que 60 ms, en deçà un seek de plus ne ferait que rejouer aux
+   dés. **Plus de glissements de vitesse à l'heure du fondu** : en
+   logiciel, leur effet n'arriverait qu'après ~2 s, en plein fondu ;
+5. budget dur : 3 s (1,2 s sur une queue pré-alignée) ;
 6. résidu final > `MAX_TAIL_DRIFT_MS` (150 ms) : **bascule sèche** ;
 7. sinon **pont de bascule** en tuilage equal-power, **proportionnel au
    résidu** : 20 ms + 3 × |résidu|, borné à 60 ms — un raccord à 0 ms n'a
    pas besoin du floutage de phase qu'exige un accroc de 20 ms.
 
 Le journal trace chaque raccord : `raccord aligné : résidu A -> B ms
-(N glissement(s)[, pré-alignée][, geste])`.
+(N recalage(s)[, pré-alignée][, geste])`.
 
 ### 2.5 Les deux fondus et l'échange de basses
 
@@ -453,8 +471,9 @@ moteur repartira **au début de la phase** au prochain « lecture ».
 
 - `fondu déclenché (message|ticker filet), reste X ms [(fin musicale, N ms
   de silence évités)]` ;
-- `queue pré-alignée : résidu A -> B ms (N glissement(s))` ;
-- `raccord aligné : résidu A -> B ms (N glissement(s)[, pré-alignée][, geste])`
+- `queue pré-alignée : résidu A -> B ms (N recalage(s), M glissement(s))`
+  / `queue pré-armée non alignée : …` ;
+- `raccord aligné : résidu A -> B ms (N recalage(s)[, pré-alignée][, geste])`
   / `bascule sèche : …` ;
 - `sous-alimentation audio (principal|queue) : tampon X ms, Y ms sans
   données` ;
@@ -507,6 +526,7 @@ un geste, enchaînement des mix en fondu.)
 | A4 | Decks de seek / de saut sans réserve décodée | corrigé (même réserve, attente courte) |
 | A5 | Chemin de seek direct mort qui contournait le fondu | supprimé |
 | A6 | Répétition : réouverture sur le fil audio | documenté (L11) |
+| A7 | Journal 9 : bascule sèche à chaque fondu — la vitesse plateforme de la queue faisait diverger la position rapportée d'~1 s à chaque glissement | corrigé (queue en vitesse logicielle, recalages par seek compensé, glissements lents au pré-armement) |
 
 ## 8. Améliorations issues de la seconde relecture (« fonctionnements pas optimaux »)
 

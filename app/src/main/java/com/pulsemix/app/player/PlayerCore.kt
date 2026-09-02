@@ -372,7 +372,7 @@ object PlayerCore {
             prefs.getFloat("eqTreble", 0f)
         )
 
-        exo = ExoPlayer.Builder(appContext, bigBufferRenderers())
+        exo = ExoPlayer.Builder(appContext, bigBufferRenderers(platformSpeed = true))
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
         exo.addAnalyticsListener(underrunWatch("principal"))
@@ -1470,8 +1470,24 @@ object PlayerCore {
      *  rejeu/l'élision passe sous le seuil de fusion de l'oreille — le
      *  raccord est perçu comme continu, même sur de la musique rythmée.
      *  (Un seek ne peut pas l'atteindre : granularité d'une trame, ~26 ms
-     *  en MP3 — d'où l'alignement par la VITESSE.) */
+     *  en MP3 — d'où l'alignement par la VITESSE, au pré-armement.) */
     private const val SEAM_TOLERANCE_MS = 12L
+
+    /** Au-delà de cet écart, un seek de recalage compensé vaut mieux que
+     *  le résidu tel quel : la dispersion d'un seek compensé (±40 ms
+     *  environ, journal) est plus petite que lui. En deçà, un seek de
+     *  plus ne ferait que rejouer aux dés. */
+    private const val RESEEK_TOLERANCE_MS = 60L
+
+    /** Tampon PCM de sortie des deux lecteurs (ms). Aussi le délai après
+     *  lequel un changement de vitesse LOGICIELLE de la queue atteint la
+     *  sortie. */
+    private const val TAIL_BUFFER_MS = 2_000L
+
+    /** Attente, après un glissement logiciel, avant que sa correction
+     *  soit intégralement sortie et mesurable : traversée du tampon plus
+     *  une marge. */
+    private const val SLIDE_SETTLE_MS = TAIL_BUFFER_MS + 400L
 
     /**
      * Latence d'amorçage de la sortie audio du second lecteur, mesurée sur
@@ -1519,18 +1535,24 @@ object PlayerCore {
      * principal tenait (journal : raccord aligné à 11 ms et saccade
      * entendue quand même).
      *
-     * La vitesse passe par l'AudioTrack (setPlaybackParams) et non par le
-     * ré-échantillonneur logiciel : appliquée par le mélangeur système au
-     * son DÉJÀ mis en tampon, elle prend effet en quelques dizaines de ms
-     * quelle que soit la taille du tampon. Indispensable aux glissements
-     * d'alignement de la queue (mesure → correction → re-mesure en
-     * ~500 ms) ; en logiciel, l'effet n'atteindrait la sortie qu'après
-     * 2 s et la boucle divergerait. Bonus : le cran de vitesse manuel
-     * reste instantané. media3 corrige la position rapportée en
-     * conséquence (setAudioTrackPlaybackSpeed) — les mesures de résidu
-     * restent justes.
+     * [platformSpeed] : la vitesse passe par l'AudioTrack
+     * (setPlaybackParams) et non par le ré-échantillonneur logiciel.
+     * Appliquée par le mélangeur système au son DÉJÀ mis en tampon, elle
+     * prend effet en quelques dizaines de ms quelle que soit la taille du
+     * tampon : le cran de vitesse manuel reste instantané sur le lecteur
+     * PRINCIPAL. Mais media3 la documente comme « moins fiable », et le
+     * journal l'a confirmé sur la queue : après chaque glissement de
+     * vitesse, la position rapportée partait d'environ une seconde
+     * (résidu 48 -> 787 ms, 74 -> 1146 ms, −30 -> 1227 ms), et une queue
+     * pré-alignée à −1 ms se retrouvait à 1,5 s au moment du fondu — donc
+     * bascule sèche à CHAQUE transition. La queue reste en vitesse
+     * LOGICIELLE : l'effet d'un changement n'atteint la sortie qu'après
+     * la traversée du tampon (~2 s), mais la position rapportée en tient
+     * compte exactement (points de contrôle de media3) et les mesures de
+     * résidu sont justes. L'alignement s'y adapte : seeks compensés, et
+     * des glissements lents au pré-armement seulement (voir alignPrepared).
      */
-    private fun bigBufferRenderers(): DefaultRenderersFactory =
+    private fun bigBufferRenderers(platformSpeed: Boolean): DefaultRenderersFactory =
         object : DefaultRenderersFactory(appContext) {
             override fun buildAudioSink(
                 context: Context,
@@ -1541,12 +1563,12 @@ object PlayerCore {
                 .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 .setAudioTrackBufferSizeProvider(
                     DefaultAudioTrackBufferSizeProvider.Builder()
-                        .setMinPcmBufferDurationUs(2_000_000)
-                        .setMaxPcmBufferDurationUs(2_000_000)
+                        .setMinPcmBufferDurationUs(TAIL_BUFFER_MS * 1_000L)
+                        .setMaxPcmBufferDurationUs(TAIL_BUFFER_MS * 1_000L)
                         .build()
                 )
                 .build()
-        }.setEnableAudioTrackPlaybackParams(true)
+        }.setEnableAudioTrackPlaybackParams(platformSpeed)
 
     /**
      * Vigie des sous-alimentations : le système signale chaque fois qu'un
@@ -1577,7 +1599,7 @@ object PlayerCore {
      * toute l'intro).
      */
     private fun newTailPlayer(track: Track): ExoPlayer =
-        ExoPlayer.Builder(appContext, bigBufferRenderers()).build().apply {
+        ExoPlayer.Builder(appContext, bigBufferRenderers(platformSpeed = false)).build().apply {
             // La queue est audible pendant tout le fondu : ses saccades
             // se journalisent comme celles du principal.
             addAnalyticsListener(underrunWatch("queue"))
@@ -1651,12 +1673,18 @@ object PlayerCore {
     }
 
     /**
-     * Recale la queue pré-armée [player] sur le direct, en muet : même
-     * procédure que la bascule (seek compensé de la latence d'amorçage,
-     * attente du premier son, résidu médian, glissements de vitesse), mais
-     * sans budget serré — jusqu'à 6 glissements et 8 s. À l'arrivée, la
-     * queue TOURNE, muette, alignée : [preparedAlignedPlayer] la désigne.
-     * Abandonné sans bruit si la queue est congédiée entre-temps.
+     * Recale la queue pré-armée [player] sur le direct, en muet : seek
+     * compensé de la latence d'amorçage, attente du premier son, résidu
+     * médian ; puis un seek de recalage si le résidu dépasse
+     * [RESEEK_TOLERANCE_MS], et enfin des **glissements de vitesse
+     * LENTS** : la queue est en vitesse logicielle (voir
+     * bigBufferRenderers), la correction d'un glissement n'atteint la
+     * sortie qu'après la traversée du tampon (~2 s) — on attend donc
+     * [SLIDE_SETTLE_MS] avant de re-mesurer, ce qu'on peut se permettre
+     * ici : personne n'attend, la queue est ouverte ~25 s avant le fondu.
+     * Budget 10 s, deux glissements au plus. À l'arrivée, la queue TOURNE,
+     * muette, alignée : [preparedAlignedPlayer] la désigne. Abandonné sans
+     * bruit si la queue est congédiée entre-temps.
      */
     private suspend fun alignPrepared(player: ExoPlayer) {
         fun gone() = preparedTail !== player
@@ -1670,72 +1698,103 @@ object PlayerCore {
             }
             if (player.playbackState != Player.STATE_READY) return
             player.volume = 0f
+            // Vitesse du direct posée AVANT le départ : en logiciel, elle
+            // s'applique dès la première trame écrite dans le tampon.
             player.setPlaybackSpeed(exoSpeed)
+            val deadline = android.os.SystemClock.elapsedRealtime() + 10_000L
             player.seekTo(exo.currentPosition + tailStartupLagWarmMs)
             player.play()
-            val start = player.currentPosition
-            var waited = 0L
-            while (waited < TAIL_START_TIMEOUT_MS && player.currentPosition <= start) {
-                delay(20L)
-                waited += 20L
-                if (gone()) return
-            }
-            if (player.currentPosition <= start) return
+            if (!awaitTailAdvance(player, ::gone)) return
             var residual = medianResidual(player)
             val residual0 = residual
-            if (kotlin.math.abs(residual) > 350L) {
-                val target = player.currentPosition + residual
-                if (target > 0) {
-                    player.seekTo(target)
-                    var w2 = 0L
-                    while (w2 < 800L && player.currentPosition <= target) {
-                        delay(20L)
-                        w2 += 20L
-                        if (gone()) return
-                    }
-                    residual = medianResidual(player)
-                }
+            var reseeks = 0
+            // Résidu trop grand pour un glissement : un seek de recalage
+            // compensé (la queue redémarre avec sa latence d'amorçage).
+            if (kotlin.math.abs(residual) > RESEEK_TOLERANCE_MS) {
+                reseeks++
+                if (!reseekTail(player, residual, tailStartupLagWarmMs, ::gone)) return
+                residual = medianResidual(player)
             }
             var slides = 0
-            var diverged = false
-            val deadline = android.os.SystemClock.elapsedRealtime() + 8_000L
-            while (kotlin.math.abs(residual) > SEAM_TOLERANCE_MS && slides < 6 &&
-                android.os.SystemClock.elapsedRealtime() < deadline
-            ) {
+            while (kotlin.math.abs(residual) > SEAM_TOLERANCE_MS && slides < 2) {
+                // Durée du glissement à ±8 % : ~90 % du résidu (sous-corrigé,
+                // pour ne pas rebondir de l'autre côté sur la mesure).
+                val slideMs = (kotlin.math.abs(residual) * 11L).coerceIn(40L, 2_000L)
+                if (android.os.SystemClock.elapsedRealtime() + slideMs + SLIDE_SETTLE_MS >
+                    deadline
+                ) break
                 slides++
                 val speeding = residual > 0
                 player.setPlaybackSpeed(exoSpeed * (if (speeding) 1.08f else 0.92f))
-                val slideMs = (kotlin.math.abs(residual) * 10L).coerceIn(40L, 2_000L)
-                val t0 = android.os.SystemClock.elapsedRealtime()
-                while (android.os.SystemClock.elapsedRealtime() - t0 < slideMs) {
-                    delay(20L)
-                    if (gone()) return
-                }
+                if (!pace(slideMs, ::gone)) return
                 player.setPlaybackSpeed(exoSpeed)
-                delay(80L)
-                if (gone()) return
-                val before = residual
+                // La correction est dans le tampon : elle sort dans ~2 s
+                if (!pace(SLIDE_SETTLE_MS, ::gone)) return
                 residual = medianResidual(player)
-                if (kotlin.math.abs(residual) >= kotlin.math.abs(before)) {
-                    if (diverged) break
-                    diverged = true
-                }
             }
             if (gone()) return
             if (kotlin.math.abs(residual) <= MAX_TAIL_DRIFT_MS) {
                 preparedAlignedPlayer = player
                 transLog(
                     "queue pré-alignée : résidu ${residual0} -> ${residual} ms " +
-                        "($slides glissement(s))"
+                        "($reseeks recalage(s), $slides glissement(s))"
                 )
             } else {
                 transLog(
-                    "queue pré-armée non alignée : résidu ${residual0} -> ${residual} ms"
+                    "queue pré-armée non alignée : résidu ${residual0} -> ${residual} ms " +
+                        "($reseeks recalage(s), $slides glissement(s))"
                 )
             }
         } catch (_: Exception) {
             // Lecteur congédié en plein vol : la bascule repartira à froid
         }
+    }
+
+    /** Attend [ms] par pas de 20 ms ; faux si [gone] devient vrai. */
+    private suspend fun pace(ms: Long, gone: () -> Boolean): Boolean {
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        while (android.os.SystemClock.elapsedRealtime() - t0 < ms) {
+            delay(20L)
+            if (gone()) return false
+        }
+        return true
+    }
+
+    /**
+     * Attend que la queue [player] AVANCE vraiment (preuve qu'elle sort du
+     * son), [TAIL_START_TIMEOUT_MS] au plus. Faux si elle n'a pas bougé ou
+     * si [gone] devient vrai.
+     */
+    private suspend fun awaitTailAdvance(player: ExoPlayer, gone: () -> Boolean): Boolean {
+        val start = player.currentPosition
+        var waited = 0L
+        while (waited < TAIL_START_TIMEOUT_MS && player.currentPosition <= start) {
+            delay(20L)
+            waited += 20L
+            if (gone()) return false
+        }
+        return player.currentPosition > start
+    }
+
+    /**
+     * Seek de recalage COMPENSÉ de la queue : vise la position courante
+     * plus [residual] (l'écart mesuré avec le direct) plus [lagMs] (la
+     * latence d'amorçage, car la queue repart de zéro après le seek et le
+     * direct avance pendant ce temps). Sans cette compensation, chaque
+     * recalage laissait systématiquement le résidu à +latence. Attend
+     * ensuite que la queue avance ; faux si elle ne repart pas ou si
+     * [gone] devient vrai.
+     */
+    private suspend fun reseekTail(
+        player: ExoPlayer,
+        residual: Long,
+        lagMs: Long,
+        gone: () -> Boolean
+    ): Boolean {
+        val target = player.currentPosition + residual + lagMs
+        if (target <= 0) return true
+        player.seekTo(target)
+        return awaitTailAdvance(player, gone)
     }
 
     private fun releasePrepared() {
@@ -2088,15 +2147,16 @@ object PlayerCore {
                             .putLong("tailStartupLagWarm", tailStartupLagWarmMs)
                             .apply()
                     }
-                    // Recalage MUET par glissement de vitesse — la queue
-                    // est à volume zéro, rien ne s'entend. Le journal a
-                    // montré que les seeks de recalage AJOUTENT un
-                    // décrochage imprévisible (~100-250 ms de re-tampon
-                    // pendant que le direct avance) : on ne re-seek donc
-                    // qu'au-delà de 350 ms, et tout le reste se rattrape à
-                    // la vitesse (±8 %, aucun décrochage, aucune
-                    // granularité), gestes COMPRIS — le clic de raccord
-                    // s'entendait aussi sur les seeks de la barre.
+                    // Recalage MUET par seek compensé — la queue est à
+                    // volume zéro, rien ne s'entend. Plus de glissements de
+                    // vitesse ICI : la queue est en vitesse logicielle
+                    // (voir bigBufferRenderers), leur effet n'atteindrait la
+                    // sortie qu'après ~2 s, en plein fondu — et en vitesse
+                    // plateforme, la position rapportée divergeait d'une
+                    // seconde à chaque glissement (bascule sèche à chaque
+                    // transition, journal). Un seek compensé de la latence
+                    // d'amorçage ramène le résidu à quelques dizaines de
+                    // ms ; le pont proportionnel fait le reste.
                     residual = medianResidual(player)
                     val residual0 = residual
                     // BUDGET dur d'alignement : au-delà de ~3 s, on part en
@@ -2105,102 +2165,49 @@ object PlayerCore {
                     // qui reste s'effondrait à 1-2 s — l'entrant BONDISSAIT
                     // à plein volume en plein milieu de la transition. Un
                     // résidu de 20-30 ms est moins pire qu'un fondu écrasé.
-                    // Pré-alignée : une simple vérification (0,8 s, deux
-                    // glissements au plus), la fenêtre du fondu reste entière.
+                    // Pré-alignée : elle est censée être juste ; un seul
+                    // recalage si elle a dérivé au-delà du garde-fou.
                     val alignDeadline = android.os.SystemClock.elapsedRealtime() +
-                        (if (preAligned) 800L else 3_000L)
-                    if (tailAudible && kotlin.math.abs(residual) > 350L) {
-                        val target = player.currentPosition + residual
-                        if (target > 0) {
-                            player.seekTo(target)
-                            var w2 = 0L
-                            while (w2 < 500L && player.currentPosition <= target) {
-                                delay(20L)
-                                w2 += 20L
-                                if (exoTail !== player) return@launch
-                            }
-                            if (player.currentPosition <= target) {
-                                tailAudible = false
-                            } else {
-                                residual = medianResidual(player)
-                            }
-                        }
-                    }
-                    var slides = 0
-                    var diverged = false
-                    val maxSlides = if (preAligned || fromGesture) 2 else 4
+                        (if (preAligned) 1_200L else 3_000L)
+                    val reseekAbove = if (preAligned) MAX_TAIL_DRIFT_MS
+                    else RESEEK_TOLERANCE_MS
+                    var reseeks = 0
+                    val maxReseeks = if (fromGesture) 1 else 2
                     while (tailAudible &&
-                        kotlin.math.abs(residual) > SEAM_TOLERANCE_MS &&
-                        slides < maxSlides &&
+                        kotlin.math.abs(residual) > reseekAbove &&
+                        reseeks < maxReseeks &&
                         android.os.SystemClock.elapsedRealtime() < alignDeadline
                     ) {
-                        slides++
-                        // residual > 0 : la queue est en retard sur le
-                        // direct → accélérer ; < 0 → ralentir. À ±8 %,
-                        // combler r ms demande r × 12,5 ms de glissement.
-                        val speeding = residual > 0
-                        try {
-                            // Relatif à la vitesse du direct (cran de vitesse
-                            // manuel compris) : la queue doit courir à la
-                            // même allure que lui, ±8 % le temps du glissement.
-                            player.setPlaybackSpeed(
-                                exoSpeed * (if (speeding) 1.08f else 0.92f)
-                            )
-                        } catch (_: Exception) {
+                        reseeks++
+                        val ok = reseekTail(
+                            player, residual, tailStartupLagWarmMs
+                        ) { exoTail !== player }
+                        if (exoTail !== player) return@launch
+                        if (!ok) {
+                            tailAudible = false
                             break
                         }
-                        // AMORTI à ~80 % du résidu : viser 100 % faisait
-                        // dépasser la cible puis rebondir de l'autre côté
-                        // (34 -> -43 ms observé en journal), le plafond
-                        // d'itérations arrêtant l'oscillation au mauvais
-                        // moment. En sous-corrigeant, chaque passe converge.
-                        val slideMs = (kotlin.math.abs(residual) * 10L)
-                            .coerceIn(40L, 2_000L)
-                        val t0 = android.os.SystemClock.elapsedRealtime()
-                        while (android.os.SystemClock.elapsedRealtime() - t0 <
-                            slideMs
-                        ) {
-                            delay(20L)
-                            if (exoTail !== player) return@launch
-                        }
-                        try {
-                            player.setPlaybackSpeed(exoSpeed)
-                        } catch (_: Exception) {
-                        }
-                        // Position stabilisée avant la mesure suivante :
-                        // le retour à la vitesse du direct met quelques
-                        // dizaines de ms à se refléter dans la position
-                        delay(80L)
-                        if (exoTail !== player) return@launch
                         val before = residual
                         residual = medianResidual(player)
-                        // Divergence (le résidu a GROSSI pendant la passe).
-                        // Deux causes très différentes : une oscillation
-                        // (insister ferait rebondir sans fin), ou un simple
-                        // accroc de charge — la queue a calé un instant
-                        // pendant que le téléphone ramait, et le journal a
-                        // montré des raccords abandonnés à 40-70 ms pour ça
-                        // (32 -> 72 ms au premier glissement). On tolère UN
-                        // accroc : la passe suivante recorrige ; deux
-                        // divergences, là c'est une oscillation, on arrête.
-                        if (kotlin.math.abs(residual) >= kotlin.math.abs(before)) {
-                            if (diverged) break
-                            diverged = true
-                        }
+                        // Le recalage n'a rien amélioré : la dispersion des
+                        // seeks est plus grande que ce résidu, insister ne
+                        // ferait que rejouer aux dés.
+                        if (kotlin.math.abs(residual) >= kotlin.math.abs(before)) break
                     }
                     // Résidu toujours trop grand malgré les recalages —
                     // rejoue comme élision s'entendraient : arrivée franche.
                     if (tailAudible && kotlin.math.abs(residual) > MAX_TAIL_DRIFT_MS) {
                         transLog(
                             "bascule sèche : résidu ${residual0} -> ${residual} ms " +
-                                "($slides glissement(s))"
+                                "($reseeks recalage(s)" +
+                                (if (preAligned) ", pré-alignée)" else ")")
                         )
                         tailAudible = false
                     } else if (tailAudible) {
                         seamResidual = residual
                         transLog(
                             "raccord aligné : résidu ${residual0} -> ${residual} ms " +
-                                "($slides glissement(s)" +
+                                "($reseeks recalage(s)" +
                                 (if (preAligned) ", pré-alignée" else "") +
                                 (if (fromGesture) ", geste)" else ")")
                         )
