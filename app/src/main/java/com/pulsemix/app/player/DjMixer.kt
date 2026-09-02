@@ -699,10 +699,49 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         old?.stop()
     }
 
-    private var segments: List<Segment> = emptyList()
+    // Lus par le fil audio, remplacés d'un bloc par appendPlan (listes
+    // immuables, la référence seule change) : @Volatile suffit.
+    @Volatile private var segments: List<Segment> = emptyList()
     private var plan: MixEngine.MixPlan? = null
     private var mixThread: Thread? = null
-    private var phaseLengthFactor = FloatArray(0)
+    @Volatile private var phaseLengthFactor = FloatArray(0)
+
+    /** Facteur de longueur par phase (0,85 à 1,15 : phases énergiques
+     *  plus longues), même règle au start() et à l'ajout d'un plan. */
+    private fun lengthFactors(plan: MixEngine.MixPlan): FloatArray {
+        val phaseEnergy = plan.phases.map { ph ->
+            val analyzed = ph.tracks.filter { it.analyzed }
+            if (analyzed.isEmpty()) 0f
+            else analyzed.map { it.energyPeak }.sum() / analyzed.size
+        }
+        val eMin = phaseEnergy.minOrNull() ?: 0f
+        val eMax = phaseEnergy.maxOrNull() ?: 0f
+        return FloatArray(plan.phases.size) { i ->
+            val t = if (eMax > eMin) (phaseEnergy[i] - eMin) / (eMax - eMin) else 0.5f
+            0.85f + 0.30f * t
+        }
+    }
+
+    /**
+     * Greffe [plan] à la suite du set EN COURS (enchaînement en fondu d'un
+     * set au suivant) : ses passages jouables rejoignent la liste, avec
+     * des indices de phase qui continuent ceux du set. Le fil audio voit
+     * la liste rallongée au bloc suivant et enchaîne le dernier deck sur
+     * le premier nouveau par une jonction ordinaire ; l'alerte de fin de
+     * set en cours est levée par le moteur (-1). @return passages ajoutés.
+     */
+    fun appendPlan(plan: MixEngine.MixPlan): Int {
+        if (!running) return 0
+        val base = phaseLengthFactor.size
+        val fresh = plan.phases.flatMapIndexed { pi, ph ->
+            ph.tracks.filter { it.analyzed && it.bpm > 0f }.map { Segment(it, base + pi) }
+        }
+        if (fresh.isEmpty()) return 0
+        phaseLengthFactor = phaseLengthFactor + lengthFactors(plan)
+        segments = segments + fresh
+        this.plan = plan
+        return fresh.size
+    }
     // Dernière technique utilisée : évite deux fois de suite la même quand
     // plusieurs conviennent (variété façon DJ)
     private var lastFadeKind = -1
@@ -788,17 +827,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         }
         // Modulation par phase : segments un peu plus longs dans les phases
         // énergiques (peak), un peu plus courts dans les phases calmes.
-        val phaseEnergy = plan.phases.map { ph ->
-            val analyzed = ph.tracks.filter { it.analyzed }
-            if (analyzed.isEmpty()) 0f
-            else analyzed.map { it.energyPeak }.sum() / analyzed.size
-        }
-        val eMin = phaseEnergy.minOrNull() ?: 0f
-        val eMax = phaseEnergy.maxOrNull() ?: 0f
-        phaseLengthFactor = FloatArray(plan.phases.size) { i ->
-            val t = if (eMax > eMin) (phaseEnergy[i] - eMin) / (eMax - eMin) else 0.5f
-            0.85f + 0.30f * t
-        }
+        phaseLengthFactor = lengthFactors(plan)
         running = true
         paused = false
         pendingJump = -1

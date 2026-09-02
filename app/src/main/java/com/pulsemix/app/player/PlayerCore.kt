@@ -3459,14 +3459,40 @@ object PlayerCore {
                     val all = store.tracks.value
                     nextMixPlan(all, spec)
                 }
+                var next: MixEngine.MixPlan? = null
+                var chained = false
                 for (n in seconds.coerceIn(1, 30) downTo 1) {
                     autoNextIn.value = n
+                    // Dès que le plan suivant est prêt et que la lecture
+                    // tourne encore : ENCHAÎNER EN FONDU — les morceaux
+                    // du plan suivant rejoignent la file (mix) ou le set
+                    // (DJ), et le fondu croisé habituel fait la jonction.
+                    // Plus de fin sèche ni de départ franc entre deux mix.
+                    if (next == null && building.isCompleted) {
+                        val built = try {
+                            building.await()
+                        } catch (_: Exception) {
+                            null
+                        }
+                        next = built
+                        if (built != null) {
+                            chained = withContext(Dispatchers.Main) { chainNow(spec, built) }
+                            if (chained) break
+                        }
+                    }
                     delay(1_000)
                 }
-                val next = try {
-                    building.await()
-                } catch (_: Exception) {
-                    null
+                if (chained) {
+                    autoNextIn.value = null
+                    autoJob = null
+                    return@launch
+                }
+                if (next == null) {
+                    next = try {
+                        building.await()
+                    } catch (_: Exception) {
+                        null
+                    }
                 }
                 autoNextIn.value = null
                 // Lancer la lecture appelle clearAutoNext() : on se retire
@@ -3503,6 +3529,77 @@ object PlayerCore {
                 }
             }
         }
+    }
+
+    /**
+     * Enchaînement EN FONDU : greffe le plan suivant sur la lecture en
+     * cours, pendant que le dernier morceau joue encore, pour que la
+     * jonction soit un fondu croisé ordinaire au lieu d'une fin sèche
+     * suivie d'un départ franc (limite L7 de l'état des lieux).
+     *
+     *  - mix : les morceaux du plan rejoignent la file ExoPlayer (ceux déjà
+     *    dans la file sont ignorés — chaque chanson y figure une fois) ;
+     *    les déclencheurs de fondu sont reprogrammés, et comme la fin est
+     *    proche, le fondu part tout de suite ;
+     *  - DJ : les passages rejoignent le set en cours (DjMixer.appendPlan) ;
+     *    le moteur enchaîne le dernier deck sur le premier nouveau par une
+     *    jonction battue, comme entre deux passages.
+     *
+     * Le plan affiché devient le nouveau, ses phases s'ajoutent aux
+     * anciennes (indices de phase continus, le moteur DJ compte de même).
+     * @return false si rien n'a pu être greffé (fin déjà passée, lecture
+     *   arrêtée, aucun morceau nouveau) : l'appelant relance alors comme
+     *   avant, franchement.
+     */
+    private fun chainNow(spec: MixSpec, next: MixEngine.MixPlan): Boolean {
+        val old = plan ?: return false
+        if (!isPlaying.value) return false
+        if (spec.dj) {
+            if (mode.value != PlayerMode.DJ || !mixer.isRunning) return false
+            val added = mixer.appendPlan(next)
+            if (added == 0) return false
+            val phases = next.phases.filter { it.tracks.isNotEmpty() }
+            plan = MixEngine.MixPlan(next.id, next.name, next.description, old.phases + phases)
+            planName.value = next.name + " (DJ)"
+            phaseNames.value = plan?.phases?.map { it.name } ?: emptyList()
+            queueTracks = queueTracks + phases.flatMap { it.tracks }
+            transLog("enchaînement en fondu (DJ) : $added passage(s) ajoutés au set — « ${next.name} »")
+            persistState()
+            return true
+        }
+        if (mode.value != PlayerMode.MIX) return false
+        val d = exo.duration
+        if (d <= 0 || exo.hasNextMediaItem()) return false
+        // Il faut encore de quoi fondre : sous le plancher, ExoPlayer
+        // enchaînera sans blanc, mais sans fondu — on n'y gagne rien.
+        if (musicEndFor(d) - exo.currentPosition < MIN_AUTO_CROSSFADE_REMAIN_MS + 500L) return false
+        val known = queueTracks.map { it.uri }.toHashSet()
+        val phases = next.phases
+            .map { ph -> MixEngine.Phase(ph.name, ph.tracks.filter { it.uri !in known }) }
+            .filter { it.tracks.isNotEmpty() }
+        val newTracks = phases.flatMap { it.tracks }
+        if (newTracks.isEmpty()) return false
+        var idx = queueTracks.size
+        val newStarts = phases.map { ph ->
+            val s = idx
+            idx += ph.tracks.size
+            s
+        }
+        exo.addMediaItems(newTracks.map { mediaItem(it) })
+        queueTracks = queueTracks + newTracks
+        phaseStartIndices = phaseStartIndices + newStarts
+        plan = MixEngine.MixPlan(next.id, next.name, next.description, old.phases + phases)
+        planName.value = next.name
+        phaseNames.value = plan?.phases?.map { it.name } ?: emptyList()
+        // Le morceau en cours n'a pas encore fondu : les déclencheurs se
+        // reposent sur la file rallongée (le point de fondu est sans doute
+        // déjà dépassé : tir immédiat).
+        crossfadedFrom = null
+        scheduleCrossfadeMessages()
+        updateFromExo()
+        transLog("enchaînement en fondu (mix) : ${newTracks.size} morceau(x) ajoutés — « ${next.name} »")
+        persistState()
+        return true
     }
 
     /**
