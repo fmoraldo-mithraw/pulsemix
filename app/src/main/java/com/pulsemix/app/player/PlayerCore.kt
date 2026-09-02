@@ -1153,7 +1153,7 @@ object PlayerCore {
         // en place pendant toute la bascule, et le déclencheur de fin exige
         // justement qu'il n'y en ait aucune.
         handOffTail(
-            track, exo.currentPosition, CROSSFADE_MS, GESTURE_WATCHDOG_MS,
+            track, exo.currentPosition, GESTURE_FADE_MS, GESTURE_WATCHDOG_MS,
             fromGesture = true, go
         )
     }
@@ -1312,7 +1312,9 @@ object PlayerCore {
     private fun consumePendingBeforeGesture() {
         val pending = pendingSwitch
         pendingSwitch = null
-        stopTail()
+        // Geste : la queue en cours s'efface en douceur (150 ms) au lieu
+        // d'être coupée net — l'entrant, lui, remonte déjà en 250 ms.
+        stopTail(gentle = true)
         if (pending != null && pending.fromGesture) quickSwitch(pending.go)
     }
 
@@ -1335,8 +1337,15 @@ object PlayerCore {
     /** Durée d'un fondu croisé entre deux morceaux (réglage utilisateur). */
     private val CROSSFADE_MS: Long get() = crossfadeSeconds.value * 1_000L
 
-    /** Durée du fondu croisé lors d'un déplacement sur la barre. */
-    private val SEEK_CROSSFADE_MS: Long get() = crossfadeSeconds.value * 1_000L
+    /**
+     * Durées des fondus de GESTE, plus courtes que l'enchaînement de fin :
+     * sur « suivant », l'utilisateur attend le morceau demandé et n'a que
+     * faire de dix secondes de l'ancien ; sur un déplacement, dix secondes
+     * de deux passages du MÊME morceau superposés sonnaient faux. Bornées
+     * par le réglage (un fondu de 3 s reste à 3 s).
+     */
+    private val GESTURE_FADE_MS: Long get() = minOf(CROSSFADE_MS, 2_500L)
+    private val SEEK_CROSSFADE_MS: Long get() = minOf(CROSSFADE_MS, 1_500L)
 
     /**
      * Marge de déclenchement : ouvrir le fichier et remplir son tampon
@@ -1836,6 +1845,8 @@ object PlayerCore {
             }
             autoScope.launch(Dispatchers.Main) {
                 var eff = fadeMs
+                // Résidu final du raccord (ms), pour dimensionner le pont
+                var seamResidual = 0L
                 // La queue a-t-elle vraiment sorti du son ? Tant qu'on n'en
                 // est pas sûr, couper le lecteur principal ouvrirait un blanc.
                 var tailAudible = false
@@ -1998,6 +2009,7 @@ object PlayerCore {
                         )
                         tailAudible = false
                     } else if (tailAudible) {
+                        seamResidual = residual
                         transLog(
                             "raccord aligné : résidu ${residual0} -> ${residual} ms " +
                                 "($slides glissement(s)" +
@@ -2087,7 +2099,11 @@ object PlayerCore {
                 // Pont calé sur l'horloge réelle, comme les fondus : des
                 // delay() étirés ne doivent pas prolonger le tuilage.
                 val bridge0 = android.os.SystemClock.elapsedRealtime()
-                val bridgeDur = (BRIDGE_STEPS * BRIDGE_STEP_MS).toFloat()
+                // Pont PROPORTIONNEL au résidu : 60 ms noient un accroc de
+                // 20 ms, mais floutent la phase pour rien quand le raccord
+                // est à 0 ms. 20 ms + 3 × |résidu|, bornés à l'ancien 60 ms.
+                val bridgeDur = (20L + 3L * kotlin.math.abs(seamResidual))
+                    .coerceIn(20L, BRIDGE_STEPS * BRIDGE_STEP_MS).toFloat()
                 while (true) {
                     val x = ((android.os.SystemClock.elapsedRealtime() - bridge0) /
                         bridgeDur).coerceAtMost(1f)
@@ -2216,7 +2232,16 @@ object PlayerCore {
         r.run()
     }
 
-    private fun releaseTail() {
+    /** Durée de l'effacement d'une queue congédiée par un geste. */
+    private const val GENTLE_TAIL_MS = 150L
+
+    /**
+     * @param gentle geste de l'utilisateur : la queue encore audible
+     *   s'efface en [GENTLE_TAIL_MS] avant d'être arrêtée, au lieu d'être
+     *   coupée net (L3 de l'état des lieux). Le champ est rendu tout de
+     *   suite dans les deux cas : personne ne reprend ce lecteur.
+     */
+    private fun releaseTail(gentle: Boolean = false) {
         val eq = eqTail
         eqTail = null
         val p = exoTail
@@ -2228,12 +2253,42 @@ object PlayerCore {
             }
             return
         }
-        // Silence immédiat — le champ est déjà rendu, personne ne reprendra
-        // ce lecteur — puis destruction différée, hors de l'instant sensible.
-        try {
-            p.volume = 0f
-            p.stop()
+        val v0 = try {
+            p.volume
         } catch (_: Exception) {
+            0f
+        }
+        if (gentle && v0 > 0.02f) {
+            // Effacement court sur l'horloge réelle, puis arrêt : la
+            // destruction différée ci-dessous ne part qu'après.
+            autoScope.launch(Dispatchers.Main) {
+                val t0 = android.os.SystemClock.elapsedRealtime()
+                while (true) {
+                    val x = ((android.os.SystemClock.elapsedRealtime() - t0) /
+                        GENTLE_TAIL_MS.toFloat()).coerceAtMost(1f)
+                    try {
+                        p.volume = v0 * (1f - x)
+                    } catch (_: Exception) {
+                        break
+                    }
+                    if (x >= 1f) break
+                    delay(15L)
+                }
+                try {
+                    p.volume = 0f
+                    p.stop()
+                } catch (_: Exception) {
+                }
+            }
+        } else {
+            // Silence immédiat — le champ est déjà rendu, personne ne
+            // reprendra ce lecteur — puis destruction différée, hors de
+            // l'instant sensible.
+            try {
+                p.volume = 0f
+                p.stop()
+            } catch (_: Exception) {
+            }
         }
         // Une destruction différée précédente encore en attente part tout de
         // suite : un seul lecteur en sursis à la fois, pas de fuite quand
@@ -2253,7 +2308,11 @@ object PlayerCore {
             }
         }
         deferredTailRelease = r
-        handler.postDelayed(r, TAIL_RELEASE_DELAY_MS)
+        // Après l'effacement doux, s'il y en a un : démonter un lecteur
+        // encore en train de descendre couperait net.
+        handler.postDelayed(
+            r, TAIL_RELEASE_DELAY_MS + (if (gentle) GENTLE_TAIL_MS else 0L)
+        )
     }
 
     /** Monte le lecteur principal depuis le silence, en equal-power. */
@@ -2977,7 +3036,7 @@ object PlayerCore {
      * morceau suivant demandé), un fondu ne doit jamais survivre au geste
      * qui le rend caduc.
      */
-    fun stopTail() {
+    fun stopTail(gentle: Boolean = false) {
         // Une bascule en attente devient caduque : l'appelant (nouveau mix,
         // nouvelle lecture…) refait la file lui-même, l'appliquer sauterait
         // dans une file qui n'existe déjà plus. La queue pré-armée visait le
@@ -2988,7 +3047,7 @@ object PlayerCore {
         releasePrepared()
         tailJob?.cancel()
         tailJob = null
-        releaseTail()
+        releaseTail(gentle)
         seekJob?.cancel()
         seekJob = null
         if (fadeGain != 1f) {
