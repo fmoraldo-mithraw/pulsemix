@@ -118,24 +118,41 @@ la fin approche : le ticker le fait dès que le reste du morceau passe sous
 au point `prearmAt` (6,5 s avant le fondu) sert de filet si le ticker a
 été retardé écran éteint.
 
-**Elle est alors lancée muette et alignée sur le direct** (`alignPrepared`) :
-seek compensé de la latence d'amorçage mesurée sur l'appareil
-(`tailStartupLagWarmMs`), attente du premier son, résidu médian ; au-delà
-de `RESEEK_TOLERANCE_MS` (60 ms), un **seek de recalage compensé** (position
-courante + résidu + latence d'amorçage — sans cette compensation, chaque
-recalage laissait le résidu à +latence) ; puis des **glissements de vitesse
-lents** : ±8 % pendant ~11 × |résidu| ms, et surtout une attente de ~2,4 s
-(traversée du tampon) avant de re-mesurer — c'est le seul endroit où l'on a
-ce temps, personne n'attend. Budget 10 s, deux glissements au plus. À
-l'arrivée, la queue *tourne*, muette, alignée à quelques millisecondes ;
-les deux lecteurs partagent la même horloge audio à la même vitesse, elle le
-reste. Journal : `queue pré-alignée : résidu A -> B ms (N recalage(s),
-M glissement(s))`.
+**Elle est alors lancée muette et alignée sur le direct** (`alignPrepared`),
+et le pré-armement a lieu **~30 s avant le fondu** (`PREARM_AHEAD_MS`) :
+c'est le temps qu'il faut pour *lire juste*.
+
+**Lecture précoce, lecture stabilisée.** media3 estime la position d'un
+AudioTrack fraîchement (re)démarré sur une première horodate qu'il ne
+rafraîchit que 10 s plus tard (puis lisse 1 s). Sur une sortie Bluetooth,
+cette première estimation est en avance d'environ la latence du casque :
+journal 11, une queue « alignée à −3 ms » juste après son seek se lisait à
++356 ms treize secondes plus tard sans que rien n'ait bougé — et c'est la
+lecture tardive qui est juste. Toute lecture faite moins de
+`TAIL_SETTLE_MS` (12 s) après le dernier seek ou changement de vitesse de la
+queue est donc **précoce** : on lui ajoute le **biais de lecture** appris
+(`tailReadBiasMs`, par sortie Bluetooth / autre, persisté). Avant cette
+correction, chaque raccord « aligné » sur Bluetooth laissait la queue
+physiquement ~340 ms derrière le direct : le petit accroc entendu à
+chaque transition.
+
+Procédure : seek compensé de la latence d'amorçage (`tailStartupLagWarmMs`),
+attente du premier son, résidu précoce ; attente de 12 s, résidu
+**stabilisé** (le vrai) — l'écart entre les deux est le biais appris, et la
+latence d'amorçage s'apprend sur le vrai ; puis **une** correction : seek de
+recalage compensé au-delà de `RESEEK_TOLERANCE_MS` (60 ms, dispersion
+±40 ms), sinon glissement de vitesse ±8 % au-delà de `SEAM_TOLERANCE_MS`
+(12 ms, précis à quelques ms ; la queue est en vitesse logicielle, la
+correction sort après le tampon) ; puis nouvelle stabilisation si le fondu
+n'est pas déjà là, sinon lecture précoce corrigée (« estimé »). Journal :
+`queue pré-alignée : résidu A -> B ms (N recalage(s), M glissement(s),
+biais X ms[, estimé])`.
 
 À l'heure du fondu, la queue pré-alignée est prélevée telle quelle (pas de
-seek — il la désalignerait) : **vérification** rapide (un seul seek de
-recalage, et seulement si elle a dérivé au-delà de `MAX_TAIL_DRIFT_MS`)
-puis bascule. Le fondu garde ainsi **toute sa fenêtre** ; avant,
+seek — il la désalignerait) : **vérification** (lecture stabilisée si sa
+dernière manœuvre date de plus de 12 s, sinon corrigée du biais ; un seul
+seek de recalage, et seulement si elle a dérivé au-delà de
+`MAX_TAIL_DRIFT_MS`) puis bascule. Le fondu garde ainsi **toute sa fenêtre** ; avant,
 l'alignement se faisait à l'heure du fondu avec 3 s de budget pris sur le
 fondu lui-même. Un geste (suivant/précédent/seek) peut réutiliser la queue
 pré-alignée s'il vise le même morceau.
@@ -157,7 +174,9 @@ déroule à l'heure du fondu, avec budget :
 2. on attend qu'elle **avance vraiment** (1,5 s maximum, sinon bascule
    sèche) ;
 3. **résidu** direct − queue (médiane de 5 lectures espacées de 10 ms :
-   positif = un bout rejouerait, négatif = un bout serait élidé) ;
+   positif = un bout rejouerait, négatif = un bout serait élidé), lecture
+   précoce **corrigée du biais** appris (§2.3) — ici on n'a pas le temps
+   d'attendre la stabilisation ;
 4. au-delà de `RESEEK_TOLERANCE_MS` (60 ms) : **seek de recalage
    compensé** (position courante + résidu + latence d'amorçage à chaud),
    jusqu'à 2 passes (1 sur un geste), arrêt dès qu'une passe n'améliore
@@ -172,7 +191,7 @@ déroule à l'heure du fondu, avec budget :
    pas besoin du floutage de phase qu'exige un accroc de 20 ms.
 
 Le journal trace chaque raccord : `raccord aligné : résidu A -> B ms
-(N recalage(s)[, pré-alignée][, geste])`.
+(N recalage(s)[, pré-alignée][, geste][, estimé, biais X ms])`.
 
 ### 2.5 Les deux fondus et l'échange de basses
 
@@ -491,10 +510,10 @@ moteur repartira **au début de la phase** au prochain « lecture ».
 
 - `fondu déclenché (message|ticker filet), reste X ms [(fin musicale, N ms
   de silence évités)]` ;
-- `queue pré-alignée : résidu A -> B ms (N recalage(s), M glissement(s))`
-  / `queue pré-armée non alignée : …` ;
-- `raccord aligné : résidu A -> B ms (N recalage(s)[, pré-alignée][, geste])`
-  / `bascule sèche : …` ;
+- `queue pré-alignée : résidu A -> B ms (N recalage(s), M glissement(s),
+  biais X ms[, estimé])` / `queue pré-armée non alignée : …` ;
+- `raccord aligné : résidu A -> B ms (N recalage(s)[, pré-alignée][, geste]
+  [, estimé, biais X ms])` / `bascule sèche : …` ;
 - `sous-alimentation audio (principal|queue) : tampon X ms, Y ms sans
   données` ;
 - `enchaînement en fondu (mix|DJ) : N morceau(x)/passage(s) ajoutés` ;
@@ -547,6 +566,7 @@ un geste, enchaînement des mix en fondu.)
 | A5 | Chemin de seek direct mort qui contournait le fondu | supprimé |
 | A6 | Répétition : réouverture sur le fil audio | documenté (L11) |
 | A7 | Journal 9 : bascule sèche à chaque fondu — la vitesse plateforme de la queue faisait diverger la position rapportée d'~1 s à chaque glissement | corrigé (queue en vitesse logicielle, recalages par seek compensé, glissements lents au pré-armement) |
+| A8 | Journal 11 : petit accroc à chaque raccord sur Bluetooth — la position de la queue lue juste après son seek est en avance de ~340 ms (première horodate media3), le raccord « aligné » ne l'était pas | corrigé (pré-armement 30 s avant, lecture stabilisée à 12 s, biais de lecture appris par sortie, §2.3) |
 
 ## 8. Améliorations issues de la seconde relecture (« fonctionnements pas optimaux »)
 

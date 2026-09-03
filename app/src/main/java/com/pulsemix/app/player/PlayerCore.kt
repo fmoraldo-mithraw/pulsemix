@@ -362,9 +362,12 @@ object PlayerCore {
         // La latence d'amorçage est propre à l'appareil : la retenir entre
         // les sessions rend le PREMIER fondu aussi propre que les suivants,
         // au lieu de repartir d'une valeur typique à recalibrer.
-        tailStartupLagMs = prefs.getLong("tailStartupLag", 120L).coerceIn(0L, 400L)
+        tailStartupLagMs = prefs.getLong("tailStartupLag", 120L)
+            .coerceIn(0L, MAX_STARTUP_LAG_MS)
         tailStartupLagWarmMs =
-            prefs.getLong("tailStartupLagWarm", 40L).coerceIn(0L, 400L)
+            prefs.getLong("tailStartupLagWarm", 40L).coerceIn(0L, MAX_STARTUP_LAG_MS)
+        tailReadBiasBt = prefs.getLong("tailReadBiasBt", 0L).coerceIn(-1_500L, 1_500L)
+        tailReadBiasOther = prefs.getLong("tailReadBiasOther", 0L).coerceIn(-1_500L, 1_500L)
         repeatMode.value = prefs.getInt("repeatMode", 0).coerceIn(0, 2)
         eqBands.value = Triple(
             prefs.getFloat("eqBass", 0f),
@@ -1415,7 +1418,7 @@ object PlayerCore {
      * l'ouverture du fichier se fait pendant cette marge, et la bascule
      * n'a plus rien à attendre.
      */
-    private const val PREARM_AHEAD_MS = 13_000L
+    private const val PREARM_AHEAD_MS = 30_000L
 
     /**
      * Avance du pré-déclenchement de l'enchaînement automatique sur la fin
@@ -1487,10 +1490,23 @@ object PlayerCore {
      *  sortie. */
     private const val TAIL_BUFFER_MS = 2_000L
 
-    /** Attente, après un glissement logiciel, avant que sa correction
-     *  soit intégralement sortie et mesurable : traversée du tampon plus
-     *  une marge. */
-    private const val SLIDE_SETTLE_MS = TAIL_BUFFER_MS + 400L
+    /**
+     * Délai après un seek ou un changement de vitesse de la queue avant
+     * qu'une lecture de sa position soit FIABLE. media3 estime la position
+     * d'un AudioTrack fraîchement (re)démarré sur une première horodate
+     * qu'il ne rafraîchit que 10 s plus tard (puis lisse 1 s) ; sur une
+     * sortie Bluetooth, cette première estimation est en avance d'environ
+     * la latence du casque. Journal 11 : une queue « alignée à −3 ms »
+     * juste après son seek se lisait à +356 ms treize secondes plus tard,
+     * sans que rien n'ait bougé — et c'est CETTE lecture-là qui est juste.
+     * Toute lecture plus tôt est corrigée du biais appris
+     * ([tailReadBiasMs]) ; le pré-armement, lui, attend ce délai.
+     */
+    private const val TAIL_SETTLE_MS = 12_000L
+
+    /** Plafond des latences d'amorçage apprises. Un casque Bluetooth
+     *  ajoute plusieurs centaines de ms à l'amorçage d'un AudioTrack. */
+    private const val MAX_STARTUP_LAG_MS = 1_000L
 
     /**
      * Latence d'amorçage de la sortie audio du second lecteur, mesurée sur
@@ -1510,6 +1526,60 @@ object PlayerCore {
      *  départs froids, surcompensait les départs chauds et ÉLIDAIT
      *  ~80-120 ms au raccord, audible comme un saut de disque. */
     @Volatile private var tailStartupLagWarmMs = 40L
+
+    /**
+     * Biais de lecture PRÉCOCE de la position de la queue (ms) : écart
+     * entre sa position lue une fois stabilisée ([TAIL_SETTLE_MS] après
+     * son seek) et sa position lue juste après ce seek, à alignement
+     * physique égal. Positif : la lecture précoce est en avance (Bluetooth,
+     * ~300-400 ms au journal 11). Un résidu lu tôt vaut donc
+     * « résidu + biais ». Appris au pré-armement (les deux lectures y
+     * sont possibles), par sortie : casque Bluetooth ou autre — ce biais
+     * est la latence de la route, il change avec elle. Persisté.
+     */
+    @Volatile private var tailReadBiasBt = 0L
+    @Volatile private var tailReadBiasOther = 0L
+
+    private fun routeIsBluetooth(): Boolean = try {
+        @Suppress("DEPRECATION")
+        (appContext.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager)
+            ?.isBluetoothA2dpOn == true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun tailReadBiasMs(): Long =
+        if (routeIsBluetooth()) tailReadBiasBt else tailReadBiasOther
+
+    /** Moyenne glissante rapide (moitié/moitié) : une route qui change
+     *  doit être rattrapée en deux transitions. */
+    private fun learnTailReadBias(sample: Long) {
+        val v = sample.coerceIn(-1_500L, 1_500L)
+        val bt = routeIsBluetooth()
+        if (bt) tailReadBiasBt = (tailReadBiasBt + v) / 2
+        else tailReadBiasOther = (tailReadBiasOther + v) / 2
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit()
+            .putLong(if (bt) "tailReadBiasBt" else "tailReadBiasOther",
+                if (bt) tailReadBiasBt else tailReadBiasOther)
+            .apply()
+    }
+
+    /** Apprentissage de la latence d'amorçage (chaud/froid) à partir du
+     *  résidu VRAI observé après un seek compensé de [lag0]. */
+    private fun learnStartupLag(warm: Boolean, trueResidual: Long, lag0: Long) {
+        val actual = (trueResidual + lag0).coerceIn(0L, MAX_STARTUP_LAG_MS)
+        if (warm) {
+            tailStartupLagWarmMs = (tailStartupLagWarmMs * 7 + actual * 3) / 10
+        } else {
+            tailStartupLagMs = (tailStartupLagMs * 7 + actual * 3) / 10
+        }
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit()
+            .putLong("tailStartupLag", tailStartupLagMs)
+            .putLong("tailStartupLagWarm", tailStartupLagWarmMs)
+            .apply()
+    }
 
     /** Écart direct-queue MÉDIAN sur cinq lectures espacées de 10 ms :
      *  les positions interpolées gigotent de quelques ms, une lecture
@@ -1642,6 +1712,11 @@ object PlayerCore {
     private var preparedEq: android.media.audiofx.Equalizer? = null
     private var alignJob: Job? = null
 
+    /** Instant (elapsedRealtime) du dernier seek ou changement de vitesse
+     *  de la queue pré-armée : sa position n'est fiable que
+     *  [TAIL_SETTLE_MS] plus tard (voir TAIL_SETTLE_MS). */
+    private var preparedDisturbedAt = 0L
+
     /** Ouvre la queue d'avance pour le morceau en cours (fin approchante). */
     private fun prepareTailAhead() {
         val track = currentTrack.value ?: return
@@ -1676,18 +1751,26 @@ object PlayerCore {
     }
 
     /**
-     * Recale la queue pré-armée [player] sur le direct, en muet : seek
-     * compensé de la latence d'amorçage, attente du premier son, résidu
-     * médian ; puis un seek de recalage si le résidu dépasse
-     * [RESEEK_TOLERANCE_MS], et enfin des **glissements de vitesse
-     * LENTS** : la queue est en vitesse logicielle (voir
-     * bigBufferRenderers), la correction d'un glissement n'atteint la
-     * sortie qu'après la traversée du tampon (~2 s) — on attend donc
-     * [SLIDE_SETTLE_MS] avant de re-mesurer, ce qu'on peut se permettre
-     * ici : personne n'attend, la queue est ouverte ~25 s avant le fondu.
-     * Budget 10 s, deux glissements au plus. À l'arrivée, la queue TOURNE,
-     * muette, alignée : [preparedAlignedPlayer] la désigne. Abandonné sans
-     * bruit si la queue est congédiée entre-temps.
+     * Recale la queue pré-armée [player] sur le direct, en muet. Ouverte
+     * ~30 s avant le fondu ([PREARM_AHEAD_MS]) : le temps de LIRE JUSTE.
+     *
+     * 1. seek compensé de la latence d'amorçage, attente du premier son,
+     *    résidu précoce ;
+     * 2. attente de [TAIL_SETTLE_MS] : la position de la queue n'est fiable
+     *    qu'alors (voir TAIL_SETTLE_MS) ; résidu stabilisé = résidu VRAI.
+     *    L'écart entre les deux lectures est le biais de lecture précoce,
+     *    appris pour les fois où l'on n'a pas le temps d'attendre
+     *    ([tailReadBiasMs]) ; la latence d'amorçage s'apprend sur le vrai ;
+     * 3. UNE correction : seek de recalage compensé au-delà de
+     *    [RESEEK_TOLERANCE_MS] (dispersion ±40 ms), sinon glissement de
+     *    vitesse ±8 % au-delà de [SEAM_TOLERANCE_MS] (précis à quelques
+     *    ms) — la queue est en vitesse logicielle, la correction sort après
+     *    le tampon ; puis nouvelle attente de stabilisation si le temps le
+     *    permet, et lecture finale.
+     * À l'arrivée, la queue TOURNE, muette, alignée : [preparedAlignedPlayer]
+     * la désigne, [preparedDisturbedAt] date sa dernière manœuvre — la
+     * bascule sait si sa propre lecture sera stabilisée ou à corriger du
+     * biais. Abandonné sans bruit si la queue est congédiée entre-temps.
      */
     private suspend fun alignPrepared(player: ExoPlayer) {
         fun gone() = preparedTail !== player
@@ -1704,48 +1787,65 @@ object PlayerCore {
             // Vitesse du direct posée AVANT le départ : en logiciel, elle
             // s'applique dès la première trame écrite dans le tampon.
             player.setPlaybackSpeed(exoSpeed)
-            val deadline = android.os.SystemClock.elapsedRealtime() + 10_000L
-            player.seekTo(exo.currentPosition + tailStartupLagWarmMs)
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            // Le fondu tombe ~PREARM_AHEAD_MS après l'ouverture (moins si le
+            // filet de pré-armement a rattrapé un ticker en retard) : au-delà,
+            // on livre la queue telle quelle.
+            val deadline = t0 + PREARM_AHEAD_MS - 3_000L
+            val lag0 = tailStartupLagWarmMs
+            player.seekTo(exo.currentPosition + lag0)
             player.play()
+            preparedDisturbedAt = t0
             if (!awaitTailAdvance(player, ::gone)) return
+            val early = medianResidual(player)
+            // Lecture stabilisée : la seule qui vaille
+            if (!pace((t0 + TAIL_SETTLE_MS) - android.os.SystemClock.elapsedRealtime(), ::gone)) return
             var residual = medianResidual(player)
             val residual0 = residual
+            val biasSample = residual - early
+            learnTailReadBias(biasSample)
+            learnStartupLag(warm = true, trueResidual = residual, lag0 = lag0)
             var reseeks = 0
-            // Résidu trop grand pour un glissement : un seek de recalage
-            // compensé (la queue redémarre avec sa latence d'amorçage).
+            var slides = 0
+            var settled = true
             if (kotlin.math.abs(residual) > RESEEK_TOLERANCE_MS) {
                 reseeks++
+                preparedDisturbedAt = android.os.SystemClock.elapsedRealtime()
                 if (!reseekTail(player, residual, tailStartupLagWarmMs, ::gone)) return
-                residual = medianResidual(player)
-            }
-            var slides = 0
-            while (kotlin.math.abs(residual) > SEAM_TOLERANCE_MS && slides < 2) {
-                // Durée du glissement à ±8 % : ~90 % du résidu (sous-corrigé,
-                // pour ne pas rebondir de l'autre côté sur la mesure).
-                val slideMs = (kotlin.math.abs(residual) * 11L).coerceIn(40L, 2_000L)
-                if (android.os.SystemClock.elapsedRealtime() + slideMs + SLIDE_SETTLE_MS >
-                    deadline
-                ) break
+                settled = false
+            } else if (kotlin.math.abs(residual) > SEAM_TOLERANCE_MS) {
                 slides++
-                val speeding = residual > 0
-                player.setPlaybackSpeed(exoSpeed * (if (speeding) 1.08f else 0.92f))
+                // ±8 % pendant ~11 × |résidu| ms : ~90 % du résidu, sous-
+                // corrigé pour ne pas rebondir de l'autre côté.
+                val slideMs = (kotlin.math.abs(residual) * 11L).coerceIn(40L, 2_000L)
+                player.setPlaybackSpeed(exoSpeed * (if (residual > 0) 1.08f else 0.92f))
                 if (!pace(slideMs, ::gone)) return
                 player.setPlaybackSpeed(exoSpeed)
-                // La correction est dans le tampon : elle sort dans ~2 s
-                if (!pace(SLIDE_SETTLE_MS, ::gone)) return
-                residual = medianResidual(player)
+                preparedDisturbedAt = android.os.SystemClock.elapsedRealtime()
+                settled = false
+            }
+            if (!settled) {
+                // Re-stabilisation si le fondu n'est pas déjà là ; sinon
+                // lecture précoce corrigée du biais tout juste appris.
+                val settleAt = preparedDisturbedAt + TAIL_SETTLE_MS
+                if (settleAt <= deadline) {
+                    if (!pace(settleAt - android.os.SystemClock.elapsedRealtime(), ::gone)) return
+                    residual = medianResidual(player)
+                    settled = true
+                } else {
+                    if (!pace(300L, ::gone)) return
+                    residual = medianResidual(player) + tailReadBiasMs()
+                }
             }
             if (gone()) return
+            val detail = "($reseeks recalage(s), $slides glissement(s), " +
+                "biais ${biasSample} ms" + (if (settled) ")" else ", estimé)")
             if (kotlin.math.abs(residual) <= MAX_TAIL_DRIFT_MS) {
                 preparedAlignedPlayer = player
-                transLog(
-                    "queue pré-alignée : résidu ${residual0} -> ${residual} ms " +
-                        "($reseeks recalage(s), $slides glissement(s))"
-                )
+                transLog("queue pré-alignée : résidu ${residual0} -> ${residual} ms $detail")
             } else {
                 transLog(
-                    "queue pré-armée non alignée : résidu ${residual0} -> ${residual} ms " +
-                        "($reseeks recalage(s), $slides glissement(s))"
+                    "queue pré-armée non alignée : résidu ${residual0} -> ${residual} ms $detail"
                 )
             }
         } catch (_: Exception) {
@@ -1804,6 +1904,7 @@ object PlayerCore {
         alignJob?.cancel()
         alignJob = null
         preparedAlignedPlayer = null
+        preparedDisturbedAt = 0L
         val eq = preparedEq
         preparedEq = null
         try {
@@ -1983,11 +2084,13 @@ object PlayerCore {
         // Déjà alignée et en marche (alignPrepared) : aucune manœuvre à
         // refaire, la bascule sera immédiate. Son égaliseur suit.
         val preAligned = prearmed != null && preparedAlignedPlayer === prearmed
+        val prearmDisturbedAt = preparedDisturbedAt
         val takenEq = if (prearmed != null) preparedEq else null
         if (prearmed != null) {
             alignJob?.cancel()
             alignJob = null
             preparedAlignedPlayer = null
+            preparedDisturbedAt = 0L
             preparedEq = null
             preparedTail = null
             preparedUri = null
@@ -2128,39 +2231,34 @@ object PlayerCore {
                     }
                     tailAudible = player.currentPosition > start
                     // Écart résiduel entre le direct et la queue. Positif :
-                    // un bout rejoue ; négatif : un bout est élidé.
-                    var residual = exo.currentPosition - player.currentPosition
+                    // un bout rejoue ; négatif : un bout est élidé. Une
+                    // lecture faite moins de TAIL_SETTLE_MS après le dernier
+                    // seek de la queue est PRÉCOCE : corrigée du biais
+                    // appris (voir TAIL_SETTLE_MS). Pré-alignée sans
+                    // manœuvre récente : lecture stabilisée, la vraie.
+                    val disturbedAt = if (compensated)
+                        android.os.SystemClock.elapsedRealtime() else prearmDisturbedAt
+                    val bias = tailReadBiasMs()
+                    var settled = android.os.SystemClock.elapsedRealtime() - disturbedAt >=
+                        TAIL_SETTLE_MS
+                    var residual = medianResidual(player) + (if (settled) 0L else bias)
                     if (compensated && tailAudible) {
                         // La latence réelle de CE démarrage affine
                         // l'estimateur CORRESPONDANT (chaud ≠ froid) —
                         // moyenne glissante bornée, persistée.
-                        val lag0 = if (warm) tailStartupLagWarmMs
-                        else tailStartupLagMs
-                        val actual = (residual + lag0).coerceIn(0L, 400L)
-                        if (warm) {
-                            tailStartupLagWarmMs =
-                                (tailStartupLagWarmMs * 7 + actual * 3) / 10
-                        } else {
-                            tailStartupLagMs =
-                                (tailStartupLagMs * 7 + actual * 3) / 10
-                        }
-                        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
-                            .edit()
-                            .putLong("tailStartupLag", tailStartupLagMs)
-                            .putLong("tailStartupLagWarm", tailStartupLagWarmMs)
-                            .apply()
+                        learnStartupLag(
+                            warm,
+                            residual,
+                            if (warm) tailStartupLagWarmMs else tailStartupLagMs
+                        )
                     }
                     // Recalage MUET par seek compensé — la queue est à
                     // volume zéro, rien ne s'entend. Plus de glissements de
                     // vitesse ICI : la queue est en vitesse logicielle
                     // (voir bigBufferRenderers), leur effet n'atteindrait la
-                    // sortie qu'après ~2 s, en plein fondu — et en vitesse
-                    // plateforme, la position rapportée divergeait d'une
-                    // seconde à chaque glissement (bascule sèche à chaque
-                    // transition, journal). Un seek compensé de la latence
-                    // d'amorçage ramène le résidu à quelques dizaines de
-                    // ms ; le pont proportionnel fait le reste.
-                    residual = medianResidual(player)
+                    // sortie qu'après ~2 s, en plein fondu. Un seek compensé
+                    // de la latence d'amorçage ramène le résidu à quelques
+                    // dizaines de ms ; le pont proportionnel fait le reste.
                     val residual0 = residual
                     // BUDGET dur d'alignement : au-delà de ~3 s, on part en
                     // fondu avec le résidu qu'on a. L'alignement mange la
@@ -2191,29 +2289,26 @@ object PlayerCore {
                             break
                         }
                         val before = residual
-                        residual = medianResidual(player)
+                        // Lecture précoce après ce seek : corrigée du biais
+                        settled = false
+                        residual = medianResidual(player) + bias
                         // Le recalage n'a rien amélioré : la dispersion des
                         // seeks est plus grande que ce résidu, insister ne
                         // ferait que rejouer aux dés.
                         if (kotlin.math.abs(residual) >= kotlin.math.abs(before)) break
                     }
+                    val detail = "($reseeks recalage(s)" +
+                        (if (preAligned) ", pré-alignée" else "") +
+                        (if (fromGesture) ", geste" else "") +
+                        (if (settled) ")" else ", estimé, biais $bias ms)")
                     // Résidu toujours trop grand malgré les recalages —
                     // rejoue comme élision s'entendraient : arrivée franche.
                     if (tailAudible && kotlin.math.abs(residual) > MAX_TAIL_DRIFT_MS) {
-                        transLog(
-                            "bascule sèche : résidu ${residual0} -> ${residual} ms " +
-                                "($reseeks recalage(s)" +
-                                (if (preAligned) ", pré-alignée)" else ")")
-                        )
+                        transLog("bascule sèche : résidu ${residual0} -> ${residual} ms $detail")
                         tailAudible = false
                     } else if (tailAudible) {
                         seamResidual = residual
-                        transLog(
-                            "raccord aligné : résidu ${residual0} -> ${residual} ms " +
-                                "($reseeks recalage(s)" +
-                                (if (preAligned) ", pré-alignée" else "") +
-                                (if (fromGesture) ", geste)" else ")")
-                        )
+                        transLog("raccord aligné : résidu ${residual0} -> ${residual} ms $detail")
                     }
                     if (tailAudible) {
                         // Même timbre que le principal : l'égaliseur et les
