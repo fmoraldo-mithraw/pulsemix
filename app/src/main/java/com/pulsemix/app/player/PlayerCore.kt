@@ -362,10 +362,13 @@ object PlayerCore {
         // La latence d'amorçage est propre à l'appareil : la retenir entre
         // les sessions rend le PREMIER fondu aussi propre que les suivants,
         // au lieu de repartir d'une valeur typique à recalibrer.
-        tailStartupLagMs = prefs.getLong("tailStartupLag", 120L)
-            .coerceIn(0L, MAX_STARTUP_LAG_MS)
-        tailStartupLagWarmMs =
-            prefs.getLong("tailStartupLagWarm", 40L).coerceIn(0L, MAX_STARTUP_LAG_MS)
+        // Par sortie (voir routeIsBluetooth) : l'ancienne clé unique sert
+        // de départ à la sortie « autre » ; le Bluetooth part de valeurs
+        // typiques d'un casque (journal 12 : ~470 ms à chaud).
+        lagColdOther = prefs.getLong("tailStartupLag", 120L).coerceIn(0L, MAX_STARTUP_LAG_MS)
+        lagWarmOther = prefs.getLong("tailStartupLagWarm", 40L).coerceIn(0L, MAX_STARTUP_LAG_MS)
+        lagColdBt = prefs.getLong("tailStartupLagBt", 500L).coerceIn(0L, MAX_STARTUP_LAG_MS)
+        lagWarmBt = prefs.getLong("tailStartupLagWarmBt", 450L).coerceIn(0L, MAX_STARTUP_LAG_MS)
         tailReadBiasBt = prefs.getLong("tailReadBiasBt", 0L).coerceIn(-1_500L, 1_500L)
         tailReadBiasOther = prefs.getLong("tailReadBiasOther", 0L).coerceIn(-1_500L, 1_500L)
         repeatMode.value = prefs.getInt("repeatMode", 0).coerceIn(0, 2)
@@ -1504,6 +1507,11 @@ object PlayerCore {
      */
     private const val TAIL_SETTLE_MS = 12_000L
 
+    /** Lecture précoce d'une queue pré-alignée : en deçà de cet écart,
+     *  l'estimation du pré-armement fait foi ; au-delà, quelque chose a
+     *  bougé et on recale. */
+    private const val ESTIMATE_TRUST_MS = 300L
+
     /** Plafond des latences d'amorçage apprises. Un casque Bluetooth
      *  ajoute plusieurs centaines de ms à l'amorçage d'un AudioTrack. */
     private const val MAX_STARTUP_LAG_MS = 1_000L
@@ -1519,13 +1527,24 @@ object PlayerCore {
      * Affinée à chaque fondu par moyenne glissante ; la valeur de départ
      * est l'amorçage typique d'un AudioTrack Android.
      */
-    @Volatile private var tailStartupLagMs = 120L
+    private val tailStartupLagMs: Long
+        get() = if (routeIsBluetooth()) lagColdBt else lagColdOther
 
     /** Latence d'amorçage d'une queue PRÉ-ARMÉE (départ à chaud) : bien
      *  plus courte qu'à froid — un estimateur unique, calibré sur les
      *  départs froids, surcompensait les départs chauds et ÉLIDAIT
      *  ~80-120 ms au raccord, audible comme un saut de disque. */
-    @Volatile private var tailStartupLagWarmMs = 40L
+    private val tailStartupLagWarmMs: Long
+        get() = if (routeIsBluetooth()) lagWarmBt else lagWarmOther
+
+    /** Latences d'amorçage PAR SORTIE : un casque Bluetooth amorce en
+     *  ~450-500 ms, le haut-parleur en ~40-120 ms ; un estimateur unique
+     *  se réapprenait à chaque changement de route, deux ou trois
+     *  raccords faux à chaque fois. */
+    @Volatile private var lagColdOther = 120L
+    @Volatile private var lagWarmOther = 40L
+    @Volatile private var lagColdBt = 500L
+    @Volatile private var lagWarmBt = 450L
 
     /**
      * Biais de lecture PRÉCOCE de la position de la queue (ms) : écart
@@ -1569,16 +1588,27 @@ object PlayerCore {
      *  résidu VRAI observé après un seek compensé de [lag0]. */
     private fun learnStartupLag(warm: Boolean, trueResidual: Long, lag0: Long) {
         val actual = (trueResidual + lag0).coerceIn(0L, MAX_STARTUP_LAG_MS)
-        if (warm) {
-            tailStartupLagWarmMs = (tailStartupLagWarmMs * 7 + actual * 3) / 10
-        } else {
-            tailStartupLagMs = (tailStartupLagMs * 7 + actual * 3) / 10
+        val bt = routeIsBluetooth()
+        val editor = appContext.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
+        when {
+            warm && bt -> {
+                lagWarmBt = (lagWarmBt * 7 + actual * 3) / 10
+                editor.putLong("tailStartupLagWarmBt", lagWarmBt)
+            }
+            warm -> {
+                lagWarmOther = (lagWarmOther * 7 + actual * 3) / 10
+                editor.putLong("tailStartupLagWarm", lagWarmOther)
+            }
+            bt -> {
+                lagColdBt = (lagColdBt * 7 + actual * 3) / 10
+                editor.putLong("tailStartupLagBt", lagColdBt)
+            }
+            else -> {
+                lagColdOther = (lagColdOther * 7 + actual * 3) / 10
+                editor.putLong("tailStartupLag", lagColdOther)
+            }
         }
-        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
-            .edit()
-            .putLong("tailStartupLag", tailStartupLagMs)
-            .putLong("tailStartupLagWarm", tailStartupLagWarmMs)
-            .apply()
+        editor.apply()
     }
 
     /** Écart direct-queue MÉDIAN sur cinq lectures espacées de 10 ms :
@@ -1717,6 +1747,10 @@ object PlayerCore {
      *  [TAIL_SETTLE_MS] plus tard (voir TAIL_SETTLE_MS). */
     private var preparedDisturbedAt = 0L
 
+    /** Résidu final du pré-alignement (ms, vrai ou estimé) : à la bascule,
+     *  une lecture précoce ne vaut pas mieux que cette estimation. */
+    private var preparedResidualMs = 0L
+
     /** Ouvre la queue d'avance pour le morceau en cours (fin approchante). */
     private fun prepareTailAhead() {
         val track = currentTrack.value ?: return
@@ -1837,9 +1871,33 @@ object PlayerCore {
                     residual = medianResidual(player) + tailReadBiasMs()
                 }
             }
+            // Glissement fin EN AVEUGLE : après un recalage stabilisé, il
+            // reste souvent quelques dizaines de ms (journal 12 : 107 ms,
+            // 19 ms) et plus le temps de re-stabiliser — mais un glissement
+            // est précis à quelques ms quand la mesure est juste, et sa
+            // correction sort du tampon bien avant le fondu. On l'applique
+            // et on ESTIME le résultat (~90 % corrigé) ; la bascule s'y
+            // fiera plutôt qu'à une lecture précoce.
+            if (settled && slides == 0 &&
+                kotlin.math.abs(residual) in (SEAM_TOLERANCE_MS + 1)..RESEEK_TOLERANCE_MS
+            ) {
+                val slideMs = (kotlin.math.abs(residual) * 11L).coerceIn(40L, 2_000L)
+                if (android.os.SystemClock.elapsedRealtime() + slideMs + TAIL_BUFFER_MS + 500L <=
+                    t0 + PREARM_AHEAD_MS
+                ) {
+                    slides++
+                    player.setPlaybackSpeed(exoSpeed * (if (residual > 0) 1.08f else 0.92f))
+                    if (!pace(slideMs, ::gone)) return
+                    player.setPlaybackSpeed(exoSpeed)
+                    preparedDisturbedAt = android.os.SystemClock.elapsedRealtime()
+                    residual -= residual * 9L / 10L
+                    settled = false
+                }
+            }
             if (gone()) return
             val detail = "($reseeks recalage(s), $slides glissement(s), " +
                 "biais ${biasSample} ms" + (if (settled) ")" else ", estimé)")
+            preparedResidualMs = residual
             if (kotlin.math.abs(residual) <= MAX_TAIL_DRIFT_MS) {
                 preparedAlignedPlayer = player
                 transLog("queue pré-alignée : résidu ${residual0} -> ${residual} ms $detail")
@@ -2085,6 +2143,7 @@ object PlayerCore {
         // refaire, la bascule sera immédiate. Son égaliseur suit.
         val preAligned = prearmed != null && preparedAlignedPlayer === prearmed
         val prearmDisturbedAt = preparedDisturbedAt
+        val prearmResidual = preparedResidualMs
         val takenEq = if (prearmed != null) preparedEq else null
         if (prearmed != null) {
             alignJob?.cancel()
@@ -2242,6 +2301,14 @@ object PlayerCore {
                     var settled = android.os.SystemClock.elapsedRealtime() - disturbedAt >=
                         TAIL_SETTLE_MS
                     var residual = medianResidual(player) + (if (settled) 0L else bias)
+                    // Pré-alignée mais lue trop tôt (glissement fin tout
+                    // juste appliqué) : l'estimation du pré-armement vaut
+                    // mieux que cette lecture, sauf désaccord flagrant.
+                    if (preAligned && !settled &&
+                        kotlin.math.abs(residual) <= ESTIMATE_TRUST_MS
+                    ) {
+                        residual = prearmResidual
+                    }
                     if (compensated && tailAudible) {
                         // La latence réelle de CE démarrage affine
                         // l'estimateur CORRESPONDANT (chaud ≠ froid) —

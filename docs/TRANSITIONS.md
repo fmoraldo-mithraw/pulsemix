@@ -144,9 +144,19 @@ recalage compensé au-delà de `RESEEK_TOLERANCE_MS` (60 ms, dispersion
 ±40 ms), sinon glissement de vitesse ±8 % au-delà de `SEAM_TOLERANCE_MS`
 (12 ms, précis à quelques ms ; la queue est en vitesse logicielle, la
 correction sort après le tampon) ; puis nouvelle stabilisation si le fondu
-n'est pas déjà là, sinon lecture précoce corrigée (« estimé »). Journal :
-`queue pré-alignée : résidu A -> B ms (N recalage(s), M glissement(s),
-biais X ms[, estimé])`.
+n'est pas déjà là, sinon lecture précoce corrigée (« estimé »). Après un
+recalage stabilisé, il reste souvent quelques dizaines de ms (journal 12 :
+107, 19 ms) : un **glissement fin en aveugle** les corrige — précis quand
+la mesure est juste, et sa correction sort du tampon avant le fondu — et le
+résultat est *estimé* (~90 % corrigé) ; à la bascule, cette estimation fait
+foi tant que la lecture précoce ne la contredit pas de plus de
+`ESTIMATE_TRUST_MS` (300 ms). Journal : `queue pré-alignée : résidu A -> B
+ms (N recalage(s), M glissement(s), biais X ms[, estimé])`.
+
+Les **latences d'amorçage** (chaud/froid) et le biais sont appris **par
+sortie** (Bluetooth / autre) : un casque Bluetooth amorce en ~450-500 ms,
+le haut-parleur en ~40-120 ms — un estimateur unique se réapprenait à
+chaque changement de route, deux ou trois raccords faux à chaque fois.
 
 À l'heure du fondu, la queue pré-alignée est prélevée telle quelle (pas de
 seek — il la désalignerait) : **vérification** (lecture stabilisée si sa
