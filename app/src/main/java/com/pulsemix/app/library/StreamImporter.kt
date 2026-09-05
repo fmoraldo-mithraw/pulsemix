@@ -92,6 +92,11 @@ object StreamImporter {
         dir.deleteRecursively()
         dir.mkdirs()
         onProgress("Préparation du téléchargement…", 0)
+        // Durée dans le nom du fichier de travail (« {secondes} ») : c'est
+        // ce qui permet d'ESTIMER l'avancement de la conversion MP3 —
+        // yt-dlp n'en dit rien, et sur une vidéo de 14 min le téléchargement
+        // affichait « 100 % » puis plus rien pendant une à deux minutes
+        // (vécu comme bloqué). UrlImporter retire ce suffixe à la copie.
         val request = YoutubeDLRequest(url.trim())
             .addOption("-x")
             .addOption("--audio-format", "mp3")
@@ -102,11 +107,59 @@ object StreamImporter {
             .addOption("--ignore-errors")
             .addOption("--no-mtime")
             .addOption("--no-warnings")
-            .addOption("-o", File(dir, "%(title).120B [%(id)s].%(ext)s").absolutePath)
+            .addOption(
+                "-o",
+                File(dir, "%(title).120B [%(id)s] {%(duration)s}.%(ext)s").absolutePath
+            )
         stopRequested = false
         val procId = "pulsemix-import-${procSeq.incrementAndGet()}"
         currentDownloadId = procId
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val downloadDoneAt = java.util.concurrent.atomic.AtomicLong(0L)
+        // Vigie de la conversion : yt-dlp ne remonte que le téléchargement.
+        // Ce fil regarde le MP3 grossir dans le cache et en déduit un
+        // pourcentage (VBR qualité 0 ≈ 245 kbit/s), puis signale l'écriture
+        // des tags (fichier « .temp.mp3 »).
+        val monitoring = java.util.concurrent.atomic.AtomicBoolean(true)
+        val monitor = Thread({
+            var lastMsg = ""
+            while (monitoring.get()) {
+                try {
+                    Thread.sleep(500L)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                if (!monitoring.get()) break
+                val files = dir.listFiles().orEmpty()
+                val temp = files.firstOrNull { it.name.endsWith(".temp.mp3") }
+                val mp3 = files.filter { it.name.endsWith(".mp3") && !it.name.endsWith(".temp.mp3") }
+                    .maxByOrNull { it.length() }
+                val msg: String
+                val pct: Int
+                when {
+                    temp != null -> {
+                        msg = "Écriture des tags…"
+                        pct = 99
+                    }
+                    mp3 != null -> {
+                        val dur = durationFromName(mp3.name)
+                        val est = if (dur > 0) (mp3.length() * 100L / (dur * 30_600L))
+                            .toInt().coerceIn(1, 99) else -1
+                        msg = if (est > 0) "Conversion en MP3… $est %"
+                        else "Conversion en MP3… ${mp3.length() / 1_000_000} Mo"
+                        pct = est
+                    }
+                    else -> continue
+                }
+                downloadDoneAt.compareAndSet(0L, android.os.SystemClock.elapsedRealtime())
+                if (msg != lastMsg) {
+                    lastMsg = msg
+                    onProgress(msg, pct)
+                }
+            }
+        }, "ImportMonitor").apply { isDaemon = true }
         try {
+            monitor.start()
             YoutubeDL.getInstance().execute(request, procId) {
                     progress: Float, _: Long, _: String ->
                 val pct = progress.toInt()
@@ -121,7 +174,15 @@ object StreamImporter {
             // Sinon (course interne de la lib), garder ce qui a été extrait.
             if (stopRequested) throw e
         } finally {
+            monitoring.set(false)
+            monitor.interrupt()
             currentDownloadId = null
+            val now = android.os.SystemClock.elapsedRealtime()
+            val conv = downloadDoneAt.get()
+            log(
+                "yt-dlp terminé en ${(now - t0) / 1000} s" +
+                    (if (conv > 0L) " (dont conversion ${(now - conv) / 1000} s)" else "")
+            )
         }
         return dir.listFiles().orEmpty()
             .filter { f ->
@@ -211,6 +272,22 @@ object StreamImporter {
 
     private fun workDir(context: Context): File =
         File(context.cacheDir, "stream_import")
+
+    /** Durée (s) glissée dans le nom du fichier de travail : « … {842}.mp3 ». */
+    private fun durationFromName(name: String): Long =
+        Regex("\\{(\\d+)\\}").findAll(name).lastOrNull()?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+
+    /** Retire le suffixe de durée du nom de travail (voir download). */
+    fun cleanName(name: String): String =
+        name.replace(Regex(" ?\\{(\\d+|NA)\\}"), "")
+
+    /** Journal de l'import (service_log.txt, tag [Import]). */
+    fun log(message: String) {
+        try {
+            com.pulsemix.app.player.PlayerCore.engineLog("Import", message)
+        } catch (_: Exception) {
+        }
+    }
 
     // optString d'Android renvoie la chaîne "null" pour un null JSON
     private fun JSONObject.optStr(name: String): String {

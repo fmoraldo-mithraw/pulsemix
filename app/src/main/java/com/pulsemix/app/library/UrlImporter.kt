@@ -116,10 +116,15 @@ object UrlImporter {
         url: String,
         root: DocumentFile
     ) {
+        StreamImporter.log("import demandé : $url")
         try {
             val files = StreamImporter.download(context, url) { msg, pct ->
                 _state.value = State.Working(msg, pct.coerceAtLeast(0), 100)
             }
+            StreamImporter.log(
+                "${files.size} fichier(s) extrait(s)" +
+                    files.joinToString("") { " ; ${it.name} (${it.length() / 1_000_000} Mo)" }
+            )
             if (files.isEmpty()) {
                 _state.value = if (stopRequested) {
                     State.Done(0, "Import arrêté.")
@@ -137,8 +142,11 @@ object UrlImporter {
                 _state.value = State.Working(
                     "Copie : ${f.name}", i, files.size
                 )
-                copyLocalFile(context, root, f)?.let { imported.add(it) }
+                val doc = copyLocalFile(context, root, f)
+                if (doc != null) imported.add(doc)
+                else StreamImporter.log("copie impossible : ${f.name}")
             }
+            StreamImporter.log("${imported.size} fichier(s) copié(s) dans la bibliothèque")
             _state.value = State.Done(
                 imported.size,
                 if (imported.isEmpty()) "Rien n'a pu être importé."
@@ -146,6 +154,10 @@ object UrlImporter {
                     "Analyse en cours…" + duplicateWarning(context, imported)
             )
         } catch (e: Exception) {
+            StreamImporter.log(
+                (if (stopRequested) "arrêté" else "échec") +
+                    " : ${e::class.java.simpleName} ${e.message?.take(300)}"
+            )
             _state.value = if (stopRequested) {
                 State.Done(0, "Import arrêté.")
             } else {
@@ -169,7 +181,9 @@ object UrlImporter {
         src: java.io.File
     ): DocumentFile? {
         return try {
-            val name = uniqueName(root, sanitize(src.name))
+            // Suffixe de durée du fichier de travail retiré (voir
+            // StreamImporter.download)
+            val name = uniqueName(root, sanitize(StreamImporter.cleanName(src.name)))
             val mime = when {
                 name.endsWith(".mp3") -> "audio/mpeg"
                 name.endsWith(".m4a") -> "audio/mp4"
