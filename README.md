@@ -78,7 +78,13 @@ d'enchaînement façon soirée : **Mix** et **DJ**.
   statistiques (répartition des tempos et tonalités), et un menu par morceau :
   pré-écoute du meilleur passage, mix/DJ « comme ce morceau » (similarité de
   style et d'énergie), favori, exclusion des mix, correction manuelle du BPM
-  (tap tempo, verrouillée contre la réanalyse), suppression du fichier.
+  (tap tempo, verrouillée contre la réanalyse), suppression du fichier,
+  et **mashup « deux platines »** : la modale liste les morceaux compatibles
+  (tempo à ±8 % octave près, tonalité voisine sur la roue de Camelot, assez
+  de matière) et l'appli rend un M4A où les deux jouent ensemble sur un
+  tempo commun (étirement sans changement de hauteur), calés sur leurs
+  phrases — les basses de l'un sous les voix de l'autre, puis échange des
+  rôles — ajouté à la bibliothèque et analysé comme un morceau.
 - **Mix évolués** : plan « Auto-DJ » (toute la bibliothèque enchaînée),
   durée cible (30 min / 1 h / 2 h), propositions régénérables, plans
   éditables avant lancement (retirer des morceaux), **file d'attente

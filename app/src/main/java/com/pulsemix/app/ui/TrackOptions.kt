@@ -50,6 +50,7 @@ fun TrackOptionsDialogs(
     var segEdit by remember(track.uri) { mutableStateOf(false) }
     var delEdit by remember(track.uri) { mutableStateOf(false) }
     var manualTagEdit by remember(track.uri) { mutableStateOf(false) }
+    var mashup by remember(track.uri) { mutableStateOf(false) }
 
     if (menuOpen) {
         AlertDialog(
@@ -108,6 +109,12 @@ fun TrackOptionsDialogs(
                     // L'original n'est jamais modifié.
                     TextButton(onClick = { vm.exportBestSegment(track); onClose() }) {
                         Text("Exporter le meilleur passage…")
+                    }
+                    // Mashup « deux platines » avec un morceau compatible
+                    // (tempo, tonalité) : choix du partenaire dans une
+                    // modale, rendu ffmpeg, résultat ajouté à la bibliothèque.
+                    TextButton(onClick = { mashup = true; menuOpen = false }) {
+                        Text("Mashup avec un morceau compatible…")
                     }
                     // Titre/artiste, recherche en ligne (texte ou empreinte
                     // sonore), type, « pas épique » et jaquette vivent tous
@@ -264,6 +271,10 @@ fun TrackOptionsDialogs(
     }
 
     // --------------------------------------------------- confirmation suppression
+    if (mashup) {
+        MashupDialog(vm, track, onClose)
+    }
+
     if (delEdit) {
         AlertDialog(
             onDismissRequest = onClose,

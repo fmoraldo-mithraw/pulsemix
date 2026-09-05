@@ -142,7 +142,7 @@ object UrlImporter {
                 _state.value = State.Working(
                     "Copie : ${f.name}", i, files.size
                 )
-                val doc = copyLocalFile(context, root, f)
+                val doc = copyIntoLibrary(context, root, f)
                 if (doc != null) imported.add(doc)
                 else StreamImporter.log("copie impossible : ${f.name}")
             }
@@ -174,8 +174,9 @@ object UrlImporter {
     }
 
     /** Copie un fichier local (cache) vers le dossier SAF de la bibliothèque.
-     *  @return le document créé, null en cas d'échec. */
-    private fun copyLocalFile(
+     *  Partagé avec le rendu de mashup. @return le document créé, null en
+     *  cas d'échec. */
+    internal fun copyIntoLibrary(
         context: Context,
         root: DocumentFile,
         src: java.io.File

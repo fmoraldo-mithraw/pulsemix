@@ -249,6 +249,35 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ------------------------------------------------------------- mashup
+
+    /** État du rendu de mashup (modale du menu d'un morceau). */
+    val mashupState = com.pulsemix.app.library.MashupRenderer.state
+
+    /** Partenaires compatibles pour un mashup avec [track] (tempo à ±8 %,
+     *  tonalités voisines, matière suffisante), du meilleur au moins bon. */
+    fun mashupCandidates(track: Track): List<com.pulsemix.app.mix.MashupEngine.Candidate> =
+        com.pulsemix.app.mix.MashupEngine.candidates(track, tracks.value)
+
+    /**
+     * Rend le mashup [base] × [cand] (ffmpeg, en arrière-plan) et le range
+     * dans le premier dossier scanné, puis relance le scan pour qu'il soit
+     * analysé et jouable. Sans dossier : dossier Extraits de l'appli.
+     */
+    fun generateMashup(base: Track, cand: com.pulsemix.app.mix.MashupEngine.Candidate) {
+        val folder = folders.value.firstOrNull()
+        viewModelScope.launch(Dispatchers.IO) {
+            val plan = com.pulsemix.app.mix.MashupEngine.plan(base, cand)
+            val inLibrary = com.pulsemix.app.library.MashupRenderer.render(
+                getApplication(), plan, folder
+            )
+            if (inLibrary) rescan()
+        }
+    }
+
+    fun stopMashup() = com.pulsemix.app.library.MashupRenderer.requestStop()
+    fun resetMashup() = com.pulsemix.app.library.MashupRenderer.reset()
+
     /** Résultat du dernier export de la liste des titres. */
     val exportMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
