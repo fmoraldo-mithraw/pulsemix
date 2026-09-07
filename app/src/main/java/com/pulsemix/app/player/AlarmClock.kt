@@ -73,6 +73,29 @@ object AlarmClock {
     /** Retour automatique au canal média (voir launchNow). */
     private var channelJob: Job? = null
 
+    /** Heure (ms) pour laquelle l'alarme a été programmée en dernier, et
+     *  heure de la dernière sonnerie reçue : un réveil programmé, dépassé
+     *  et jamais reçu est un réveil MANQUÉ (voir init). */
+    private const val KEY_SCHEDULED_FOR = "scheduledFor"
+    private const val KEY_LAST_FIRED = "lastFiredAt"
+
+    /** État de l'armement, lisible dans les réglages : « Prochaine
+     *  sonnerie : … (exacte) », ou l'anomalie constatée. */
+    val armedInfo = MutableStateFlow("")
+
+    /** Vrai si le système autorise les alarmes exactes (API 31+ ; toujours
+     *  vrai avant). Sans elles, le réveil peut sonner avec dix minutes de
+     *  retard, ou pas du tout en veille profonde. */
+    fun exactAlarmsAllowed(context: Context): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 31) return true
+        return try {
+            context.getSystemService(AlarmManager::class.java)
+                ?.canScheduleExactAlarms() == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private var loaded = false
     private var rampJob: Job? = null
 
@@ -93,9 +116,47 @@ object AlarmClock {
             // ce bloc ne tourne qu'une fois par processus, toujours avant
             // que startRamp n'écrive la clé du réveil en cours.
             if (p.contains(KEY_VOLUME_BEFORE)) restoreVolume(context)
+            // Réveil MANQUÉ ? Programmé, heure dépassée, jamais reçu : c'est
+            // l'anomalie « le réveil ne marche plus » — journalisée avec ce
+            // que le système sait, pour ne plus la chercher à l'aveugle.
+            val scheduledFor = p.getLong(KEY_SCHEDULED_FOR, 0L)
+            val lastFired = p.getLong(KEY_LAST_FIRED, 0L)
+            if (enabled.value && scheduledFor > 0L &&
+                System.currentTimeMillis() > scheduledFor + 2 * 60_000L &&
+                lastFired < scheduledFor
+            ) {
+                val msg = "réveil MANQUÉ : programmé pour ${fmt(scheduledFor)}, " +
+                    "jamais reçu (dernière sonnerie : " +
+                    (if (lastFired > 0L) fmt(lastFired) else "aucune") +
+                    ", alarmes exactes : ${exactAlarmsAllowed(context)}, " +
+                    "optimisation batterie ignorée : ${batteryIgnored(context)})"
+                log(msg)
+                lastMissed = msg
+            }
         }
         if (enabled.value) schedule(context)
     }
+
+    /** Ré-armement explicite (redémarrage, mise à jour de l'appli) :
+     *  journalisé, puis même chemin que le démarrage. */
+    fun rearm(context: Context, reason: String) {
+        log("ré-armement demandé ($reason)")
+        init(context)
+    }
+
+    /** Dernier réveil manqué constaté (pour les réglages), sinon null. */
+    @Volatile private var lastMissed: String? = null
+
+    private fun batteryIgnored(context: Context): Boolean = try {
+        context.getSystemService(android.os.PowerManager::class.java)
+            ?.isIgnoringBatteryOptimizations(context.packageName) == true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun fmt(ms: Long): String =
+        java.text.SimpleDateFormat("EEE dd/MM HH:mm", java.util.Locale.FRANCE)
+            .format(java.util.Date(ms))
 
     /** Applique et persiste la configuration, puis (ré)arme ou annule. */
     fun configure(
@@ -179,24 +240,54 @@ object AlarmClock {
             context, 0, Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val at = nextTriggerMillis()
+        var exact = true
         try {
             am.setAlarmClock(
-                AlarmManager.AlarmClockInfo(nextTriggerMillis(), show),
+                AlarmManager.AlarmClockInfo(at, show),
                 firePending(context)
             )
         } catch (_: SecurityException) {
             // Permission « alarmes exactes » révoquée : réveil approximatif
+            exact = false
             am.setWindow(
-                AlarmManager.RTC_WAKEUP, nextTriggerMillis(), 10 * 60_000L,
+                AlarmManager.RTC_WAKEUP, at, 10 * 60_000L,
                 firePending(context)
             )
         }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putLong(KEY_SCHEDULED_FOR, at).apply()
+        // Vérification auprès du système : la prochaine alarme-réveil qu'il
+        // connaît est-elle la nôtre ? (getNextAlarmClock couvre toutes les
+        // applis ; si une autre sonne avant, on ne peut rien conclure.)
+        val next = try {
+            am.nextAlarmClock
+        } catch (_: Exception) {
+            null
+        }
+        val nextText = next?.let {
+            "${fmt(it.triggerTime)} par ${it.showIntent?.creatorPackage ?: "?"}"
+        } ?: "aucune"
+        val ours = next != null && next.showIntent?.creatorPackage == context.packageName &&
+            kotlin.math.abs(next.triggerTime - at) < 60_000L
+        log(
+            "alarme programmée pour ${fmt(at)} (${if (exact) "exacte" else "approximative"}) ; " +
+                "prochaine alarme-réveil connue du système : $nextText" +
+                (if (ours) " (la nôtre)" else "")
+        )
+        armedInfo.value = "Prochaine sonnerie : ${fmt(at)}" +
+            (if (exact) "" else " (approximative : alarmes exactes refusées)") +
+            (lastMissed?.let { "\n⚠ $it" } ?: "")
     }
 
     private fun cancel(context: Context) {
         val am = context.getSystemService(AlarmManager::class.java) ?: return
         am.cancel(firePending(context))
         am.cancel(snoozePending(context))
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .remove(KEY_SCHEDULED_FOR).apply()
+        armedInfo.value = ""
+        log("alarme annulée (réveil désactivé)")
     }
 
     private fun snoozePending(context: Context): PendingIntent =
@@ -335,6 +426,10 @@ object AlarmClock {
      */
     fun fire(context: Context, onDone: () -> Unit) {
         com.pulsemix.app.Graph.init(context)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putLong(KEY_LAST_FIRED, System.currentTimeMillis()).apply()
+        lastMissed = null
+        log("alarme reçue (réveil ${if (enabled.value) "actif" else "désactivé"})")
         if (!enabled.value) {
             onDone()
             return

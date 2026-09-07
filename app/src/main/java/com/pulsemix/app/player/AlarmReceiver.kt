@@ -23,12 +23,22 @@ class AlarmReceiver : BroadcastReceiver() {
     }
 }
 
-/** Ré-arme l'alarme quotidienne après un redémarrage du téléphone. */
+/**
+ * Ré-arme l'alarme quotidienne après un redémarrage du téléphone — et après
+ * une MISE À JOUR de l'appli : selon les constructeurs, les alarmes d'une
+ * appli réinstallée par-dessus ne survivent pas, et l'utilisateur qui
+ * installe une version par jour se retrouvait sans réveil tant qu'il
+ * n'avait pas rouvert l'appli.
+ */
 class AlarmBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
-            "android.intent.action.QUICKBOOT_POWERON" -> AlarmClock.init(context)
+            "android.intent.action.QUICKBOOT_POWERON",
+            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                com.pulsemix.app.Graph.init(context)
+                AlarmClock.rearm(context, intent.action ?: "?")
+            }
         }
     }
 }

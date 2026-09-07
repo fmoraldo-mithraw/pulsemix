@@ -207,6 +207,19 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
             onChange = { vm.setAlarm(it, alarmH, alarmM, alarmMix, alarmRamp) }
         )
         if (alarmOn) {
+            // État de l'armement : prochaine sonnerie telle que programmée,
+            // et l'anomalie constatée s'il y en a une (réveil manqué). Sans
+            // alarmes exactes, un bouton mène au réglage système.
+            val armed by vm.alarmArmedInfo.collectAsStateWithLifecycle()
+            if (armed.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    armed,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (armed.contains("⚠")) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(

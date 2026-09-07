@@ -48,6 +48,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val alarmMixId = com.pulsemix.app.player.AlarmClock.mixId
     val alarmRamp = com.pulsemix.app.player.AlarmClock.rampMinutes
     val alarmProgressive = com.pulsemix.app.player.AlarmClock.progressive
+    /** État de l'armement du réveil (prochaine sonnerie, anomalie). */
+    val alarmArmedInfo = com.pulsemix.app.player.AlarmClock.armedInfo
 
     fun setAlarm(enabled: Boolean, hour: Int, minute: Int, mixId: String, ramp: Int) =
         com.pulsemix.app.player.AlarmClock.configure(
