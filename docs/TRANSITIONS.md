@@ -482,11 +482,12 @@ de ce volume d'un quart du maximum (jamais sous 2 crans) jusqu'au maximum
 sur *N* minutes (abandonnée si l'utilisateur touche au volume), puis
 lancement en Douce, en aléatoire, ou en set DJ.
 
-**Sortie externe branchée** (Bluetooth A2DP/SCO/BLE, casque filaire, USB,
-aide auditive — `chooseChannel`) : le réveil reste sur le **canal média**,
-dont la rampe pousse alors le volume. Sur le canal alarme, Android diffuse
-sur le haut-parleur du téléphone *en plus* de la sortie externe, les deux
-jouant en même temps.
+**Sortie externe branchée** (Bluetooth, casque, USB) : le réveil reste sur
+le **canal alarme quand même**. Android le diffuse alors sur le haut-parleur
+*en plus* de la sortie externe, et c'est voulu : une version passait au
+canal média dans ce cas, et un réveil parti vers des écouteurs restés
+connectés la nuit laissait le téléphone muet. `chooseChannel` journalise
+les sorties audio et les volumes au lancement.
 
 **Retour au canal média** : au premier geste sur le lecteur (pause/reprise,
 suivant, précédent, déplacement, arrêt — l'utilisateur est réveillé), à

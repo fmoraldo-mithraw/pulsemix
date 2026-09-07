@@ -484,11 +484,12 @@ object AlarmClock {
                 // qui peuvent couper le canal média. Posé AVANT le lancement,
                 // rendu au canal média au premier geste sur le lecteur, à
                 // l'arrêt du réveil, quand l'utilisateur lance autre chose
-                // (PlayerCore), ou après la rampe + 30 min. SAUF sortie
-                // externe branchée (Bluetooth, casque, USB) : Android
-                // diffuse le canal alarme sur le haut-parleur EN PLUS de la
-                // sortie externe — on reste alors sur le canal média, dont
-                // la rampe pousse le volume.
+                // (PlayerCore), ou après la rampe + 30 min. Sortie externe
+                // branchée (Bluetooth, casque) : canal alarme QUAND MÊME —
+                // Android le diffuse sur le haut-parleur en plus de la
+                // sortie externe, et c'est voulu : un réveil parti vers des
+                // écouteurs restés connectés la nuit laissait le téléphone
+                // muet (journal du 6 septembre).
                 val useAlarmChannel = chooseChannel(context)
                 PlayerCore.alarmLaunching = true
                 PlayerCore.setAlarmAudio(useAlarmChannel)
@@ -560,7 +561,13 @@ object AlarmClock {
                     log("rien ne joue 20 s après le lancement : sonnerie de secours")
                     startFallbackRingtone(context)
                 } else if (PlayerCore.isPlaying.value) {
-                    log("lecture en cours 20 s après le lancement")
+                    val am = context.getSystemService(AudioManager::class.java)
+                    log(
+                        "lecture en cours 20 s après le lancement ; volumes alarme " +
+                            "${streamVol(am, AudioManager.STREAM_ALARM)}, média " +
+                            "${streamVol(am, AudioManager.STREAM_MUSIC)}" +
+                            (if (am?.isMusicActive == true) ", son actif" else ", AUCUN son actif")
+                    )
                 }
             }
         }
@@ -586,29 +593,45 @@ object AlarmClock {
     private var wakeStream = AudioManager.STREAM_ALARM
 
     /**
-     * Choisit le canal du réveil : alarme par défaut ; média si une sortie
-     * externe est branchée (Bluetooth, casque filaire, USB, aide
-     * auditive) — sur le canal alarme, Android l'enverrait AUSSI sur le
-     * haut-parleur du téléphone, les deux jouant en même temps. Vrai =
-     * canal alarme.
+     * Canal du réveil : TOUJOURS l'alarme (vrai), et un relevé des sorties
+     * audio et des volumes dans le journal — c'est ce qui permet de
+     * comprendre un réveil muet.
      */
     private fun chooseChannel(context: Context): Boolean {
         val am = context.getSystemService(AudioManager::class.java)
-        val external = try {
-            am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                ?.firstOrNull { it.type in EXTERNAL_OUTPUT_TYPES }
+        val outputs = try {
+            am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS).orEmpty().toList()
         } catch (_: Exception) {
-            null
+            emptyList()
         }
-        wakeStream = if (external != null) AudioManager.STREAM_MUSIC
-        else AudioManager.STREAM_ALARM
-        if (external != null) {
-            log(
-                "sortie externe branchée (${external.productName}, type " +
-                    "${external.type}) : canal média, pas alarme"
-            )
-        }
-        return external == null
+        val external = outputs.filter { it.type in EXTERNAL_OUTPUT_TYPES }
+        // TOUJOURS le canal alarme. La version précédente passait au canal
+        // média dès qu'une sortie externe était connectée, pour éviter la
+        // double diffusion haut-parleur + Bluetooth ; résultat : des
+        // écouteurs ou une enceinte Bluetooth restés connectés la nuit
+        // recevaient tout le réveil, et le téléphone restait MUET (« l'alarme
+        // se déclenche mais ne produit aucun son »). Un réveil doit être
+        // entendu : le canal alarme sort sur le haut-parleur (et sur la
+        // sortie externe en plus, le temps du réveil) ; le canal média
+        // revient au premier geste ou rampe + 30 min après.
+        wakeStream = AudioManager.STREAM_ALARM
+        log(
+            "sorties audio : " + outputs.joinToString(", ") { "${it.productName} (type ${it.type})" }
+                .ifBlank { "aucune" } +
+                (if (external.isNotEmpty()) " ; externe(s) connectée(s) : " +
+                    external.joinToString(", ") { "${it.productName}" } +
+                    " — canal alarme quand même (haut-parleur + externe)" else "") +
+                " ; volumes alarme ${streamVol(am, AudioManager.STREAM_ALARM)}, " +
+                "média ${streamVol(am, AudioManager.STREAM_MUSIC)}"
+        )
+        return true
+    }
+
+    /** « v/max » d'un canal, pour le journal. */
+    private fun streamVol(am: AudioManager?, stream: Int): String = try {
+        "${am?.getStreamVolume(stream)}/${am?.getStreamMaxVolume(stream)}"
+    } catch (_: Exception) {
+        "?"
     }
 
     /** Types AudioDeviceInfo d'une sortie externe : Bluetooth A2DP/SCO,
