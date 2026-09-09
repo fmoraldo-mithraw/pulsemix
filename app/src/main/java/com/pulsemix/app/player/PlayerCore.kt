@@ -3606,8 +3606,10 @@ object PlayerCore {
      */
     private fun endAlarmAudioOnGesture(gesture: String) {
         // La sonnerie de secours du réveil, si elle tourne, s'arrête au
-        // premier geste — quel que soit l'état du canal.
+        // premier geste — quel que soit l'état du canal ; et le filet
+        // sonore du lancement est désarmé (arrêt volontaire ≠ réveil muet).
         AlarmClock.stopFallbackIfRinging(gesture)
+        AlarmClock.noteUserGesture(gesture)
         if (!alarmAudio || alarmLaunching) return
         engineLog("Réveil", "canal média rendu ($gesture)")
         setAlarmAudio(false)
@@ -3830,6 +3832,7 @@ object PlayerCore {
         if (!initialized) return
         // Arrêt = fin du réveil aussi (stopRinging passe par ici)
         AlarmClock.stopFallbackIfRinging("arrêt")
+        AlarmClock.noteUserGesture("arrêt")
         if (alarmAudio && !alarmLaunching) {
             engineLog("Réveil", "canal média rendu (arrêt)")
             setAlarmAudio(false)

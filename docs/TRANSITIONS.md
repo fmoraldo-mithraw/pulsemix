@@ -505,7 +505,14 @@ mécanisme sert à une sortie morte (`AudioTrack.write` < 0). Journal :
 `[Réveil] canal média rendu (geste)`, `[DJ] sortie audio reconstruite (…)`.
 
 **Filet sonore** : bibliothèque pas lue en 30 s, exception au lancement, ou
-rien qui ne joue 20 s après le lancement → sonnerie de secours du système.
+rien qui n'a *jamais* joué 20 s après le lancement → sonnerie de secours.
+Le filet surveille en continu : le premier son entendu ou le premier geste
+sur le lecteur le désarme (une musique coupée à la main n'est pas un réveil
+muet — l'ancien filet, qui ne regardait que la 20e seconde, lançait la
+sonnerie sur un arrêt volontaire). La sonnerie de secours est un
+MediaPlayer **local** (jamais un Ringtone système, dont la lecture peut
+partir dans SystemUI et survivre à l'appli), une seule instance, coupée par
+« Arrêter le réveil » ou tout geste sur le lecteur, et au plus 5 minutes.
 Chaque étape est journalisée (`[Réveil]`).
 
 ### 5.3 Reprise après fermeture

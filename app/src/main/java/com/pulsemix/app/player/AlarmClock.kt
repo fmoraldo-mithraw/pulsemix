@@ -337,6 +337,8 @@ object AlarmClock {
         rampJob = null
         channelJob?.cancel()
         channelJob = null
+        watchdogJob?.cancel()
+        watchdogJob = null
         stopFallbackRingtone()
         try {
             PlayerCore.stopPlayback()
@@ -613,25 +615,67 @@ object AlarmClock {
                 } catch (_: Exception) {
                 }
             }
-            // Filet sonore : si rien ne joue 20 s après le lancement (focus
-            // audio refusé, fichier illisible, plan vide), on sonne quand
-            // même. Un réveil muet est le pire des échecs pour un réveil.
-            if (launched) {
-                delay(20_000L)
-                if (!PlayerCore.isPlaying.value && fallback == null) {
-                    log("rien ne joue 20 s après le lancement : sonnerie de secours")
+            // Filet sonore : si rien n'a JAMAIS joué 20 s après le lancement
+            // (focus audio refusé, fichier illisible, plan vide), on sonne
+            // quand même. Un réveil muet est le pire des échecs pour un
+            // réveil. Mais une musique qui a démarré puis que l'utilisateur
+            // a coupée n'est pas un échec : l'ancien filet ne regardait que
+            // « joue-t-elle à la 20e seconde ? » et lançait la sonnerie de
+            // secours sur un arrêt volontaire (journal du 9 septembre : la
+            // musique a démarré, arrêtée à la main, puis une sonnerie
+            // inarrêtable). On surveille en continu : le premier son
+            // entendu ou le premier geste désarme le filet.
+            if (launched) startWatchdog(context)
+        }
+    }
+
+    /** Filet sonore du lancement (voir launchNow) ; annulé par stopRinging
+     *  et par tout geste sur le lecteur (noteUserGesture). */
+    private var watchdogJob: Job? = null
+
+    /** L'utilisateur a agi sur le lecteur depuis le lancement du réveil. */
+    @Volatile private var userActed = false
+
+    @OptIn(DelicateCoroutinesApi::class)
+    private fun startWatchdog(context: Context) {
+        watchdogJob?.cancel()
+        userActed = false
+        watchdogJob = GlobalScope.launch(Dispatchers.Main) {
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            var played = false
+            while (android.os.SystemClock.elapsedRealtime() - t0 < 20_000L) {
+                delay(500L)
+                if (PlayerCore.isPlaying.value) {
+                    played = true
+                    break
+                }
+                if (userActed) break
+            }
+            val am = context.getSystemService(AudioManager::class.java)
+            val vols = "volumes alarme ${streamVol(am, AudioManager.STREAM_ALARM)}, média " +
+                "${streamVol(am, AudioManager.STREAM_MUSIC)}" +
+                (if (am?.isMusicActive == true) ", son actif" else ", aucun son actif")
+            when {
+                played -> log(
+                    "lecture démarrée ${(android.os.SystemClock.elapsedRealtime() - t0) / 1000} s " +
+                        "après le lancement ; $vols"
+                )
+                userActed -> log("rien n'a joué mais l'utilisateur est intervenu : pas de sonnerie de secours")
+                fallback == null -> {
+                    log("rien n'a joué 20 s après le lancement ($vols) : sonnerie de secours")
                     startFallbackRingtone(context)
-                } else if (PlayerCore.isPlaying.value) {
-                    val am = context.getSystemService(AudioManager::class.java)
-                    log(
-                        "lecture en cours 20 s après le lancement ; volumes alarme " +
-                            "${streamVol(am, AudioManager.STREAM_ALARM)}, média " +
-                            "${streamVol(am, AudioManager.STREAM_MUSIC)}" +
-                            (if (am?.isMusicActive == true) ", son actif" else ", AUCUN son actif")
-                    )
                 }
             }
         }
+    }
+
+    /** Geste de l'utilisateur sur le lecteur : le filet sonore est désarmé
+     *  (une musique coupée à la main n'est pas un réveil muet). */
+    fun noteUserGesture(reason: String) {
+        if (watchdogJob?.isActive == true) log("geste ($reason) : filet sonore désarmé")
+        userActed = true
+        watchdogJob?.cancel()
+        watchdogJob = null
     }
 
     /** Journal du réveil (service_log.txt, tag [Réveil]) : chaque étape
