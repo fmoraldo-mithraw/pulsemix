@@ -20,7 +20,19 @@ object FfmpegBin {
 
     fun env(): Map<String, String> = env
 
-    /** Chemin du binaire, extrait au premier appel. null si indisponible. */
+    /**
+     * Chemin du binaire, extrait au premier appel. null si indisponible.
+     *
+     * Depuis youtubedl-android 0.18, l'EXÉCUTABLE ffmpeg est livré sous le
+     * nom `libffmpeg.so` dans le dossier des bibliothèques natives de
+     * l'appli (le seul endroit où Android 10+ laisse exécuter un binaire
+     * embarqué), et l'archive extraite dans les données ne contient plus
+     * que ses bibliothèques (`…/packages/ffmpeg/usr/lib`). L'ancienne
+     * recherche d'un fichier nommé « ffmpeg » dans les données ne trouvait
+     * donc plus rien : mashup, export du meilleur passage, conversion WMA
+     * et écriture des tags répondaient « ffmpeg indisponible ». On regarde
+     * d'abord au bon endroit, l'ancien chemin reste en repli.
+     */
     @Synchronized
     fun path(context: Context): String? {
         bin?.let { return it }
@@ -29,27 +41,55 @@ object FfmpegBin {
             FFmpeg.getInstance().init(app)
         } catch (e: Exception) {
             android.util.Log.w("FfmpegBin", "ffmpeg indisponible", e)
+            log("init youtubedl-android impossible : ${e.message}")
             return null
         }
-        var found: File? = null
+        val nativeDir = File(app.applicationInfo.nativeLibraryDir)
         val libDirs = ArrayList<String>()
-        for (root in listOfNotNull(app.noBackupFilesDir, app.filesDir)) {
-            root.walkTopDown().maxDepth(8).forEach { f ->
-                if (f.isFile && f.name == "ffmpeg" && f.canExecute()) {
-                    if (found == null) found = f
-                } else if (f.isDirectory && f.name == "lib") {
-                    libDirs.add(f.absolutePath)
+        // Bibliothèques de ffmpeg (extraites par FFmpeg.init)
+        val packagedLib = File(
+            app.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib"
+        )
+        if (packagedLib.isDirectory) libDirs.add(packagedLib.absolutePath)
+        var found: File? = File(nativeDir, "libffmpeg.so").takeIf { it.isFile }
+        if (found == null) {
+            // Anciennes versions : binaire « ffmpeg » extrait dans les données
+            for (root in listOfNotNull(app.noBackupFilesDir, app.filesDir)) {
+                root.walkTopDown().maxDepth(8).forEach { f ->
+                    if (f.isFile && f.name == "ffmpeg" && f.canExecute()) {
+                        if (found == null) found = f
+                    } else if (f.isDirectory && f.name == "lib" &&
+                        f.absolutePath !in libDirs
+                    ) {
+                        libDirs.add(f.absolutePath)
+                    }
                 }
+                if (found != null) break
             }
-            if (found != null) break
         }
-        val exe = found ?: return null
+        val exe = found
+        if (exe == null) {
+            log(
+                "binaire introuvable : ni ${nativeDir.absolutePath}/libffmpeg.so, " +
+                    "ni « ffmpeg » dans les données"
+            )
+            return null
+        }
+        libDirs.add(nativeDir.absolutePath)
         env = buildMap {
-            if (libDirs.isNotEmpty()) put("LD_LIBRARY_PATH", libDirs.joinToString(":"))
+            put("LD_LIBRARY_PATH", libDirs.joinToString(":"))
             put("PATH", (exe.parentFile?.absolutePath ?: "") + ":/system/bin")
         }
         bin = exe.absolutePath
+        log("binaire : ${exe.absolutePath} ; LD_LIBRARY_PATH=${libDirs.joinToString(":")}")
         return bin
+    }
+
+    private fun log(message: String) {
+        try {
+            com.pulsemix.app.player.PlayerCore.engineLog("ffmpeg", message)
+        } catch (_: Exception) {
+        }
     }
 
     @Volatile private var cmdPrefix: List<String>? = null
@@ -90,6 +130,9 @@ object FfmpegBin {
         val chosen = listOf(listOf(exe), listOf(linker, exe)).firstOrNull { works(it) }
         if (chosen == null) {
             android.util.Log.w("FfmpegBin", "ffmpeg inexécutable, direct comme via $linker")
+            log("binaire inexécutable, direct comme via $linker")
+        } else {
+            log("commande : ${chosen.joinToString(" ")}")
         }
         cmdPrefix = chosen
         return chosen
