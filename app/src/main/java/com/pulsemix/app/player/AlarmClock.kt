@@ -380,41 +380,102 @@ object AlarmClock {
 
     // ------------------------------------------------ sonnerie de secours
 
-    private var fallback: android.media.Ringtone? = null
+    /**
+     * Sonnerie de secours : un MediaPlayer À NOUS, jamais un Ringtone. Le
+     * Ringtone système peut déléguer la lecture au lecteur distant de
+     * SystemUI : une sonnerie en boucle lancée là-bas survivait à la mort
+     * de notre processus et devenait INARRÊTABLE (journal du 9 septembre :
+     * « une alarme tourne en boucle et je ne peux pas l'arrêter »). Avec un
+     * MediaPlayer local, elle meurt avec l'appli, on la coupe nous-mêmes,
+     * une seule instance à la fois, et jamais plus de [FALLBACK_MAX_MS].
+     */
+    private var fallback: android.media.MediaPlayer? = null
+    private var fallbackJob: Job? = null
+
+    /** Durée maximale de la sonnerie de secours (5 min) : un réveil, pas
+     *  une sirène sans fin. */
+    private const val FALLBACK_MAX_MS = 5 * 60_000L
 
     /**
      * Bibliothèque vide, dossier devenu illisible, fichiers introuvables :
      * le réveil restait muet, précisément dans le cas où l'on compte le
      * plus dessus. On sonne alors avec l'alarme du système.
      */
+    @OptIn(DelicateCoroutinesApi::class)
     private fun startFallbackRingtone(context: Context) {
-        try {
-            val uri = android.media.RingtoneManager.getActualDefaultRingtoneUri(
+        if (fallback != null) {
+            log("sonnerie de secours déjà en cours")
+            return
+        }
+        val candidates = listOfNotNull(
+            android.media.RingtoneManager.getActualDefaultRingtoneUri(
                 context, android.media.RingtoneManager.TYPE_ALARM
-            ) ?: android.media.RingtoneManager.getActualDefaultRingtoneUri(
+            ),
+            android.provider.Settings.System.DEFAULT_ALARM_ALERT_URI,
+            android.media.RingtoneManager.getActualDefaultRingtoneUri(
                 context, android.media.RingtoneManager.TYPE_RINGTONE
-            ) ?: return
-            val r = android.media.RingtoneManager.getRingtone(context, uri) ?: return
-            // Sur le canal « alarme » et non « média » : cette sonnerie de
-            // secours ne doit dépendre ni de la montée progressive ni du
-            // volume média, qui peut être au minimum.
-            r.audioAttributes = android.media.AudioAttributes.Builder()
-                .setUsage(android.media.AudioAttributes.USAGE_ALARM)
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build()
-            if (android.os.Build.VERSION.SDK_INT >= 28) r.isLooping = true
-            r.play()
-            fallback = r
-        } catch (_: Exception) {
+            )
+        )
+        for (uri in candidates) {
+            val mp = android.media.MediaPlayer()
+            try {
+                // Sur le canal « alarme » et non « média » : cette sonnerie
+                // de secours ne doit dépendre ni de la montée progressive
+                // ni du volume média, qui peut être au minimum.
+                mp.setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                mp.setDataSource(context, uri)
+                mp.isLooping = true
+                mp.prepare()
+                mp.start()
+                fallback = mp
+                log("sonnerie de secours démarrée ($uri), ${FALLBACK_MAX_MS / 60_000} min au plus")
+                fallbackJob?.cancel()
+                fallbackJob = GlobalScope.launch(Dispatchers.Main) {
+                    delay(FALLBACK_MAX_MS)
+                    if (fallback === mp) {
+                        log("sonnerie de secours : durée maximale atteinte, arrêt")
+                        stopFallbackRingtone()
+                    }
+                }
+                return
+            } catch (e: Exception) {
+                log("sonnerie de secours impossible sur $uri : ${e.message}")
+                try {
+                    mp.release()
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
     private fun stopFallbackRingtone() {
+        fallbackJob?.cancel()
+        fallbackJob = null
+        val mp = fallback ?: return
+        fallback = null
         try {
-            fallback?.stop()
+            mp.stop()
         } catch (_: Exception) {
         }
-        fallback = null
+        try {
+            mp.release()
+        } catch (_: Exception) {
+        }
+        log("sonnerie de secours arrêtée")
+    }
+
+    /** Coupe la sonnerie de secours si elle tourne — tout geste sur le
+     *  lecteur (pause, suivant, arrêt…) doit y suffire. */
+    fun stopFallbackIfRinging(reason: String): Boolean {
+        if (fallback == null) return false
+        log("sonnerie de secours coupée ($reason)")
+        stopFallbackRingtone()
+        return true
     }
 
     /**

@@ -3605,6 +3605,9 @@ object PlayerCore {
      * (journal : « mon téléphone et le Bluetooth lisent en même temps »).
      */
     private fun endAlarmAudioOnGesture(gesture: String) {
+        // La sonnerie de secours du réveil, si elle tourne, s'arrête au
+        // premier geste — quel que soit l'état du canal.
+        AlarmClock.stopFallbackIfRinging(gesture)
         if (!alarmAudio || alarmLaunching) return
         engineLog("Réveil", "canal média rendu ($gesture)")
         setAlarmAudio(false)
@@ -3826,6 +3829,7 @@ object PlayerCore {
     fun stopPlayback() {
         if (!initialized) return
         // Arrêt = fin du réveil aussi (stopRinging passe par ici)
+        AlarmClock.stopFallbackIfRinging("arrêt")
         if (alarmAudio && !alarmLaunching) {
             engineLog("Réveil", "canal média rendu (arrêt)")
             setAlarmAudio(false)
