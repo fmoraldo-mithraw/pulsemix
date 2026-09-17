@@ -2,6 +2,7 @@ package com.pulsemix.app.player
 
 import com.pulsemix.app.analysis.StructureDetector
 import com.pulsemix.app.data.Track
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -321,9 +322,8 @@ class DjMixerSpecTest {
     }
 
     // ---------------------------------------------------------- fadeSpecPro
-    // Sélection « pro » (toggle Transitions pro) : la palette de fadeSpec,
-    // plus le drop-swap de festival quand l'entrant a un vrai drop détecté
-    // sur son ancre.
+    // Sélection « pro » (toujours active) : tempos calables → va-et-vient
+    // (KIND_LONG) ; non calables → coupe ; saut manuel → fondu court.
 
     private fun dropAt(startMs: Long) = listOf(
         StructureDetector.Section(
@@ -348,100 +348,126 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `pro - drop a une mesure de l ancre - drop swap`() {
-        // Drop pile sur l'ancre : le cas nominal du pré-roll
+    fun `pro - tempos cales - va-et-vient, drop ou pas, calme ou pas`() {
         val (s, kind) = DjMixer.fadeSpecPro(
             track("a", 128f, energyMean = 0.2f), 1f,
             track("b", 128f, energyMean = 0.2f),
             rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
             nextSections = dropAt(60_000L), anchorMs = 60_000L
         )
-        assertEquals(DjMixer.FADE_NORMAL_S, s, 1e-9)
-        assertEquals(DjMixer.KIND_DROP, kind)
-        // À ± une mesure (1 875 ms à 128 BPM) : encore un drop-swap
+        assertEquals(DjMixer.LONG_TARGET_S, s, 1e-9)
+        assertEquals(DjMixer.KIND_LONG, kind)
+        // Entrant calme, sans structure, après deux drop-swaps : toujours
+        // le va-et-vient — c'est LA transition pro.
         val (_, k2) = DjMixer.fadeSpecPro(
-            track("a", 128f, energyMean = 0.2f), 1f,
-            track("b", 128f, energyMean = 0.2f),
-            rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
-            nextSections = dropAt(61_800L), anchorMs = 60_000L
-        )
-        assertEquals(DjMixer.KIND_DROP, k2)
-        // Au-delà d'une mesure : plus de drop-swap
-        val (_, k3) = DjMixer.fadeSpecPro(
-            track("a", 128f, energyMean = 0.2f), 1f,
-            track("b", 128f, energyMean = 0.2f),
-            rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
-            nextSections = dropAt(64_000L), anchorMs = 60_000L
-        )
-        assertTrue(k3 != DjMixer.KIND_DROP)
-    }
-
-    @Test
-    fun `pro - entrant calme - jamais de drop swap`() {
-        // Un drop-swap sur de l'ambient serait ridicule : l'entrant calme
-        // retombe sur la palette douce de fadeSpec, drop détecté ou pas.
-        val (_, kind) = DjMixer.fadeSpecPro(
-            track("a", 128f, energyMean = 0.2f), 1f,
-            track("b", 128f, energyMean = 0.05f),
-            rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
-            nextSections = dropAt(60_000L), anchorMs = 60_000L
-        )
-        assertTrue(kind != DjMixer.KIND_DROP)
-    }
-
-    @Test
-    fun `pro - sortant calme - jamais de drop swap`() {
-        // Le geste tient le SORTANT à plein volume pendant que l'entrant
-        // monte dessous : sur de l'acoustique ou du chanté posé, c'est
-        // intenable — même quand l'entrant, lui, a un vrai drop.
-        val (_, kind) = DjMixer.fadeSpecPro(
             track("a", 128f, energyMean = 0.05f), 1f,
-            track("b", 128f, energyMean = 0.2f),
-            rate = 1f, jumping = false, lastKind = -1, dropStreak = 0,
-            nextSections = dropAt(60_000L), anchorMs = 60_000L
+            track("b", 126f, energyMean = 0.05f),
+            rate = DjMixer.computeRate(128f, 126f), jumping = false,
+            lastKind = DjMixer.KIND_DROP, dropStreak = 2,
+            nextSections = emptyList(), anchorMs = 60_000L
         )
-        assertTrue(kind != DjMixer.KIND_DROP)
+        assertEquals(DjMixer.KIND_LONG, k2)
     }
 
     @Test
-    fun `pro - deux drops d affilee permis - le troisieme force un blend`() {
-        val a = track("a", 128f, energyMean = 0.2f)
-        val b = track("b", 128f, energyMean = 0.2f)
-        // Après UN drop-swap : encore permis (le geste standard en festival)
-        val (_, second) = DjMixer.fadeSpecPro(
-            a, 1f, b, 1f, jumping = false, lastKind = DjMixer.KIND_DROP,
-            dropStreak = 1, nextSections = dropAt(60_000L), anchorMs = 60_000L
-        )
-        assertEquals(DjMixer.KIND_DROP, second)
-        // Après DEUX d'affilée : blend forcé (fadeSpec ne rend jamais DROP)
-        val (_, third) = DjMixer.fadeSpecPro(
-            a, 1f, b, 1f, jumping = false, lastKind = DjMixer.KIND_DROP,
-            dropStreak = 2, nextSections = dropAt(60_000L), anchorMs = 60_000L
-        )
-        assertTrue(third != DjMixer.KIND_DROP)
-    }
-
-    @Test
-    fun `pro - sans structure ou saut manuel - delegation exacte`() {
-        // Vieille bibliothèque (pas de structure) : fadeSpecPro EST
-        // fadeSpec — le mode pro reste sans risque.
+    fun `pro - saut manuel - fondu court neutre`() {
         val a = track("a", 128f)
         val b = track("b", 126f, energyMean = 0.2f)
         val rate = DjMixer.computeRate(128f, 126f)
-        assertEquals(
-            DjMixer.fadeSpec(a, 1f, b, rate, jumping = false, lastKind = -1),
-            DjMixer.fadeSpecPro(
-                a, 1f, b, rate, jumping = false, lastKind = -1,
-                dropStreak = 0, nextSections = emptyList(), anchorMs = 60_000L
-            )
-        )
-        // Saut manuel : fondu court neutre, comme fadeSpec
         val (s, kind) = DjMixer.fadeSpecPro(
             a, 1f, b, rate, jumping = true, lastKind = -1,
             dropStreak = 0, nextSections = dropAt(60_000L), anchorMs = 60_000L
         )
         assertEquals(DjMixer.FADE_JUMP_S, s, 1e-9)
         assertEquals(DjMixer.KIND_EQ, kind)
+    }
+
+    // ------------------------------------------------------ va-et-vient pur
+
+    @Test
+    fun `longBars - 20 a 30 s selon le tempo, multiple de 4, borne 8 a 16`() {
+        assertEquals(12, DjMixer.longBars(128f)) // 22,5 s
+        assertEquals(12, DjMixer.longBars(100f)) // 28,8 s
+        assertEquals(16, DjMixer.longBars(140f)) // 27,4 s
+        assertEquals(8, DjMixer.longBars(90f))   // 21,3 s
+        assertEquals(8, DjMixer.longBars(60f))   // plancher
+        assertEquals(16, DjMixer.longBars(200f)) // plafond
+        assertEquals(12, DjMixer.longBars(0f))
+        for (bpm in listOf(90f, 100f, 110f, 128f, 140f, 150f)) {
+            val s = DjMixer.longBars(bpm) * DjMixer.barSeconds(bpm)
+            assertTrue("$bpm BPM : $s s", s in 20.0..32.0)
+        }
+    }
+
+    @Test
+    fun `longBoundaries - swap au milieu, cellules entieres`() {
+        assertArrayEquals(intArrayOf(4, 6, 8, 12, 14), DjMixer.longBoundaries(16))
+        assertArrayEquals(intArrayOf(3, 5, 6, 9, 10), DjMixer.longBoundaries(12))
+        assertArrayEquals(intArrayOf(2, 3, 4, 6, 7), DjMixer.longBoundaries(8))
+        // Durée inattendue (fondu raccourci) : mise à l'échelle, croissante
+        val b = DjMixer.longBoundaries(10)
+        for (i in 1 until b.size) assertTrue(b[i] >= b[i - 1])
+        assertTrue(b[4] < 10)
+    }
+
+    @Test
+    fun `longGain - sortant plein et entrant tease au debut, inversion apres le swap, entrant seul a la fin`() {
+        val bounds = DjMixer.longBoundaries(16)
+        val tease = DjMixer.LONG_TEASE
+        // Début : A a la main, B teasé
+        assertEquals(1f, DjMixer.longGainA(0f, 16, bounds), 1e-6f)
+        assertEquals(tease, DjMixer.longGainB(0f, bounds, tease), 1e-6f)
+        // Cellule 2 (mesures 4-6), une fois la rampe passée : B a la main
+        assertEquals(DjMixer.LONG_DUCK, DjMixer.longGainA(5f, 16, bounds), 1e-6f)
+        assertEquals(1f, DjMixer.longGainB(5f, bounds, tease), 1e-6f)
+        // Cellule 3 : retour de A
+        assertEquals(1f, DjMixer.longGainA(7.5f, 16, bounds), 1e-6f)
+        // Après le swap (mesure 8) : B a la main
+        assertEquals(1f, DjMixer.longGainB(10f, bounds, tease), 1e-6f)
+        // Dernier retour de A (mesures 12-14)
+        assertEquals(1f, DjMixer.longGainA(13.5f, 16, bounds), 1e-6f)
+        // Dernière cellule : B plein, A s'efface jusqu'à zéro
+        assertEquals(1f, DjMixer.longGainB(14.5f, bounds, tease), 1e-6f)
+        assertTrue(DjMixer.longGainA(14.5f, 16, bounds) < DjMixer.LONG_DUCK)
+        assertEquals(0f, DjMixer.longGainA(16f, 16, bounds), 1e-6f)
+        // Rampes : la dominance est continue (jamais un saut de 0 à 1 ;
+        // au plus ~0,36 par 1/16 de mesure au plus raide du cosinus)
+        var prev = DjMixer.longDominance(0f, bounds)
+        var x = 0f
+        while (x <= 16f) {
+            val d = DjMixer.longDominance(x, bounds)
+            assertTrue("saut à $x", kotlin.math.abs(d - prev) <= 0.4f)
+            prev = d
+            x += 1f / 16f
+        }
+    }
+
+    @Test
+    fun `longTease - deux morceaux chantes - entrant plus en retrait`() {
+        assertEquals(DjMixer.LONG_TEASE, DjMixer.longTease(0.2f, 0.5f), 0f)
+        assertEquals(DjMixer.LONG_TEASE_VOCAL, DjMixer.longTease(0.4f, 0.5f), 0f)
+    }
+
+    @Test
+    fun `fadeBars - va-et-vient - sa duree, jamais plus de la moitie du passage`() {
+        assertEquals(12, DjMixer.fadeBars(DjMixer.KIND_LONG, 64.0, 128f))
+        assertEquals(8, DjMixer.fadeBars(DjMixer.KIND_LONG, 16.0, 128f))
+        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_LONG, 6.0, 128f))
+    }
+
+    @Test
+    fun `preRollMs - relaxe - entre au debut de la section precedente, jamais en plein drop`() {
+        val sections = listOf(
+            StructureDetector.Section(0L, 30_000L, StructureDetector.SectionKind.INTRO),
+            StructureDetector.Section(30_000L, 60_000L, StructureDetector.SectionKind.BREAK),
+            StructureDetector.Section(60_000L, 120_000L, StructureDetector.SectionKind.DROP)
+        )
+        // Sans montée adjacente : strict → 0 ; relaxé → borné au break (16 mesures = 30 s à 128)
+        assertEquals(0L, DjMixer.preRollMs(60_000L, 22_500L, 128f, sections))
+        val r = DjMixer.preRollMs(60_000L, 22_500L, 128f, sections, relaxed = true)
+        assertEquals(22_500L, r)
+        // Ancre au milieu du drop : rien, même relaxé
+        assertEquals(0L, DjMixer.preRollMs(90_000L, 22_500L, 128f, sections, relaxed = true))
     }
 
     // ------------------------------------------------------- drop-swap pur

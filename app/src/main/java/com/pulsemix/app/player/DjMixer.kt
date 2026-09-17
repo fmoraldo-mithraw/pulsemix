@@ -147,6 +147,118 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val KIND_DARK = 3     // filter sweep passe-bas (le sortant s'étouffe)
         const val KIND_EQ = 4       // échange de basses classique, sans filtre
         const val KIND_DROP = 5     // drop-swap festival : montée en fond, coupe sur le drop
+        const val KIND_LONG = 6     // va-et-vient : long blend 20-30 s, les deux se répondent
+
+        /**
+         * Va-et-vient ([KIND_LONG]) — LA transition pro, calquée sur le
+         * long blend des DJ de club : les deux morceaux, calés temps sur
+         * temps et phrase sur phrase, se RÉPONDENT par cellules de
+         * mesures — le sortant domine, l'entrant est « teasé » (aigus et
+         * médiums seulement, en retrait) ; puis l'entrant prend la main
+         * une cellule, le sortant se retire ; retour du sortant ; sur le
+         * « 1 » du milieu, ÉCHANGE DES BASSES (l'entrant porte désormais
+         * le morceau) ; un dernier retour du sortant, aminci ; puis
+         * l'entrant seul, plein spectre, et le sortant s'efface sur la
+         * dernière cellule. Ça s'arrête quand l'entrant a complètement
+         * pris le dessus — son drop tombe là (pré-roll, §3.6).
+         *
+         * Cellules en MESURES, par durée (5 frontières ; échange des
+         * basses sur la 3e = milieu) :
+         *   16 mesures : A4 · B2 · A2 · [swap] B4 · A2 · B2 (sortie)
+         *   12 mesures : A3 · B2 · A1 · [swap] B3 · A1 · B2
+         *    8 mesures : A2 · B1 · A1 · [swap] B2 · A1 · B1
+         * Durée visée [LONG_TARGET_S] (20-30 s selon le tempo), bornée à
+         * [LONG_MIN_BARS]..[LONG_MAX_BARS], multiple de 4 mesures.
+         */
+        const val LONG_TARGET_S = 26.0
+        const val LONG_MIN_BARS = 8
+        const val LONG_MAX_BARS = 16
+        /** Gain de l'entrant quand il est teasé (−9 dB) ; −15 dB si les
+         *  deux morceaux sont chantés (deux voix ne se superposent pas). */
+        const val LONG_TEASE = 0.35f
+        const val LONG_TEASE_VOCAL = 0.18f
+        /** Gain du sortant quand l'entrant a la main (−9 dB). */
+        const val LONG_DUCK = 0.35f
+        /** Rampe de chaque bascule : un temps (en mesures). */
+        const val LONG_RAMP_BARS = 0.25f
+        /** Part des bas-médiums au-delà de laquelle un morceau est tenu
+         *  pour chanté (lowMidRatio). */
+        const val VOCAL_LOWMID = 0.35f
+
+        /** Durée du va-et-vient en mesures, au tempo [bpm] : ~26 s, arrondie
+         *  au multiple de 4 mesures, bornée 8..16. Fonction PURE. */
+        internal fun longBars(bpm: Float): Int {
+            if (bpm <= 0f) return 12
+            val bars = LONG_TARGET_S / barSeconds(bpm)
+            val q = (Math.round(bars / 4.0) * 4).toInt()
+            return q.coerceIn(LONG_MIN_BARS, LONG_MAX_BARS)
+        }
+
+        /** Les 5 frontières de cellule (en mesures depuis le début du
+         *  fondu) d'un va-et-vient de [bars] mesures ; la 3e est le « 1 »
+         *  de l'échange des basses. Fonction PURE. */
+        internal fun longBoundaries(bars: Int): IntArray = when (bars) {
+            16 -> intArrayOf(4, 6, 8, 12, 14)
+            12 -> intArrayOf(3, 5, 6, 9, 10)
+            8 -> intArrayOf(2, 3, 4, 6, 7)
+            else -> {
+                val base = intArrayOf(2, 3, 4, 6, 7)
+                IntArray(5) { Math.round(base[it] * bars / 8f).coerceIn(1, bars - 1) }
+            }
+        }
+
+        /**
+         * Qui a la main à la position [posBars] (mesures depuis le début
+         * du fondu) : 0 = le sortant, 1 = l'entrant, avec une rampe de
+         * [LONG_RAMP_BARS] à chaque frontière. Fonction PURE.
+         */
+        internal fun longDominance(posBars: Float, bounds: IntArray): Float {
+            // Cellules : A, B, A, B, A, B(sortie) → valeur = parité
+            var cell = 0
+            var lastBoundary = 0f
+            for (k in bounds.indices) {
+                if (posBars >= bounds[k]) {
+                    cell = k + 1
+                    lastBoundary = bounds[k].toFloat()
+                }
+            }
+            val cur = (cell % 2).toFloat()
+            if (cell == 0) return cur
+            val prev = ((cell - 1) % 2).toFloat()
+            val t = ((posBars - lastBoundary) / LONG_RAMP_BARS).coerceIn(0f, 1f)
+            // Rampe en cosinus : ni clic ni « pompage »
+            val sm = 0.5f - 0.5f * cos(t * Math.PI.toFloat())
+            return prev + (cur - prev) * sm
+        }
+
+        /** Gain du SORTANT pendant un va-et-vient : plein quand il a la
+         *  main, [LONG_DUCK] quand l'entrant l'a, et il s'efface en
+         *  cosinus sur la dernière cellule. Fonction PURE. */
+        internal fun longGainA(posBars: Float, bars: Int, bounds: IntArray): Float {
+            val d = longDominance(posBars, bounds)
+            var g = 1f - (1f - LONG_DUCK) * d
+            val last = bounds[4].toFloat()
+            if (posBars >= last) {
+                val t = ((posBars - last) / (bars - last).coerceAtLeast(1f)).coerceIn(0f, 1f)
+                g *= cos(t * HALF_PI)
+            }
+            return g
+        }
+
+        /** Gain de l'ENTRANT pendant un va-et-vient : [tease] quand il est
+         *  teasé, plein quand il a la main — et plein pour de bon sur la
+         *  dernière cellule. Fonction PURE. */
+        internal fun longGainB(posBars: Float, bounds: IntArray, tease: Float): Float {
+            if (posBars >= bounds[4]) return 1f
+            val d = longDominance(posBars, bounds)
+            return tease + (1f - tease) * d
+        }
+
+        /** Niveau de tease de l'entrant : en retrait de −15 dB si les deux
+         *  morceaux sont chantés, −9 dB sinon. Fonction PURE. */
+        internal fun longTease(lowMidA: Float, lowMidB: Float): Float =
+            if (lowMidA > VOCAL_LOWMID && lowMidB > VOCAL_LOWMID) LONG_TEASE_VOCAL
+            else LONG_TEASE
         const val ECHO_FEEDBACK = 0.55f
         // Drop-swap : pendant la montée le sortant reste la star (quasi
         // plein), l'entrant monte en fond plafonné à mi-volume — la
@@ -240,7 +352,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
          * mesures) ; le reste : 4. Bornée à [MAX_FADE_RATIO_BARS] du passage
          * sortant, jamais moins d'une mesure. Fonction PURE (testée en JVM).
          */
-        internal fun fadeBars(kind: Int, segmentBars: Double): Int {
+        internal fun fadeBars(kind: Int, segmentBars: Double, bpm: Float = 0f): Int {
+            if (kind == KIND_LONG) {
+                // Va-et-vient : sa propre durée (~26 s), jamais plus de la
+                // MOITIÉ du passage — le passage a été allongé d'autant à
+                // l'ouverture du deck (Deck.init), la minute forte reste
+                // entière.
+                val cap = floor(segmentBars * 0.5).toInt().coerceAtLeast(4)
+                return min(longBars(bpm), cap)
+            }
             val nominal = when (kind) {
                 KIND_CUT -> 2
                 KIND_HARMONIC -> if (segmentBars >= 48.0) 6 else 4
@@ -539,7 +659,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
          */
         internal fun preRollMs(
             anchorMs: Long, fadeMs: Long, bpm: Float,
-            sections: List<StructureDetector.Section>
+            sections: List<StructureDetector.Section>,
+            // Va-et-vient : sans montée adjacente, le pré-roll est admis
+            // jusqu'au début de la section qui précède l'ancre (jamais
+            // en plein DROP).
+            relaxed: Boolean = false
         ): Long {
             if (bpm <= 0f || fadeMs <= 0L || anchorMs <= 0L) return 0L
             val barMs = 4.0 * 60_000.0 / bpm
@@ -564,6 +688,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     // début de la montée, pas avant (arrondi à la mesure
                     // par défaut — plancher, pour ne pas la déborder).
                     val cap = floor((anchorMs - buildStartMs) / barMs).toLong()
+                    if (bars > cap) bars = cap
+                    if (bars <= 0L) return 0L
+                } else if (relaxed) {
+                    // Va-et-vient : la section qui précède l'ancre (break,
+                    // couplet, intro…) sert de montée — on y entre au plus
+                    // tôt à son début. Ancre en plein DROP : pas de pré-roll.
+                    val before = sections.firstOrNull {
+                        anchorMs - 1L in it.startMs until it.endMs
+                    }
+                    if (before == null ||
+                        before.kind == StructureDetector.SectionKind.DROP
+                    ) return 0L
+                    val cap = floor((anchorMs - before.startMs) / barMs).toLong()
                     if (bars > cap) bars = cap
                     if (bars <= 0L) return 0L
                 } else {
@@ -596,6 +733,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             KIND_DARK -> "sweep grave"
             KIND_EQ -> "échange de basses"
             KIND_DROP -> "drop-swap"
+            KIND_LONG -> "va-et-vient"
             else -> "sweep aigu"
         }
 
@@ -701,22 +839,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     abs(ratio - 0.5f) * 2f
                 )
                 if (lockErr > 0.005f) return FADE_CUT_S to KIND_CUT
-                // Les DEUX morceaux doivent être des morceaux de club :
-                // le geste consiste à tenir le sortant à plein pendant que
-                // l'entrant monte dessous, ce qui ne pardonne rien sur du
-                // chanté ou de l'acoustique — le journal montrait des
-                // drop-swaps sur du Rolling Stones et du Buena Vista.
-                if (dropStreak < 2 && next.energyMean >= DROP_MIN_ENERGY &&
-                    current.energyMean >= DROP_MIN_ENERGY
-                ) {
-                    val barMs = 4.0 * 60_000.0 / next.bpm
-                    for (s in nextSections) {
-                        if (s.kind == StructureDetector.SectionKind.DROP &&
-                            abs(s.startMs - anchorMs) <= barMs
-                        ) return FADE_NORMAL_S to KIND_DROP
-                    }
-                }
+                // Tempos calés : LE geste pro, le va-et-vient (KIND_LONG) —
+                // 20 à 30 s où les deux morceaux se répondent, jusqu'à ce
+                // que l'entrant ait complètement pris le dessus. Le drop
+                // de l'entrant y tombe à la fin (pré-roll) : le drop-swap
+                // n'est plus un cas à part, c'est la conclusion du blend.
+                return LONG_TARGET_S to KIND_LONG
             }
+            // Sans tempo d'un côté : rien à caler, palette standard
             return fadeSpec(
                 current, curRate, next, rate, jumping, lastKind,
                 exitKind, sectionAt(nextSections, anchorMs)
@@ -1109,7 +1239,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // ouverture initiale, saut manuel, seek — le pré-roll ne
         // s'applique qu'aux transitions automatiques, où personne
         // n'attend le passage fort immédiatement.
-        val preFadeS: Double = 0.0
+        val preFadeS: Double = 0.0,
+        // Va-et-vient : le pré-roll est admis sans montée adjacente (voir
+        // preRollMs) — sous un blend de 20-30 s, entrer une phrase avant
+        // le drop vaut mieux que teaser le drop lui-même.
+        val preRelaxed: Boolean = false
     ) {
         val track: Track = segment.track
 
@@ -1388,6 +1522,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // d'apprécier le morceau (les fondus mangent déjà ~30 s à eux
             // deux). Borné par ce qu'il reste de morceau après l'ancre.
             segMs = max(segMs, min(MIN_SEGMENT_MS, track.durationMs - anchor))
+            // Va-et-vient (transitions pro, toujours actives) : la jonction
+            // de sortie dure ~26 s — le passage est ALLONGÉ d'autant, pour
+            // que la minute forte se joue entière avant que l'entrant ne
+            // commence à répondre. En mode DJ, un morceau joue donc ~2 min
+            // (pré-roll sous le blend d'entrée + passage + blend de
+            // sortie), comme dans un vrai set.
+            if (!playToEnd && track.bpm > 0f) {
+                segMs += Math.round(longBars(track.bpm) * 4.0 * 60_000.0 / track.bpm)
+            }
             if (track.bpm > 0f) {
                 val phraseMs = 16.0 * 60_000.0 / track.bpm
                 var phrases = floor(segMs / phraseMs).toLong()
@@ -1421,7 +1564,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // du pré-roll, c'est voulu. L'annonce du morceau, elle,
             // reste liée au fondu — rien ne change pour l'interface.
             val preRoll = if (seekFromMs == null && !playFromStart)
-                preRollMs(anchor, Math.round(preFadeS * 1000.0), track.bpm, sections)
+                preRollMs(
+                    anchor, Math.round(preFadeS * 1000.0), track.bpm, sections,
+                    relaxed = preRelaxed
+                )
             else 0L
             startMs = when {
                 // Déplacement manuel : garder de quoi faire une VRAIE
@@ -1801,6 +1947,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // dans la boucle par bloc.
         var bassSwapF = -1L
         var bassSwapRampF = 1L
+        // Va-et-vient : cellules (mesures), frames par mesure, tease
+        var longBounds = intArrayOf(4, 6, 8, 12, 14)
+        var longBarsF = 16
+        var longBarFrames = 1f
+        var longTeaseG = LONG_TEASE
         // Fin de la dernière transition : le nouveau morceau garde le tempo
         // calé quelques secondes de plus avant de revenir au sien
         var fadeEndF = 0L
@@ -1987,7 +2138,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // candidat échoue, le suivant hérite de la même estimation —
             // même approximation que `rate`, calculé lui aussi pour le
             // candidat d'origine.
-            preFadeS: Double = 0.0
+            preFadeS: Double = 0.0,
+            preRelaxed: Boolean = false
         ): Deck? {
             var idx = fromIndex
             while (running && idx < segments.size) {
@@ -1996,7 +2148,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     idx, segments[idx], rate, factor,
                     playToEnd = idx == segments.size - 1,
                     playFromStart = fromStart,
-                    preFadeS = preFadeS
+                    preFadeS = preFadeS,
+                    preRelaxed = preRelaxed
                 )
                 if (d.open()) return d
                 d.close()
@@ -2266,7 +2419,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         val fadeS = if (bpmEff > 0f) {
                             val barS = barSeconds(bpmEff)
                             val segBars = a.totalOutFrames.toDouble() / OUT_SR / barS
-                            (if (jumping) 2 else fadeBars(fadeKind, segBars)) * barS
+                            (if (jumping) 2 else fadeBars(fadeKind, segBars, bpmEff)) * barS
                         } else clampFadeS(rawFadeS, a.totalOutFrames)
                         val fadeF = (fadeS * OUT_SR).toLong()
                         // Le sortant commence à glisser vers sa part du
@@ -2296,7 +2449,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 // tout de suite.
                                 val b = openNextValid(
                                     nextIdx, rate,
-                                    preFadeS = if (jumping) 0.0 else fadeS
+                                    preFadeS = if (jumping) 0.0 else fadeS,
+                                    preRelaxed = fadeKind == KIND_LONG
                                 )
                                 // Réserve décodée avant de le confier au
                                 // mixeur : c'est ce fil-ci qui attend, le
@@ -2481,7 +2635,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // bloc. Période invalide (BPM absent) : -1, le
                         // geste progressif historique s'applique.
                         bassSwapF = -1L
-                        if ((fadeKindF == KIND_EQ || fadeKindF == KIND_HARMONIC) &&
+                        if (fadeKindF == KIND_LONG && period > 0.0 && !period.isNaN()) {
+                            // Va-et-vient : cellules sur la durée RÉELLE du
+                            // fondu (arrondie à la mesure) ; échange des
+                            // basses sur le « 1 » de la 3e frontière (le
+                            // milieu), rampe d'un temps.
+                            val barF = (4.0 * period).toFloat()
+                            longBarFrames = barF
+                            longBarsF = Math.round(fadeLenF / barF).toInt().coerceAtLeast(2)
+                            longBounds = longBoundaries(longBarsF)
+                            longTeaseG = longTease(a.track.lowMidRatio, b.track.lowMidRatio)
+                            bassSwapRampF = period.toLong().coerceAtLeast(1L)
+                            bassSwapF = fadeStartF + (longBounds[2] * barF).toLong()
+                        } else if ((fadeKindF == KIND_EQ || fadeKindF == KIND_HARMONIC) &&
                             period > 0.0 && !period.isNaN()
                         ) {
                             val endPhase = phaseNow +
@@ -2657,7 +2823,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 // Forme de la jonction (voir SHAPE_*)
                 val shape = when (fadeKindF) {
                     KIND_DARK -> SHAPE_DARK
-                    KIND_EQ -> SHAPE_EQ
+                    KIND_EQ, KIND_LONG -> SHAPE_EQ
                     KIND_HARMONIC -> SHAPE_HARMONIC
                     else -> SHAPE_NORMAL
                 }
@@ -2687,7 +2853,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 if (fadeActive && framesGlobal >= fadeStartF &&
                     fadeKindF != KIND_CUT
                 ) {
-                    if (fadeKindF == KIND_DROP) {
+                    if (fadeKindF == KIND_LONG) {
+                        // Va-et-vient : l'entrant est entendu PLEIN (moins
+                        // ses basses avant le swap, cf. cutB) dès qu'il
+                        // est teasé — c'est son groove qu'on fait entendre,
+                        // pas un ronron filtré ; les gains font le geste.
+                        alphaB = 1f - exp(-2f * Math.PI.toFloat() * OPEN_FC_HIGH / OUT_SR)
+                        openMix = 1f
+                    } else if (fadeKindF == KIND_DROP) {
                         // Drop-swap : l'entrant monte PASSE-HAUT (aigus
                         // d'abord, le spectre descend) — le même sweep
                         // exponentiel que l'ouverture, parcouru à
@@ -2717,7 +2890,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 var swapStep = 0f
                 if (fadeActive && bassSwapF >= 0L &&
                     (fadeKindF == KIND_EQ || fadeKindF == KIND_HARMONIC ||
-                        fadeKindF == KIND_DROP)
+                        fadeKindF == KIND_DROP || fadeKindF == KIND_LONG)
                 ) {
                     swapOn = true
                     val ramp = bassSwapRampF.toFloat()
@@ -2781,6 +2954,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             val st = swapT0 + swapStep * i
                             gA = dropGainA(st)
                             gB = dropGainB(x, st)
+                        } else if (fadeKindF == KIND_LONG) {
+                            // Va-et-vient : gains par cellule (voir
+                            // longGainA/B) — position en mesures depuis le
+                            // début du fondu.
+                            val pb = (gf - fadeStartF).toFloat() / longBarFrames
+                            gA = longGainA(pb, longBarsF, longBounds)
+                            gB = longGainB(pb, longBounds, longTeaseG)
                         } else if (fadeKindF == KIND_HARMONIC) {
                             // Long blend : les deux morceaux sont faits pour
                             // se superposer, courbes equal-power symétriques
@@ -2933,7 +3113,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 vaL = a.sweepLpL - cutA * a.lpL
                                 vaR = a.sweepLpR - cutA * a.lpR
                             }
-                            KIND_EQ -> {
+                            KIND_EQ, KIND_LONG -> {
                                 // Échange de basses classique, sans filtre :
                                 // la transition « table de mixage » sobre —
                                 // désormais NETTE quand le « 1 » du swap

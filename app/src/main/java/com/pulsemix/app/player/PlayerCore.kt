@@ -605,9 +605,10 @@ object PlayerCore {
                 }
             }
         })
-        // Mode « Transitions pro » : réglage persistant transmis au moteur
-        // dès sa création (puis à chaud par setProTransitions).
-        mixer.setProMode(proTransitions.value)
+        // Transitions pro TOUJOURS actives : le va-et-vient (KIND_LONG)
+        // est la transition du moteur DJ, l'ancien toggle n'a plus d'objet
+        // (le réglage persistant reste lu pour l'export, sans effet).
+        mixer.setProMode(true)
 
         // Égaliseur sur la session ExoPlayer
         eqExo = try {

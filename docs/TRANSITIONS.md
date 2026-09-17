@@ -354,10 +354,49 @@ palette quand la structure est connue :
 | **on sort d'un BREAK / d'une OUTRO** | blend, **jamais** de coupe |
 | **on entre directement dans un DROP** | pas de sweep grave |
 
-`fadeSpecPro` (toggle **Transitions pro**) ajoute le **drop-swap**
-(`KIND_DROP`) quand : tempos calés, `dropStreak` < 2, les **deux** morceaux
-énergiques (≥ 0,12), et l'entrant a une section DROP à ± une mesure de son
-ancre.
+`fadeSpecPro` — **toujours actif** (l'ancien toggle « Transitions pro »
+n'existe plus) — remplace cette palette dès que les tempos sont calables par
+**le va-et-vient** (`KIND_LONG`), la transition de club : 20 à 30 s pendant
+lesquelles les deux morceaux, calés temps sur temps et phrase sur phrase,
+*se répondent* par cellules de mesures, jusqu'à ce que l'entrant ait
+complètement pris le dessus. Tempos non calables : coupe + echo-out ; saut
+manuel : fondu court neutre. Le drop-swap (`KIND_DROP`) n'est plus
+sélectionné : le drop de l'entrant tombe de toute façon à la **fin** du
+va-et-vient (pré-roll, §3.6), c'en est la conclusion.
+
+**Le va-et-vient, décodé de la pratique DJ.** Un DJ de club ne fond pas
+deux morceaux l'un dans l'autre : il les fait *dialoguer*. L'entrant est
+d'abord **teasé** — audible en retrait, sans ses basses (aigus et médiums
+seulement, −9 dB ; −15 dB si les deux morceaux sont chantés, deux voix ne
+se superposent jamais) sous le sortant qui garde la main. Puis, sur une
+frontière de cellule, l'entrant **prend la main** une cellule et le sortant
+se retire (−9 dB) ; **retour** du sortant ; sur le « 1 » du **milieu**,
+**échange des basses** (le sortant les cède d'un geste, l'entrant les
+prend : c'est lui qui porte désormais le morceau) ; un **dernier retour** du
+sortant, aminci ; puis l'entrant seul, plein spectre, pendant que le sortant
+s'efface en cosinus sur la dernière cellule — et son drop tombe là. Chaque
+bascule est une rampe d'**un temps** en cosinus (ni clic ni pompage).
+
+| Durée | Cellules (A = sortant, B = entrant) |
+|---|---|
+| 16 mesures | A4 · B2 · A2 · **[swap]** B4 · A2 · B2 (sortie) |
+| 12 mesures | A3 · B2 · A1 · **[swap]** B3 · A1 · B2 |
+| 8 mesures | A2 · B1 · A1 · **[swap]** B2 · A1 · B1 |
+
+La durée vise ~26 s (`longBars` : multiple de 4 mesures, 8 à 16) — 12
+mesures à 128 BPM (22,5 s), 16 à 140 (27 s), 8 à 90 (21 s). Fonctions
+pures testées : `longBars`, `longBoundaries`, `longDominance`,
+`longGainA/B`, `longTease`.
+
+**Passages allongés.** Pour que la minute forte se joue *entière* avant que
+l'entrant ne commence à répondre, chaque passage est **allongé de la durée
+du va-et-vient** (`Deck.init`, ~26 s ; jamais plus de la moitié du passage
+n'est en jonction). Avec le pré-roll d'entrée (l'entrant démarre une
+jonction avant son ancre — admis désormais jusqu'au début de la section qui
+précède l'ancre, pas seulement dans une montée : `preRollMs(relaxed)`), un
+morceau joue donc ~2 minutes en mode DJ : pré-roll sous le blend d'entrée,
+passage fort, blend de sortie — comme dans un vrai set. Les durées de plan
+(`MixEngine.trackLenMs`) en tiennent compte.
 
 **Durée en mesures** (`fadeBars`) : coupe 2 mesures, blend harmonique 4
 (6 sur un passage d'au moins 48 mesures), le reste 4 ; jamais plus d'**un
@@ -398,12 +437,16 @@ Principe commun : **une seule source par bande à chaque instant**.
   dernière mesure avant la fin du fondu (`EQ`, `HARMONIC`), puis *mid swap*
   pour l'harmonique.
 - **Coupe** (`CUT`) : sortie raide, entrée franche, **echo-out** d'un temps.
-- **Drop-swap** (`DROP`) : le sortant reste à **0,8** pendant que l'entrant
-  monte passe-haut plafonné à 0,5 ; sur le « 1 » de mesure le plus proche
-  de la fin du fondu, coupe nette du sortant (queue d'écho d'un temps) et
-  entrant à plein spectre et plein volume. (À 0,95 le limiteur rabotait
-  ~2 dB pendant la montée : le niveau baissait quand la tension devait
-  grimper.)
+- **Va-et-vient** (`LONG`, §3.5) : l'entrant est entendu **plein** dès
+  qu'il est teasé (moins ses basses avant le swap), les gains par cellule
+  font le geste ; échange des basses **net** sur le « 1 » de la 3e
+  frontière (rampe d'un temps), sortant en `KIND_EQ` (pas de filtre, ses
+  basses cédées d'un geste).
+- **Drop-swap** (`DROP`, plus sélectionné, code conservé) : le sortant
+  reste à **0,8** pendant que l'entrant monte passe-haut plafonné à 0,5 ;
+  sur le « 1 » de mesure le plus proche de la fin du fondu, coupe nette du
+  sortant (queue d'écho d'un temps) et entrant à plein spectre et plein
+  volume.
 - **Limiteur doux** de sortie, renfort dynamique des basses gelé pendant les
   fondus, écrêtage dur ±1 en dernier recours.
 
