@@ -131,6 +131,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // se résorbe en ~7 s, sous le seuil où l'oreille suit la dérive).
         const val SETTLE_FRAMES: Long = 4L * 44_100L
         const val NATURAL_STEP = 0.0005f
+
+        /** Facteur de vitesse du cran manuel : ±8 % par cran. Fonction PURE. */
+        internal fun manualFactor(level: Int): Float = 1f + 0.08f * level
         // Marge de sortie supplémentaire contre les saccades : 0,3 s de
         // PCM float stéréo (8 octets par frame)
         const val OUT_EXTRA_FRAMES = 13_230 // 0,3 s à 44,1 kHz
@@ -2089,7 +2092,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     // Base = sa part du calage à venir (pretargetRate) ou
                     // le tempo naturel ; le cran de vitesse s'y multiplie.
                     val pre = a.pretargetRate
-                    val target = (pre ?: 1f) * (1f + 0.08f * level)
+                    val target = (pre ?: 1f) * manualFactor(level)
                     if (level != lastSpeedLevel) {
                         lastSpeedLevel = level
                         manualRamp = true
@@ -2213,10 +2216,22 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // l'entrant ouvre directement à la sienne ; hors
                         // plage, (1, 1) et fadeSpec coupera. Saut manuel :
                         // pas le temps de glisser, l'entrant prend tout.
+                        // Cran de vitesse manuel : il MULTIPLIE tout — le
+                        // sortant (via la cible du nudge) comme l'entrant.
+                        // Avant, l'entrant ouvrait à sa seule part de calage,
+                        // au tempo naturel : avec un cran à +8 %, la jonction
+                        // se faisait à deux tempos différents (les temps
+                        // dérivaient pendant le fondu), puis le nouveau deck
+                        // remontait lentement vers le cran — un coup de mou
+                        // à chaque transition. Le calage (splitRates,
+                        // computeRate, fadeSpec) se raisonne sur les tempos
+                        // NATURELS, le cran s'applique ensuite.
+                        val manual = manualFactor(PlayerCore.speedLevel.value)
                         val (rateA0, rateB0) = splitRates(a.track.bpm, nx.bpm)
-                        val rateA = if (jumping) a.curRate else rateA0
-                        val rate = if (jumping)
-                            computeRate(a.track.bpm * a.curRate, nx.bpm) else rateB0
+                        val rateA = if (jumping) a.curRate / manual else rateA0
+                        val lockB = if (jumping)
+                            computeRate(a.track.bpm * a.curRate / manual, nx.bpm) else rateB0
+                        val rate = lockB * manual
                         // Structure de l'entrant (décodée une fois, en cache)
                         // et son ancre — recalculée comme dans Deck.init :
                         // c'est là que le drop tombera. Sert au mode pro ET
@@ -2235,12 +2250,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         )
                         val (rawFadeS, fadeKind) = if (proMode) {
                             fadeSpecPro(
-                                a.track, rateA, nx, rate, jumping,
+                                a.track, rateA, nx, lockB, jumping,
                                 lastFadeKind, dropStreak, proSections, anchor,
                                 a.exitKind
                             )
                         } else fadeSpec(
-                            a.track, rateA, nx, rate, jumping, lastFadeKind,
+                            a.track, rateA, nx, lockB, jumping, lastFadeKind,
                             a.exitKind, sectionAt(proSections, anchor)
                         )
                         // Durée en MESURES du sortant (fadeBars) : arrêtée

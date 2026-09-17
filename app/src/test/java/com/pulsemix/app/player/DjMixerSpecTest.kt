@@ -131,6 +131,18 @@ class DjMixerSpecTest {
     }
 
     @Test
+    fun `manualFactor - 8 pourcents par cran, neutre a zero`() {
+        assertEquals(1f, DjMixer.manualFactor(0), 0f)
+        assertEquals(1.08f, DjMixer.manualFactor(1), 1e-6f)
+        assertEquals(0.84f, DjMixer.manualFactor(-2), 1e-6f)
+        // L'entrant ouvre à sa part de calage MULTIPLIÉE par le cran : au
+        // même tempo effectif que le sortant, pas au tempo naturel.
+        val (rateA0, rateB0) = DjMixer.splitRates(128f, 124f)
+        val manual = DjMixer.manualFactor(1)
+        assertEquals(128f * rateA0 * manual, 124f * rateB0 * manual, 1e-3f)
+    }
+
+    @Test
     fun `barSeconds - 128 BPM = 1,875 s`() {
         assertEquals(1.875, DjMixer.barSeconds(128f), 1e-9)
     }
