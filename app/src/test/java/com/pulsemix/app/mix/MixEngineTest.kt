@@ -269,10 +269,13 @@ class MixEngineTest {
         )
     }
 
+    // Même estimation que le moteur (trackLenMs) : en DJ, le passage est
+    // allongé du va-et-vient de sortie.
     private fun planMs(p: MixEngine.MixPlan, dj: Boolean) =
         p.phases.sumOf { ph ->
             ph.tracks.sumOf { t ->
-                (if (dj) t.segmentMs else t.durationMs).coerceAtLeast(60_000L)
+                if (dj) t.segmentMs.coerceAtLeast(60_000L) + MixEngine.DJ_LONG_BLEND_MS
+                else t.durationMs.coerceAtLeast(60_000L)
             }
         }
 

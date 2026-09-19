@@ -613,7 +613,7 @@ object MixEngine {
         else t.durationMs.coerceAtLeast(60_000L)
 
     /** Allongement de chaque passage DJ par le va-et-vient de sortie. */
-    private const val DJ_LONG_BLEND_MS = 26_000L
+    internal const val DJ_LONG_BLEND_MS = 26_000L
 
     /** Retire des morceaux (par la fin des phases les plus longues) jusqu'à
      *  tenir dans la durée cible. */
