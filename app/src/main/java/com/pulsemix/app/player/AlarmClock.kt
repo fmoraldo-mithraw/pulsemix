@@ -790,22 +790,49 @@ object AlarmClock {
         if (steps <= 0) return
         val stepMs = rampMinutes.value.coerceIn(1, 15) * 60_000L / steps
         rampJob = GlobalScope.launch(Dispatchers.Default) {
-            var expected = start
+            // L'ancienne rampe s'arrêtait au PREMIER écart entre le volume
+            // relevé et celui qu'elle venait de poser (« touché à la
+            // main ») — or certains appareils rapportent un cran différent
+            // de celui posé (Bluetooth à volume absolu, arrondis
+            // constructeur) : la montée s'arrêtait au premier pas, sans
+            // trace, et le réveil restait à 3/15 (« le son ne monte pas
+            // assez haut »). Désormais : seule une BAISSE nette à la main
+            // (deux crans sous ce qu'on a posé) arrête la montée ; une
+            // hausse à la main est adoptée et la montée continue au-dessus ;
+            // un écart d'un cran est ignoré. Tout est journalisé.
+            var posed = start
+            val t0 = android.os.SystemClock.elapsedRealtime()
             for (s in 1..steps) {
                 delay(stepMs)
                 val cur = try {
                     am.getStreamVolume(wakeStream)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    log("rampe : volume illisible (${e.message}), arrêt à $posed/$max")
                     return@launch
                 }
-                if (cur != expected) return@launch // volume touché à la main
-                expected = start + s
+                if (cur < posed - 1) {
+                    log("rampe : volume baissé à la main ($posed -> $cur/$max), arrêt")
+                    return@launch
+                }
+                val next = (maxOf(cur, posed) + 1).coerceAtMost(max)
                 try {
-                    am.setStreamVolume(wakeStream, expected, 0)
-                } catch (_: Exception) {
+                    am.setStreamVolume(wakeStream, next, 0)
+                } catch (e: Exception) {
+                    log("rampe : réglage impossible (${e.message}), arrêt à $posed/$max")
                     return@launch
                 }
+                posed = next
+                if (posed >= max) break
             }
+            val finalVol = try {
+                am.getStreamVolume(wakeStream)
+            } catch (_: Exception) {
+                -1
+            }
+            log(
+                "rampe terminée en ${(android.os.SystemClock.elapsedRealtime() - t0) / 1000} s : " +
+                    "posé $posed/$max, relevé $finalVol/$max"
+            )
         }
     }
 }
