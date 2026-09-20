@@ -410,36 +410,83 @@ class DjMixerSpecTest {
         assertTrue(b[4] < 10)
     }
 
+    private fun defaultPlan() = DjMixer.longPlan(
+        FloatArray(6), FloatArray(6), BooleanArray(6), BooleanArray(6)
+    )
+
+    private fun gains(pos: Float, bars: Int, bounds: IntArray, plan: DjMixer.LongPlan): Pair<Float, Float> {
+        val out = FloatArray(2)
+        DjMixer.longGains(pos, bars, bounds, plan, out)
+        return out[0] to out[1]
+    }
+
     @Test
-    fun `longGain - sortant plein et entrant tease au debut, inversion apres le swap, entrant seul a la fin`() {
+    fun `longPlan - sans profil, dialogue par defaut A B A puis B A B`() {
+        val p = defaultPlan()
+        assertEquals("A·B·A|B·A·B", p.describe())
+        for (l in p.level) assertEquals(DjMixer.LONG_TEASE, l, 0f)
+    }
+
+    @Test
+    fun `longPlan - l entrant qui a nettement plus a montrer garde la main, deux voix - retrait de 15 dB`() {
+        val hookA = floatArrayOf(1f, 1f, 0.2f, 1f, 0.2f, 1f)
+        val hookB = floatArrayOf(1f, 1f, 0.9f, 1f, 0.9f, 1f)
+        val vocalA = booleanArrayOf(false, true, false, false, false, false)
+        val vocalB = booleanArrayOf(false, true, false, false, false, false)
+        val p = DjMixer.longPlan(hookA, hookB, vocalA, vocalB)
+        // Cellules 2 et 4 : B a bien plus à montrer (écart > 0,3) → B
+        assertEquals("A·B·B|B·B·B, −15 dB sur 1 cellule(s)", p.describe())
+        assertEquals(DjMixer.LONG_TEASE_VOCAL, p.level[1], 0f)
+        // Le cadre ne bouge jamais : 0 = A, 3 = B (swap), 5 = B
+        val q = DjMixer.longPlan(
+            floatArrayOf(0f, 0f, 0f, 9f, 0f, 9f), floatArrayOf(9f, 0f, 0f, 0f, 0f, 0f),
+            BooleanArray(6), BooleanArray(6)
+        )
+        assertEquals(false, q.domB[0])
+        assertEquals(true, q.domB[3])
+        assertEquals(true, q.domB[5])
+    }
+
+    @Test
+    fun `longGains - sortant plein et entrant tease au debut, inversion apres le swap, entrant seul a la fin`() {
         val bounds = DjMixer.longBoundaries(16)
+        val plan = defaultPlan()
         val tease = DjMixer.LONG_TEASE
         // Début : A a la main, B teasé
-        assertEquals(1f, DjMixer.longGainA(0f, 16, bounds), 1e-6f)
-        assertEquals(tease, DjMixer.longGainB(0f, bounds, tease), 1e-6f)
+        assertEquals(1f, gains(0f, 16, bounds, plan).first, 1e-6f)
+        assertEquals(tease, gains(0f, 16, bounds, plan).second, 1e-6f)
         // Cellule 2 (mesures 4-6), une fois la rampe passée : B a la main
-        assertEquals(DjMixer.LONG_DUCK, DjMixer.longGainA(5f, 16, bounds), 1e-6f)
-        assertEquals(1f, DjMixer.longGainB(5f, bounds, tease), 1e-6f)
+        assertEquals(DjMixer.LONG_DUCK, gains(5f, 16, bounds, plan).first, 1e-6f)
+        assertEquals(1f, gains(5f, 16, bounds, plan).second, 1e-6f)
         // Cellule 3 : retour de A
-        assertEquals(1f, DjMixer.longGainA(7.5f, 16, bounds), 1e-6f)
+        assertEquals(1f, gains(7.5f, 16, bounds, plan).first, 1e-6f)
         // Après le swap (mesure 8) : B a la main
-        assertEquals(1f, DjMixer.longGainB(10f, bounds, tease), 1e-6f)
+        assertEquals(1f, gains(10f, 16, bounds, plan).second, 1e-6f)
         // Dernier retour de A (mesures 12-14)
-        assertEquals(1f, DjMixer.longGainA(13.5f, 16, bounds), 1e-6f)
+        assertEquals(1f, gains(13.5f, 16, bounds, plan).first, 1e-6f)
         // Dernière cellule : B plein, A s'efface jusqu'à zéro
-        assertEquals(1f, DjMixer.longGainB(14.5f, bounds, tease), 1e-6f)
-        assertTrue(DjMixer.longGainA(14.5f, 16, bounds) < DjMixer.LONG_DUCK)
-        assertEquals(0f, DjMixer.longGainA(16f, 16, bounds), 1e-6f)
-        // Rampes : la dominance est continue (jamais un saut de 0 à 1 ;
-        // au plus ~0,36 par 1/16 de mesure au plus raide du cosinus)
-        var prev = DjMixer.longDominance(0f, bounds)
+        assertEquals(1f, gains(14.5f, 16, bounds, plan).second, 1e-6f)
+        assertTrue(gains(14.5f, 16, bounds, plan).first < DjMixer.LONG_DUCK)
+        assertEquals(0f, gains(16f, 16, bounds, plan).first, 1e-6f)
+        // Rampes : jamais un saut de 0 à 1 (au plus ~0,36 par 1/16 de
+        // mesure au plus raide du cosinus)
+        var prev = gains(0f, 16, bounds, plan)
         var x = 0f
         while (x <= 16f) {
-            val d = DjMixer.longDominance(x, bounds)
-            assertTrue("saut à $x", kotlin.math.abs(d - prev) <= 0.4f)
-            prev = d
+            val g = gains(x, 16, bounds, plan)
+            assertTrue("saut à $x", kotlin.math.abs(g.first - prev.first) <= 0.4f)
+            assertTrue("saut à $x", kotlin.math.abs(g.second - prev.second) <= 0.4f)
+            prev = g
             x += 1f / 16f
         }
+        // Niveau interpolé à une frontière où il change (−9 → −15 dB)
+        val vocal = DjMixer.longPlan(
+            FloatArray(6), FloatArray(6),
+            booleanArrayOf(false, true, false, false, false, false),
+            booleanArrayOf(false, true, false, false, false, false)
+        )
+        val atBoundary = gains(4f, 16, bounds, vocal).second
+        assertEquals(DjMixer.LONG_TEASE, atBoundary, 1e-6f)
     }
 
     @Test

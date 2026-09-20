@@ -47,7 +47,13 @@ class AudioAnalyzer {
          * s'y cale : un titre qui finit par trois secondes de silence ne
          * fond plus « dans le vide ».
          */
-        const val FEATURES_VERSION = 4
+        // 5 : profil phrase par phrase (PhraseProfile) — énergie, basses,
+        // médiums de chaque phrase de 16 temps, pour que le va-et-vient
+        // sache quoi mettre en avant et quand.
+        const val FEATURES_VERSION = 5
+        /** Bande des médiums du profil de phrases : 250 Hz – 3 kHz. */
+        const val MID_LO_HZ = 250f
+        const val MID_HI_HZ = 3_000f
 
         /** Coupure du one-pole d'extraction des basses (~< 150 Hz) pour
          *  [Features.structure] : l'enveloppe des kicks et des sub. */
@@ -126,7 +132,13 @@ class AudioAnalyzer {
          * break distingués, « 1 » du drop recalé) : le bump fait remonter
          * les anciennes bibliothèques au prochain scan.
          */
-        val structure: String
+        val structure: String,
+        /**
+         * Profil phrase par phrase (énergie, basses, médiums par phrase
+         * de 16 temps), encodé par [PhraseProfile.encode]. Vide sans
+         * tempo. Depuis FEATURES_VERSION 5.
+         */
+        val phraseProfile: String
     )
 
     suspend fun analyze(
@@ -187,6 +199,15 @@ class AudioAnalyzer {
                     firstBeatMs, bassArr
                 )
             )
+            // Profil phrase par phrase (même passe, mêmes tableaux)
+            val midArr = FloatArray(rms.size) {
+                if (it < state.midRms.size) state.midRms[it] else 0f
+            }
+            val phraseProfile = PhraseProfile.encode(
+                PhraseProfile.compute(
+                    rmsArr, bassArr, midArr, blockMs, bpm, firstBeatMs, durationMs
+                )
+            )
 
             Features(
                 bpm = bpm,
@@ -217,7 +238,8 @@ class AudioAnalyzer {
                 // bloc (blocs de taille égale, le résidu final est ignoré)
                 loudness = if (rms.isEmpty()) 0f
                 else sqrt(rms.sumOf { (it * it).toDouble() } / rms.size).toFloat(),
-                structure = structure
+                structure = structure,
+                phraseProfile = phraseProfile
             )
         }
 
@@ -241,6 +263,15 @@ class AudioAnalyzer {
         private var bassLp = 0f
         private var bassAlpha = 0f
         private var bassSumSq = 0.0
+        // Médiums (250 Hz – 3 kHz) par bloc : passe-bas 3 kHz moins
+        // passe-bas 250 Hz, deux one-pole de plus par échantillon — le
+        // relief des voix et des mélodies, phrase par phrase.
+        val midRms = ArrayList<Float>()
+        private var midLoLp = 0f
+        private var midHiLp = 0f
+        private var midLoAlpha = 0f
+        private var midHiAlpha = 0f
+        private var midSumSq = 0.0
 
         // FFT
         private val frame = FloatArray(FFT_SIZE)
@@ -292,6 +323,8 @@ class AudioAnalyzer {
                 }
                 // One-pole des basses : coefficient dépendant du taux réel
                 bassAlpha = (1.0 - exp(-2.0 * Math.PI * BASS_FC_HZ / sr)).toFloat()
+                midLoAlpha = (1.0 - exp(-2.0 * Math.PI * MID_LO_HZ / sr)).toFloat()
+                midHiAlpha = (1.0 - exp(-2.0 * Math.PI * MID_HI_HZ / sr)).toFloat()
             }
             for (f in 0 until frames) {
                 var m = 0f
@@ -307,12 +340,18 @@ class AudioAnalyzer {
             sumSq += (s * s).toDouble()
             bassLp += bassAlpha * (s - bassLp)
             bassSumSq += (bassLp * bassLp).toDouble()
+            midLoLp += midLoAlpha * (s - midLoLp)
+            midHiLp += midHiAlpha * (s - midHiLp)
+            val mid = midHiLp - midLoLp
+            midSumSq += (mid * mid).toDouble()
             blockFill++
             if (blockFill == RMS_BLOCK) {
                 rms.add(sqrt(sumSq / RMS_BLOCK).toFloat())
                 bassRms.add(sqrt(bassSumSq / RMS_BLOCK).toFloat())
+                midRms.add(sqrt(midSumSq / RMS_BLOCK).toFloat())
                 sumSq = 0.0
                 bassSumSq = 0.0
+                midSumSq = 0.0
                 blockFill = 0
             }
             // Framing FFT

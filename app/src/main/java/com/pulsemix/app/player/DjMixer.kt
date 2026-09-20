@@ -57,6 +57,26 @@ class DjMixer(private val context: Context, private val listener: Listener) {
 
     private data class Segment(val track: Track, val phaseIndex: Int)
 
+    /**
+     * Plan d'un va-et-vient : pour chacune des 6 cellules, qui a la
+     * main ([domB] : vrai = l'entrant) et le niveau de l'autre
+     * ([level] : [LONG_TEASE] = −9 dB, [LONG_TEASE_VOCAL] = −15 dB
+     * quand les deux phrases sont chantées — deux voix ne se
+     * superposent jamais).
+     */
+    class LongPlan(val domB: BooleanArray, val level: FloatArray) {
+        /** Lisible pour le journal : « A·B·A|B·A·B ». */
+        fun describe(): String = buildString {
+            for (c in domB.indices) {
+                if (c == 3) append('|') else if (c > 0) append('·')
+                append(if (domB[c]) 'B' else 'A')
+            }
+            val vocal = level.count { it < LONG_TEASE }
+            if (vocal > 0) append(", −15 dB sur $vocal cellule(s)")
+        }
+    }
+
+
     companion object {
         const val OUT_SR = 44100
         const val BLOCK_FRAMES = 2048
@@ -208,12 +228,50 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         }
 
         /**
-         * Qui a la main à la position [posBars] (mesures depuis le début
-         * du fondu) : 0 = le sortant, 1 = l'entrant, avec une rampe de
-         * [LONG_RAMP_BARS] à chaque frontière. Fonction PURE.
+         * Décide QUOI mettre en avant et QUAND, à partir des profils de
+         * phrases ([com.pulsemix.app.analysis.PhraseProfile]) des deux
+         * morceaux : [hookA]/[hookB] = ce que chaque cellule a à montrer
+         * (niveau, relief des médiums — voix, thème — basses) pour le
+         * sortant et l'entrant, [vocalA]/[vocalB] = phrase chantée.
+         * Cadre fixe du geste : le sortant ouvre (cellule 0), l'entrant
+         * prend les basses au milieu (cellule 3) et conclut seul
+         * (cellule 5). Cellules 1, 2 et 4 : celui qui a le plus à montrer
+         * — avec un biais pour le DIALOGUE (l'entrant répond en 1, le
+         * sortant revient en 2 puis une dernière fois en 4), qu'un écart
+         * net de score (> 0,3) peut renverser. Sans profil (hooks à 0) :
+         * A·B·A|B·A·B. Fonction PURE (testée en JVM).
          */
-        internal fun longDominance(posBars: Float, bounds: IntArray): Float {
-            // Cellules : A, B, A, B, A, B(sortie) → valeur = parité
+        internal fun longPlan(
+            hookA: FloatArray, hookB: FloatArray,
+            vocalA: BooleanArray, vocalB: BooleanArray
+        ): LongPlan {
+            val domB = BooleanArray(6)
+            domB[0] = false
+            domB[3] = true
+            domB[5] = true
+            domB[1] = hookB[1] >= hookA[1] - 0.3f
+            domB[2] = hookB[2] > hookA[2] + 0.3f
+            domB[4] = hookB[4] > hookA[4] + 0.3f
+            val level = FloatArray(6) {
+                if (vocalA[it] && vocalB[it]) LONG_TEASE_VOCAL else LONG_TEASE
+            }
+            return LongPlan(domB, level)
+        }
+
+        /**
+         * Gains du sortant ([out][0]) et de l'entrant ([out][1]) à la
+         * position [posBars] (mesures depuis le début du fondu) d'un
+         * va-et-vient de [bars] mesures, cellules [bounds], plan [plan].
+         * Celui qui a la main est à 1, l'autre au niveau de la cellule ;
+         * chaque frontière est une rampe en cosinus de [LONG_RAMP_BARS]
+         * (dominance ET niveau interpolés : ni clic ni saut) ; sur la
+         * dernière cellule l'entrant est plein pour de bon et le sortant
+         * s'efface en cosinus. Sans allocation (tampon [out] fourni).
+         * Fonction PURE (testée en JVM).
+         */
+        internal fun longGains(
+            posBars: Float, bars: Int, bounds: IntArray, plan: LongPlan, out: FloatArray
+        ) {
             var cell = 0
             var lastBoundary = 0f
             for (k in bounds.indices) {
@@ -222,36 +280,31 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     lastBoundary = bounds[k].toFloat()
                 }
             }
-            val cur = (cell % 2).toFloat()
-            if (cell == 0) return cur
-            val prev = ((cell - 1) % 2).toFloat()
-            val t = ((posBars - lastBoundary) / LONG_RAMP_BARS).coerceIn(0f, 1f)
-            // Rampe en cosinus : ni clic ni « pompage »
-            val sm = 0.5f - 0.5f * cos(t * Math.PI.toFloat())
-            return prev + (cur - prev) * sm
-        }
-
-        /** Gain du SORTANT pendant un va-et-vient : plein quand il a la
-         *  main, [LONG_DUCK] quand l'entrant l'a, et il s'efface en
-         *  cosinus sur la dernière cellule. Fonction PURE. */
-        internal fun longGainA(posBars: Float, bars: Int, bounds: IntArray): Float {
-            val d = longDominance(posBars, bounds)
-            var g = 1f - (1f - LONG_DUCK) * d
+            val curD = if (plan.domB[cell]) 1f else 0f
+            val curL = plan.level[cell]
+            val d: Float
+            val l: Float
+            if (cell == 0) {
+                d = curD
+                l = curL
+            } else {
+                val prevD = if (plan.domB[cell - 1]) 1f else 0f
+                val prevL = plan.level[cell - 1]
+                val t = ((posBars - lastBoundary) / LONG_RAMP_BARS).coerceIn(0f, 1f)
+                val sm = 0.5f - 0.5f * cos(t * Math.PI.toFloat())
+                d = prevD + (curD - prevD) * sm
+                l = prevL + (curL - prevL) * sm
+            }
+            var gA = 1f - (1f - l) * d
+            var gB = l + (1f - l) * d
             val last = bounds[4].toFloat()
             if (posBars >= last) {
                 val t = ((posBars - last) / (bars - last).coerceAtLeast(1f)).coerceIn(0f, 1f)
-                g *= cos(t * HALF_PI)
+                gA *= cos(t * HALF_PI)
+                gB = 1f
             }
-            return g
-        }
-
-        /** Gain de l'ENTRANT pendant un va-et-vient : [tease] quand il est
-         *  teasé, plein quand il a la main — et plein pour de bon sur la
-         *  dernière cellule. Fonction PURE. */
-        internal fun longGainB(posBars: Float, bounds: IntArray, tease: Float): Float {
-            if (posBars >= bounds[4]) return 1f
-            val d = longDominance(posBars, bounds)
-            return tease + (1f - tease) * d
+            out[0] = gA
+            out[1] = gB
         }
 
         /** Niveau de tease de l'entrant : en retrait de −15 dB si les deux
@@ -1951,7 +2004,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         var longBounds = intArrayOf(4, 6, 8, 12, 14)
         var longBarsF = 16
         var longBarFrames = 1f
-        var longTeaseG = LONG_TEASE
+        var longPlanF = longPlan(
+            FloatArray(6), FloatArray(6), BooleanArray(6), BooleanArray(6)
+        )
+        val longOut = FloatArray(2)
         // Fin de la dernière transition : le nouveau morceau garde le tempo
         // calé quelques secondes de plus avant de revenir au sien
         var fadeEndF = 0L
@@ -2644,9 +2700,48 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             longBarFrames = barF
                             longBarsF = Math.round(fadeLenF / barF).toInt().coerceAtLeast(2)
                             longBounds = longBoundaries(longBarsF)
-                            longTeaseG = longTease(a.track.lowMidRatio, b.track.lowMidRatio)
                             bassSwapRampF = period.toLong().coerceAtLeast(1L)
                             bassSwapF = fadeStartF + (longBounds[2] * barF).toLong()
+                            // QUOI mettre en avant et QUAND : les profils de
+                            // phrases des deux morceaux, cellule par cellule.
+                            // Position de chaque cellule dans la SOURCE de
+                            // chaque deck (le sortant continue depuis sa
+                            // position au début du fondu, l'entrant part de
+                            // son début de deck, pré-roll compris).
+                            val profA = com.pulsemix.app.analysis.PhraseProfile
+                                .decode(a.track.phraseProfile)
+                            val profB = com.pulsemix.app.analysis.PhraseProfile
+                                .decode(b.track.phraseProfile)
+                            val hookA = FloatArray(6)
+                            val hookB = FloatArray(6)
+                            val vocalA = BooleanArray(6)
+                            val vocalB = BooleanArray(6)
+                            val barOutS = 4.0 * period / OUT_SR
+                            val msA0 = a.startMs + Math.round(
+                                (a.framesOut + (fadeStartF - framesGlobal)).toDouble() /
+                                    OUT_SR * a.curRate * 1000.0
+                            )
+                            for (c in 0 until 6) {
+                                val cs = if (c == 0) 0 else longBounds[c - 1]
+                                val ce = if (c == 5) longBarsF else longBounds[c]
+                                val mid = (cs + ce) / 2.0
+                                val msA = (msA0 + Math.round(mid * barOutS * a.curRate * 1000.0))
+                                    .coerceAtMost(a.logicalEndMs - 1L)
+                                val msB = b.startMs + Math.round(mid * barOutS * b.curRate * 1000.0)
+                                if (profA.isNotEmpty()) {
+                                    val ia = com.pulsemix.app.analysis.PhraseProfile
+                                        .phraseIndex(msA, a.track.bpm, a.track.firstBeatMs)
+                                    hookA[c] = com.pulsemix.app.analysis.PhraseProfile.hookScore(profA, ia)
+                                    vocalA[c] = com.pulsemix.app.analysis.PhraseProfile.isVocal(profA, ia)
+                                } else vocalA[c] = a.track.lowMidRatio > VOCAL_LOWMID
+                                if (profB.isNotEmpty()) {
+                                    val ib = com.pulsemix.app.analysis.PhraseProfile
+                                        .phraseIndex(msB, b.track.bpm, b.track.firstBeatMs)
+                                    hookB[c] = com.pulsemix.app.analysis.PhraseProfile.hookScore(profB, ib)
+                                    vocalB[c] = com.pulsemix.app.analysis.PhraseProfile.isVocal(profB, ib)
+                                } else vocalB[c] = b.track.lowMidRatio > VOCAL_LOWMID
+                            }
+                            longPlanF = longPlan(hookA, hookB, vocalA, vocalB)
                         } else if ((fadeKindF == KIND_EQ || fadeKindF == KIND_HARMONIC) &&
                             period > 0.0 && !period.isNaN()
                         ) {
@@ -2709,7 +2804,13 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 "${fadeLenF * 1000L / OUT_SR} ms, calée sur $quant, " +
                                 "pré-roll ${preF * 1000L / OUT_SR} ms, " +
                                 "tempo entrant ×${"%.3f".format(b.curRate)}" +
-                                if (ready.jumping) ", geste" else ""
+                                (if (ready.jumping) ", geste" else "") +
+                                (if (fadeKindF == KIND_LONG)
+                                    ", cellules ${longPlanF.describe()}" +
+                                        (if (a.track.phraseProfile.isEmpty() ||
+                                            b.track.phraseProfile.isEmpty()
+                                        ) " (sans profil de phrases)" else "")
+                                else "")
                         )
                         fadeStarvedA = a.starvedFrames
                         fadeStarvedB = b.starvedFrames
@@ -2956,11 +3057,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             gB = dropGainB(x, st)
                         } else if (fadeKindF == KIND_LONG) {
                             // Va-et-vient : gains par cellule (voir
-                            // longGainA/B) — position en mesures depuis le
+                            // longGains) — position en mesures depuis le
                             // début du fondu.
                             val pb = (gf - fadeStartF).toFloat() / longBarFrames
-                            gA = longGainA(pb, longBarsF, longBounds)
-                            gB = longGainB(pb, longBounds, longTeaseG)
+                            longGains(pb, longBarsF, longBounds, longPlanF, longOut)
+                            gA = longOut[0]
+                            gB = longOut[1]
                         } else if (fadeKindF == KIND_HARMONIC) {
                             // Long blend : les deux morceaux sont faits pour
                             // se superposer, courbes equal-power symétriques

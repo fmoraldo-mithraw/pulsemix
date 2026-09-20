@@ -283,7 +283,8 @@ object LibraryScanner {
                                         // gain mesuré, seuls les morceaux qui
                                         // passent par l'analyse l'obtiennent —
                                         // les anciens restent sans structure.
-                                        structure = features.structure
+                                        structure = features.structure,
+                                        phraseProfile = features.phraseProfile
                                     )
                                 } else {
                                     Track(

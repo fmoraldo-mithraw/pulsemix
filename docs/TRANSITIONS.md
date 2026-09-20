@@ -384,9 +384,31 @@ bascule est une rampe d'**un temps** en cosinus (ni clic ni pompage).
 | 8 mesures | A2 · B1 · A1 · **[swap]** B2 · A1 · B1 |
 
 La durée vise ~26 s (`longBars` : multiple de 4 mesures, 8 à 16) — 12
-mesures à 128 BPM (22,5 s), 16 à 140 (27 s), 8 à 90 (21 s). Fonctions
-pures testées : `longBars`, `longBoundaries`, `longDominance`,
-`longGainA/B`, `longTease`.
+mesures à 128 BPM (22,5 s), 16 à 140 (27 s), 8 à 90 (21 s).
+
+**Quoi mettre en avant, et quand : le profil de phrases.** Le tableau
+ci-dessus est le *cadre* (le sortant ouvre, l'entrant prend les basses au
+milieu et conclut seul) ; les cellules 1, 2 et 4 sont décidées par
+`longPlan` à partir du **profil phrase par phrase** de chaque morceau
+(`PhraseProfile`, FEATURES_VERSION 5) : pour chaque phrase de 16 temps de
+la grille du premier beat, son niveau (vs la crête du morceau), sa part de
+basses (< 150 Hz) et sa part de médiums (250 Hz – 3 kHz, là où vivent voix
+et mélodies). Le `hookScore` d'une phrase — niveau + relief des médiums par
+rapport à la médiane du morceau + un peu de basses — dit ce qu'elle a à
+*montrer* ; `isVocal` (médiums nettement au-dessus de la médiane, niveau
+notable) dit si elle est chantée. À la programmation du fondu, chaque
+cellule est projetée dans la source de chaque deck (le sortant depuis sa
+position au début du fondu, l'entrant depuis son départ, pré-roll compris)
+et : l'entrant répond en cellule 1 sauf si le sortant a nettement plus à
+montrer ; le sortant revient en 2 et en 4 sauf si l'entrant a nettement
+plus à montrer (écart de score > 0,3) ; quand les DEUX phrases d'une
+cellule sont chantées, celui qui n'a pas la main est à −15 dB au lieu de
+−9. Les gains (`longGains`) interpolent dominance et niveau à chaque
+frontière (rampe d'un temps en cosinus). Sans profil (analyse antérieure à
+la v5) : A·B·A|B·A·B et le taux de voix global du morceau. Journal :
+`cellules A·B·A|B·A·B[, −15 dB sur N cellule(s)][ (sans profil de phrases)]`.
+Fonctions pures testées : `longBars`, `longBoundaries`, `longPlan`,
+`longGains`, `longTease`, `PhraseProfile.*`.
 
 **Passages allongés.** Pour que la minute forte se joue *entière* avant que
 l'entrant ne commence à répondre, chaque passage est **allongé de la durée

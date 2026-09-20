@@ -81,7 +81,10 @@ data class Track(
      * forme d'onde n'est pas colorée et le moteur DJ garde son calage
      * historique.
      */
-    val structure: String = ""
+    val structure: String = "",
+    /** Profil phrase par phrase (énergie, basses, médiums), encodé par
+     *  PhraseProfile.encode ; vide = pas de profil (ancienne analyse). */
+    val phraseProfile: String = ""
 )
 
 /**
@@ -241,6 +244,7 @@ class TrackStore(context: Context) {
             o.put("notEpic", t.notEpic)
             o.put("gainDb", t.gainDb.toDouble())
             o.put("structure", t.structure)
+            o.put("phraseProfile", t.phraseProfile)
             return o
         }
 
@@ -275,7 +279,8 @@ class TrackStore(context: Context) {
             featuresVersion = o.optInt("featuresVersion", 0),
             notEpic = o.optBoolean("notEpic", false),
             gainDb = o.optDouble("gainDb", 0.0).toFloat(),
-            structure = o.optString("structure", "")
+            structure = o.optString("structure", ""),
+            phraseProfile = o.optString("phraseProfile", "")
         )
     }
 
