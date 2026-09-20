@@ -265,8 +265,9 @@ class DjMixer(private val context: Context, private val listener: Listener) {
          * Celui qui a la main est à 1, l'autre au niveau de la cellule ;
          * chaque frontière est une rampe en cosinus de [LONG_RAMP_BARS]
          * (dominance ET niveau interpolés : ni clic ni saut) ; sur la
-         * dernière cellule l'entrant est plein pour de bon et le sortant
-         * s'efface en cosinus. Sans allocation (tampon [out] fourni).
+         * dernière cellule l'entrant a la main (rampe d'un temps, puis
+         * plein pour de bon) et le sortant s'efface en cosinus. Sans
+         * allocation (tampon [out] fourni).
          * Fonction PURE (testée en JVM).
          */
         internal fun longGains(
@@ -297,11 +298,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             }
             var gA = 1f - (1f - l) * d
             var gB = l + (1f - l) * d
+            // Dernière cellule : l'entrant a la main (le plan l'impose), sa
+            // montée à 1 passe par la même rampe d'un temps que les autres
+            // frontières — un saut sec de −9 dB à 0 dB sur le « 1 » final
+            // s'entendait ; le sortant, lui, s'efface en cosinus sur toute
+            // la cellule.
             val last = bounds[4].toFloat()
             if (posBars >= last) {
                 val t = ((posBars - last) / (bars - last).coerceAtLeast(1f)).coerceIn(0f, 1f)
                 gA *= cos(t * HALF_PI)
-                gB = 1f
             }
             out[0] = gA
             out[1] = gB
