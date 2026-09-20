@@ -1185,17 +1185,24 @@ fun PlayerScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
-                    // Transitions pro toujours actives : le va-et-vient
-                    // (20-30 s, les deux morceaux se répondent par cellules
-                    // de mesures, échange des basses au milieu, l'entrant
-                    // finit seul sur son drop).
-                    Text(
-                        "Transitions pro : va-et-vient de 20 à 30 s entre les " +
-                            "deux morceaux, calé sur les phrases, jusqu'à ce que " +
-                            "le nouveau prenne le dessus.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                    )
+                    // Transitions pro (bêta) : le va-et-vient — 20 à 30 s où
+                    // les deux morceaux se répondent par cellules de
+                    // mesures, échange des basses au milieu, l'entrant finit
+                    // seul sur son drop. Réglage persistant, applicable à
+                    // chaud (prochaine transition).
+                    val proTransitions by
+                        vm.proTransitions.collectAsStateWithLifecycle()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Transitions pro (bêta) : va-et-vient de 20 à 30 s",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = proTransitions,
+                            onCheckedChange = { vm.setProTransitions(it) }
+                        )
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 // Un mix dure toujours au moins une heure : les catégories

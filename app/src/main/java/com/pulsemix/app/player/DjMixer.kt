@@ -1528,7 +1528,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // commence à répondre. En mode DJ, un morceau joue donc ~2 min
             // (pré-roll sous le blend d'entrée + passage + blend de
             // sortie), comme dans un vrai set.
-            if (!playToEnd && track.bpm > 0f) {
+            if (!playToEnd && proMode && track.bpm > 0f) {
                 segMs += Math.round(longBars(track.bpm) * 4.0 * 60_000.0 / track.bpm)
             }
             if (track.bpm > 0f) {

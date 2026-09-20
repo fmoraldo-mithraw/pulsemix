@@ -354,8 +354,8 @@ palette quand la structure est connue :
 | **on sort d'un BREAK / d'une OUTRO** | blend, **jamais** de coupe |
 | **on entre directement dans un DROP** | pas de sweep grave |
 
-`fadeSpecPro` — **toujours actif** (l'ancien toggle « Transitions pro »
-n'existe plus) — remplace cette palette dès que les tempos sont calables par
+`fadeSpecPro` — toggle **Transitions pro (bêta)** — remplace cette palette
+dès que les tempos sont calables par
 **le va-et-vient** (`KIND_LONG`), la transition de club : 20 à 30 s pendant
 lesquelles les deux morceaux, calés temps sur temps et phrase sur phrase,
 *se répondent* par cellules de mesures, jusqu'à ce que l'entrant ait

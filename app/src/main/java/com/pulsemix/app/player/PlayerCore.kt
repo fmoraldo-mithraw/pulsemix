@@ -113,6 +113,10 @@ object PlayerCore {
     fun setProTransitions(on: Boolean) {
         proTransitions.value = on
         mixer.setProMode(on)
+        // Les durées de plan comptent le va-et-vient de sortie (~26 s par
+        // passage) seulement en mode pro
+        com.pulsemix.app.mix.MixEngine.djPassageExtraMs =
+            if (on) com.pulsemix.app.mix.MixEngine.DJ_LONG_BLEND_MS else 0L
         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
             .edit().putBoolean("proTransitions", on).apply()
     }
@@ -605,10 +609,11 @@ object PlayerCore {
                 }
             }
         })
-        // Transitions pro TOUJOURS actives : le va-et-vient (KIND_LONG)
-        // est la transition du moteur DJ, l'ancien toggle n'a plus d'objet
-        // (le réglage persistant reste lu pour l'export, sans effet).
-        mixer.setProMode(true)
+        // Mode « Transitions pro » (bêta : le va-et-vient) : réglage
+        // persistant transmis au moteur dès sa création, puis à chaud.
+        mixer.setProMode(proTransitions.value)
+        com.pulsemix.app.mix.MixEngine.djPassageExtraMs =
+            if (proTransitions.value) com.pulsemix.app.mix.MixEngine.DJ_LONG_BLEND_MS else 0L
 
         // Égaliseur sur la session ExoPlayer
         eqExo = try {

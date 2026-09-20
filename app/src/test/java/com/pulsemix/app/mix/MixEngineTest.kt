@@ -274,7 +274,7 @@ class MixEngineTest {
     private fun planMs(p: MixEngine.MixPlan, dj: Boolean) =
         p.phases.sumOf { ph ->
             ph.tracks.sumOf { t ->
-                if (dj) t.segmentMs.coerceAtLeast(60_000L) + MixEngine.DJ_LONG_BLEND_MS
+                if (dj) t.segmentMs.coerceAtLeast(60_000L) + MixEngine.djPassageExtraMs
                 else t.durationMs.coerceAtLeast(60_000L)
             }
         }
