@@ -498,14 +498,29 @@ object AlarmClock {
             return
         }
         schedule(context) // demain, même heure
-        try {
+        // Journal 14 : cinq matins de suite, « alarme reçue », « alarme
+        // programmée »… puis PLUS RIEN — le démarrage du service de réveil
+        // en avant-plan échouait sans laisser de trace (Android 12+ refuse
+        // un service en avant-plan lancé depuis l'arrière-plan hors
+        // exemptions ; Samsung en rajoute). Désormais : chaque étape est
+        // journalisée, et si le service ne démarre pas, la musique est
+        // lancée DIRECTEMENT depuis le broadcast — le receveur reste
+        // vivant (goAsync) jusqu'à ce que le lancement soit parti.
+        val serviceOk = try {
             AlarmService.start(context)
-        } catch (_: Exception) {
-            // Dernier recours (démarrage de service refusé) : lancement
-            // direct depuis le broadcast
-            launchNow(context) {}
+            true
+        } catch (e: Exception) {
+            log("service de réveil refusé : ${e::class.java.simpleName} ${e.message?.take(160)}")
+            false
         }
-        onDone()
+        if (serviceOk) {
+            log("service de réveil demandé")
+            onDone()
+        } else {
+            // Dernier recours : lancement direct depuis le broadcast, le
+            // receveur tenu jusqu'à la demande de lecture
+            launchNow(context, onDone)
+        }
     }
 
     /**
@@ -515,6 +530,9 @@ object AlarmClock {
      */
     @OptIn(DelicateCoroutinesApi::class)
     fun launchNow(context: Context, onDone: () -> Unit) {
+        // Trace SYNCHRONE, avant tout : si rien ne suit, c'est que le
+        // processus est mort avant que la coroutine ne tourne.
+        log("lancement demandé depuis ${context::class.java.simpleName}")
         // Ceinture + bretelles : le CPU reste éveillé même si le
         // service se fait arrêter avant la fin du chargement
         val wl = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)

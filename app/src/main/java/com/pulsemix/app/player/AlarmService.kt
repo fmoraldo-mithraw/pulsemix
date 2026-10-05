@@ -52,8 +52,16 @@ class AlarmService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun log(message: String) {
+        try {
+            PlayerCore.engineLog("Réveil", message)
+        } catch (_: Exception) {
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
+        log("service : onCreate")
         if (Build.VERSION.SDK_INT >= 26) {
             // IMPORTANCE_HIGH : indispensable pour que le fullScreenIntent
             // s'affiche et que la notification passe en pop-up
@@ -73,8 +81,24 @@ class AlarmService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // startForeground immédiat : obligation liée à startForegroundService
-        startForeground(NOTIF_ID, buildNotification())
+        log("service : onStartCommand (${intent?.action ?: "sonnerie"})")
+        // startForeground immédiat : obligation liée à startForegroundService.
+        // Android 12+ peut le REFUSER (ForegroundServiceStartNotAllowed…)
+        // quand l'appli est en arrière-plan et que l'exemption d'alarme
+        // exacte n'est pas reconnue : l'exception tuait le processus
+        // (journal 14 : plus rien après « alarme programmée »). On la
+        // journalise et on lance la musique quand même — le service
+        // média de la lecture prend ensuite son propre avant-plan.
+        try {
+            startForeground(NOTIF_ID, buildNotification())
+        } catch (e: Exception) {
+            log("service : avant-plan refusé : ${e::class.java.simpleName} ${e.message?.take(160)}")
+            try {
+                getSystemService(NotificationManager::class.java)
+                    ?.notify(NOTIF_ID, buildNotification())
+            } catch (_: Exception) {
+            }
+        }
 
         when (intent?.action) {
             ACTION_SNOOZE -> {
@@ -92,6 +116,7 @@ class AlarmService : Service() {
             launched = true
             // Le service reste en vie après le lancement : c'est lui qui
             // porte la notification tant que le réveil sonne
+            log("service : lancement de la musique")
             AlarmClock.launchNow(this) {
                 try {
                     getSystemService(NotificationManager::class.java)

@@ -119,8 +119,18 @@ class PulseMixApp : Application() {
                     append(" — thread ").append(thread.name).append('\n')
                     append(android.util.Log.getStackTraceString(e))
                 }
+                // AJOUTÉ, pas écrasé : un crash de l'après-midi effaçait
+                // celui du réveil du matin (journal 14). Les ~5 derniers
+                // sont gardés (coupe à 60 ko par la fin).
                 for (dir in listOfNotNull(filesDir, getExternalFilesDir(null))) {
-                    java.io.File(dir, "crash_log.txt").writeText(log)
+                    val f = java.io.File(dir, "crash_log.txt")
+                    val prev = try {
+                        if (f.exists()) f.readText() else ""
+                    } catch (_: Exception) {
+                        ""
+                    }
+                    val merged = (log + "\n\n" + prev).take(60_000)
+                    f.writeText(merged)
                 }
             } catch (_: Exception) {
             }

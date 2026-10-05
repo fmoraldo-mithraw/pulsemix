@@ -906,7 +906,11 @@ fun PlayerScreen(
                         // key : pendant un glisser, la ligne déménage dans la
                         // liste — le nœud (et le doigt posé dessus) doit
                         // suivre l'ÉLÉMENT, pas rester à la position.
-                        itemsIndexed(queue, key = { i, _ -> queueKeys[i] }) { i, t ->
+                        // getOrNull : pendant une recomposition, la file et
+                        // ses clés (remember(queue)) peuvent être d'une
+                        // génération différente — l'index débordait
+                        // (crash_log : Index 17 out of bounds for length 17).
+                        itemsIndexed(queue, key = { i, t -> queueKeys.getOrNull(i) ?: "${t.uri}#i$i" }) { i, t ->
                             val isCurrent = i == currentIndex
                             // Déjà passé : estompé, pour que l'œil trouve tout
                             // de suite où en est la lecture.

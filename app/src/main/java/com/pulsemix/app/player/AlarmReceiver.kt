@@ -17,9 +17,32 @@ class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != AlarmClock.ACTION_FIRE) return
         // goAsync : la lecture démarre après un chargement asynchrone
-        // de la bibliothèque, au-delà du onReceive synchrone
+        // de la bibliothèque, au-delà du onReceive synchrone. Filet :
+        // le receveur est de toute façon relâché au bout de 25 s (le
+        // système ne tolère pas plus), même si le lancement n'a pas
+        // rappelé.
         val result = goAsync()
-        AlarmClock.fire(context) { result.finish() }
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun finish() {
+            if (done.compareAndSet(false, true)) {
+                try {
+                    result.finish()
+                } catch (_: Exception) {
+                }
+            }
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ finish() }, 25_000L)
+        try {
+            AlarmClock.fire(context) { finish() }
+        } catch (e: Exception) {
+            try {
+                com.pulsemix.app.player.PlayerCore.engineLog(
+                    "Réveil", "fire a levé ${e::class.java.simpleName} ${e.message?.take(160)}"
+                )
+            } catch (_: Exception) {
+            }
+            finish()
+        }
     }
 }
 

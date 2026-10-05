@@ -323,7 +323,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             exportMessage.value = try {
                 val app = getApplication<android.app.Application>()
                 val sources = listOf(
-                    "service_log.txt", "dj_log.txt", "crash_log.txt"
+                    "service_log.txt", "dj_log.txt", "crash_log.txt", "exit_log.txt"
                 ).flatMap { name ->
                     listOfNotNull(app.filesDir, app.getExternalFilesDir(null))
                         .map { java.io.File(it, name) }
