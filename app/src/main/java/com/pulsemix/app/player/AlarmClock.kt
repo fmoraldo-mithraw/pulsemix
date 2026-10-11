@@ -303,6 +303,7 @@ object AlarmClock {
      */
     fun snooze(context: Context, minutes: Int) {
         stopRinging(context)
+        AlarmService.cancelNotification(context)
         val at = System.currentTimeMillis() + minutes * 60_000L
         val am = context.getSystemService(AlarmManager::class.java)
         if (am != null) {
@@ -326,6 +327,7 @@ object AlarmClock {
     /** Arrêter le réveil : musique coupée, notification retirée. */
     fun dismiss(context: Context) {
         stopRinging(context)
+        AlarmService.cancelNotification(context)
         context.getSystemService(AlarmManager::class.java)
             ?.cancel(snoozePending(context))
         AlarmService.stop(context)
@@ -498,29 +500,85 @@ object AlarmClock {
             return
         }
         schedule(context) // demain, même heure
+        log("état : ${backgroundState(context)}")
         // Journal 14 : cinq matins de suite, « alarme reçue », « alarme
-        // programmée »… puis PLUS RIEN — le démarrage du service de réveil
-        // en avant-plan échouait sans laisser de trace (Android 12+ refuse
-        // un service en avant-plan lancé depuis l'arrière-plan hors
-        // exemptions ; Samsung en rajoute). Désormais : chaque étape est
-        // journalisée, et si le service ne démarre pas, la musique est
-        // lancée DIRECTEMENT depuis le broadcast — le receveur reste
-        // vivant (goAsync) jusqu'à ce que le lancement soit parti.
-        val serviceOk = try {
+        // programmée »… puis PLUS RIEN — le service de réveil en
+        // avant-plan était refusé (Android 12+ interdit un service en
+        // avant-plan lancé depuis l'arrière-plan ; l'appli fonctionnait le
+        // premier jour, tant qu'elle venait d'être utilisée). La sonnerie
+        // ne DÉPEND plus du service :
+        //  1. la notification plein écran est postée directement (sans
+        //     service) — sur écran verrouillé, l'écran du réveil s'ouvre,
+        //     et l'appli passe au premier plan ;
+        //  2. la musique est lancée directement depuis le broadcast, le
+        //     receveur tenu (goAsync) jusqu'à la demande de lecture ;
+        //  3. le service est demandé EN PLUS, pour protéger le processus
+        //     s'il est accepté — refusé, il n'est qu'une ligne de journal.
+        AlarmService.postNotification(context)
+        launchOnce(context, "broadcast", onDone)
+        try {
             AlarmService.start(context)
-            true
+            log("service de réveil demandé (protection du processus)")
         } catch (e: Exception) {
             log("service de réveil refusé : ${e::class.java.simpleName} ${e.message?.take(160)}")
-            false
         }
-        if (serviceOk) {
-            log("service de réveil demandé")
+    }
+
+    /** Instant du dernier lancement (elapsedRealtime) : le broadcast, le
+     *  service et l'écran du réveil peuvent tous demander le lancement —
+     *  un seul compte, dans une fenêtre de 2 min. */
+    @Volatile private var lastLaunchAt = 0L
+
+    /** Lance la musique une seule fois par sonnerie, d'où que vienne la
+     *  demande ([from] : journal). [onDone] est toujours rappelé. */
+    fun launchOnce(context: Context, from: String, onDone: () -> Unit) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastLaunchAt < 2 * 60_000L) {
+            log("lancement déjà en cours ($from ignoré)")
             onDone()
-        } else {
-            // Dernier recours : lancement direct depuis le broadcast, le
-            // receveur tenu jusqu'à la demande de lecture
-            launchNow(context, onDone)
+            return
         }
+        lastLaunchAt = now
+        launchNow(context, onDone)
+    }
+
+    /** Ce que le système dit de l'appli au moment de la sonnerie : la
+     *  clé des refus de services en arrière-plan (journal). */
+    private fun backgroundState(context: Context): String {
+        val sb = StringBuilder()
+        sb.append("optimisation batterie ignorée : ${batteryIgnored(context)}")
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            try {
+                val am = context.getSystemService(android.app.ActivityManager::class.java)
+                sb.append(", arrière-plan restreint : ${am?.isBackgroundRestricted}")
+            } catch (_: Exception) {
+            }
+            try {
+                val usm = context.getSystemService(android.app.usage.UsageStatsManager::class.java)
+                val b = usm?.appStandbyBucket
+                sb.append(
+                    ", veille : " + when (b) {
+                        android.app.usage.UsageStatsManager.STANDBY_BUCKET_ACTIVE -> "active"
+                        android.app.usage.UsageStatsManager.STANDBY_BUCKET_WORKING_SET -> "working set"
+                        android.app.usage.UsageStatsManager.STANDBY_BUCKET_FREQUENT -> "frequent"
+                        android.app.usage.UsageStatsManager.STANDBY_BUCKET_RARE -> "rare"
+                        45 -> "RESTRICTED"
+                        else -> "$b"
+                    }
+                )
+            } catch (_: Exception) {
+            }
+        }
+        return sb.toString()
+    }
+
+    /** L'écran du réveil est au premier plan (fullScreenIntent) : de là,
+     *  tout est permis — si la musique n'est pas partie, on la lance. */
+    fun ensureLaunched(context: Context) {
+        if (!enabled.value) return
+        val recent = android.os.SystemClock.elapsedRealtime() - lastLaunchAt < 2 * 60_000L
+        if (recent || PlayerCore.isPlaying.value) return
+        launchOnce(context, "écran du réveil") {}
     }
 
     /**

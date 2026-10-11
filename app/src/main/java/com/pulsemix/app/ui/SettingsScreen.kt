@@ -211,6 +211,20 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
             // et l'anomalie constatée s'il y en a une (réveil manqué). Sans
             // alarmes exactes, un bouton mène au réglage système.
             val armed by vm.alarmArmedInfo.collectAsStateWithLifecycle()
+            val batteryOk = remember(resumeTick) {
+                context.getSystemService(android.os.PowerManager::class.java)
+                    ?.isIgnoringBatteryOptimizations(context.packageName) == true
+            }
+            if (!batteryOk) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "⚠ Réveil peu fiable : Android peut empêcher PulseMix de " +
+                        "lancer la musique depuis l'arrière-plan. Autorise-la à " +
+                        "rester active (bouton « Batterie » plus bas).",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             if (armed.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
                 Text(

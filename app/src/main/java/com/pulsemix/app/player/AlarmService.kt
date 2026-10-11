@@ -46,6 +46,97 @@ class AlarmService : Service() {
             } catch (_: Exception) {
             }
         }
+
+        /** Canal de la notification de réveil (idempotent). IMPORTANCE_HIGH :
+         *  indispensable pour que le fullScreenIntent s'affiche et que la
+         *  notification passe en pop-up. */
+        fun ensureChannel(context: Context) {
+            if (Build.VERSION.SDK_INT < 26) return
+            val channel = NotificationChannel(
+                CHANNEL_ID, "Réveil matin", NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Sonnerie du réveil musical"
+                setBypassDnd(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                // La musique EST la sonnerie : pas de son de notification
+                setSound(null, null)
+                enableVibration(true)
+            }
+            context.getSystemService(NotificationManager::class.java)
+                ?.createNotificationChannel(channel)
+        }
+
+        /** Poste (ou rafraîchit) la notification de réveil SANS service :
+         *  utilisable depuis le receveur d'alarme, quand le service en
+         *  avant-plan est refusé. */
+        fun postNotification(context: Context) {
+            try {
+                ensureChannel(context)
+                context.getSystemService(NotificationManager::class.java)
+                    ?.notify(NOTIF_ID, buildNotification(context))
+            } catch (_: Exception) {
+            }
+        }
+
+        fun cancelNotification(context: Context) {
+            try {
+                context.getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID)
+            } catch (_: Exception) {
+            }
+        }
+
+        private fun snoozeIntent(context: Context, minutes: Int): PendingIntent =
+            PendingIntent.getService(
+                context, 1000 + minutes,
+                Intent(context, AlarmService::class.java)
+                    .setAction(ACTION_SNOOZE)
+                    .putExtra(EXTRA_MINUTES, minutes),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+        fun buildNotification(context: Context): Notification {
+            val full = PendingIntent.getActivity(
+                context, 0,
+                Intent(context, AlarmAlertActivity::class.java)
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    ),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val dismiss = PendingIntent.getService(
+                context, 999,
+                Intent(context, AlarmService::class.java).setAction(ACTION_DISMISS),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val track = PlayerCore.currentTrack.value
+            val text = track?.let {
+                listOf(it.title, it.artist).filter(String::isNotBlank)
+                    .joinToString(" — ")
+            } ?: "Lancement de la musique…"
+
+            val b = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_app)
+                .setContentTitle("Réveil PulseMix")
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setContentIntent(full)
+                // Plein écran sur écran verrouillé, comme une vraie alarme
+                .setFullScreenIntent(full, true)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                // Impossible à balayer : seuls les boutons la retirent
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setSilent(true)
+            for (min in AlarmClock.SNOOZE_CHOICES) {
+                b.addAction(0, "+$min min", snoozeIntent(context, min))
+            }
+            b.addAction(0, "Arrêter", dismiss)
+            return b.build()
+        }
     }
 
     private var launched = false
@@ -62,22 +153,7 @@ class AlarmService : Service() {
     override fun onCreate() {
         super.onCreate()
         log("service : onCreate")
-        if (Build.VERSION.SDK_INT >= 26) {
-            // IMPORTANCE_HIGH : indispensable pour que le fullScreenIntent
-            // s'affiche et que la notification passe en pop-up
-            val channel = NotificationChannel(
-                CHANNEL_ID, "Réveil matin", NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Sonnerie du réveil musical"
-                setBypassDnd(true)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                // La musique EST la sonnerie : pas de son de notification
-                setSound(null, null)
-                enableVibration(true)
-            }
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
-        }
+        ensureChannel(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -90,12 +166,12 @@ class AlarmService : Service() {
         // journalise et on lance la musique quand même — le service
         // média de la lecture prend ensuite son propre avant-plan.
         try {
-            startForeground(NOTIF_ID, buildNotification())
+            startForeground(NOTIF_ID, buildNotification(this))
         } catch (e: Exception) {
             log("service : avant-plan refusé : ${e::class.java.simpleName} ${e.message?.take(160)}")
             try {
                 getSystemService(NotificationManager::class.java)
-                    ?.notify(NOTIF_ID, buildNotification())
+                    ?.notify(NOTIF_ID, buildNotification(this))
             } catch (_: Exception) {
             }
         }
@@ -117,67 +193,14 @@ class AlarmService : Service() {
             // Le service reste en vie après le lancement : c'est lui qui
             // porte la notification tant que le réveil sonne
             log("service : lancement de la musique")
-            AlarmClock.launchNow(this) {
+            AlarmClock.launchOnce(this, "service") {
                 try {
                     getSystemService(NotificationManager::class.java)
-                        ?.notify(NOTIF_ID, buildNotification())
+                        ?.notify(NOTIF_ID, buildNotification(this))
                 } catch (_: Exception) {
                 }
             }
         }
         return START_NOT_STICKY
-    }
-
-    private fun snoozeIntent(minutes: Int): PendingIntent =
-        PendingIntent.getService(
-            this, 1000 + minutes,
-            Intent(this, AlarmService::class.java)
-                .setAction(ACTION_SNOOZE)
-                .putExtra(EXTRA_MINUTES, minutes),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-    private fun buildNotification(): Notification {
-        val full = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, AlarmAlertActivity::class.java)
-                .addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP
-                ),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val dismiss = PendingIntent.getService(
-            this, 999,
-            Intent(this, AlarmService::class.java).setAction(ACTION_DISMISS),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val track = PlayerCore.currentTrack.value
-        val text = track?.let {
-            listOf(it.title, it.artist).filter(String::isNotBlank)
-                .joinToString(" — ")
-        } ?: "Lancement de la musique…"
-
-        val b = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_app)
-            .setContentTitle("Réveil PulseMix")
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setContentIntent(full)
-            // Plein écran sur écran verrouillé, comme une vraie alarme
-            .setFullScreenIntent(full, true)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            // Impossible à balayer : seuls les boutons la retirent
-            .setOngoing(true)
-            .setAutoCancel(false)
-            .setSilent(true)
-        for (min in AlarmClock.SNOOZE_CHOICES) {
-            b.addAction(0, "+$min min", snoozeIntent(min))
-        }
-        b.addAction(0, "Arrêter", dismiss)
-        return b.build()
     }
 }

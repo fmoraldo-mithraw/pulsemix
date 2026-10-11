@@ -47,6 +47,9 @@ class AlarmAlertActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         showOverLockScreen()
+        // Au premier plan, l'appli a tous les droits : si la musique n'est
+        // pas partie (service refusé en arrière-plan), c'est ici qu'elle part.
+        AlarmClock.ensureLaunched(this)
 
         setContent {
             MaterialTheme(colorScheme = AlarmColors) {
