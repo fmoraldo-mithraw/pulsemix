@@ -234,6 +234,7 @@ morceau superposés dix secondes sonnaient faux :
 |---|---|---|
 | **Suivant** | 2,5 s au plus (borné par le réglage) | vers l'index suivant (cible **absolue** arrêtée à l'appui). En bout de file sans répétition : « Fin de la file d'attente ». |
 | **Précédent** | 2,5 s au plus | > 3 s dans le morceau : retour à son début ; sinon morceau précédent. |
+| **Double appui** (suivant ou précédent, < 3 s) | **aucun** | **coupe** : la transition en cours est achevée net (queue coupée, morceau demandé seul) ; rien en cours : saut direct sans fondu. L'appui de coupe remet le compteur à zéro (suivant, coupe, suivant, coupe… pour avancer vite). Journal : `coupe franche (double appui)`. |
 | **Barre de progression** | 1,5 s au plus | à la lecture : « on se déplace en musique » ; **à l'arrêt : seek direct silencieux**. |
 | **Choix dans la file** | — | saut direct, sans fondu ; purge tout ce qui attendait. |
 | **Deux gestes rapprochés** | | le premier est **appliqué** avant le second (deux « suivant » = deux morceaux). Une bascule *automatique* en attente est au contraire **jetée** par un geste. |
@@ -482,6 +483,7 @@ annonce du morceau à l'interface **différée de la latence de sortie**
 |---|---|
 | **Suivant** | vraie transition battue vers le morceau d'après le deck actif — ou d'après la transition en vol ; 2 mesures, départ à la prochaine mesure. |
 | **Précédent** | transition vers le passage précédent ; au premier, repart de son début. |
+| **Double appui** (< 3 s) | **coupe** (`cutNow`) : la transition en vol est achevée en 80 ms (`CUT_FRAMES`, sans traitement spectral ni écho) ; deck encore en ouverture : arrivée directe dès qu'il est prêt ; rien en vol : « suivant » coupé dès l'ouverture. Journal : `coupe franche (double appui)`. |
 | **Barre de progression** | un second deck est ouvert **sur le même morceau** à la position visée, et on y fait une transition de **deux mesures**. Point visé borné pour laisser une **vraie transition** derrière (avance d'ouverture 8 s + quatre mesures, ~16 s à 120 BPM ; 10 s sur le dernier passage) — avant, un déplacement vers la fin laissait la jonction se faire en 1,8 s. Prend la main sur une ouverture en cours ; ignoré si une transition est déjà en vol (L4). |
 | **Mixer maintenant** | = suivant. |
 | **Crossfader manuel** | pendant une transition : la position remplace la progression du fondu ; hors transition : n'atténue que le deck actif. Saisie et retour « Auto » en rampe de 250 ms. |

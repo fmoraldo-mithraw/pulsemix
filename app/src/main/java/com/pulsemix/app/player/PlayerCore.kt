@@ -1194,20 +1194,72 @@ object PlayerCore {
         return true
     }
 
+    /**
+     * Double appui = COUPE. Un second appui sur « suivant » (ou
+     * « précédent ») moins de [DOUBLE_TAP_MS] après le premier ne lance
+     * pas une transition de plus : il COUPE celle en cours — le morceau
+     * demandé arrive tout de suite, sans fondu. Un appui de coupe remet
+     * le compteur à zéro : l'appui d'après est à nouveau une transition
+     * normale (suivant, coupe, suivant, coupe… pour avancer vite).
+     * @return vrai si cet appui est une coupe.
+     */
+    private fun doubleTap(dir: Int): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val cut = lastTapDir == dir && now - lastTapAt < DOUBLE_TAP_MS
+        lastTapDir = if (cut) 0 else dir
+        lastTapAt = now
+        return cut
+    }
+
+    private var lastTapDir = 0
+    private var lastTapAt = 0L
+    private const val DOUBLE_TAP_MS = 3_000L
+
+    /**
+     * Coupe franche (double appui) hors DJ : ce qui attendait est appliqué
+     * et la queue est coupée net — le morceau demandé est seul, tout de
+     * suite. S'il n'y avait rien en cours, c'est un saut direct vers la
+     * cible ([go]), sans fondu.
+     * @return vrai si une transition en cours a été coupée (rien d'autre
+     * à faire) ; faux : il faut sauter vers [go].
+     */
+    private fun cutTransition(): Boolean {
+        val pending = pendingSwitch
+        val hadTail = exoTail != null || pending != null
+        pendingSwitch = null
+        stopTail()
+        if (pending != null && pending.fromGesture) {
+            fadeGain = 1f
+            applyVolume()
+            pending.go()
+        } else {
+            seekJob?.cancel()
+            fadeGain = 1f
+            applyVolume()
+        }
+        if (hadTail) transLog("coupe franche (double appui)")
+        return hadTail
+    }
+
     fun next() {
         endAlarmAudioOnGesture("suivant")
         // Tout changement voulu rend caduque la marque « fin déjà fondue » :
         // si on revient plus tard sur ce morceau, sa fin doit l'être encore.
         crossfadedFrom = null
+        val cut = doubleTap(+1)
         if (mode.value == PlayerMode.DJ) {
             if (djEngineStoppedAndSay()) return
             stopTail()
             // Morceau suivant, pas phase suivante : « suivant » avance d'un
             // morceau quel que soit le mode. Le moteur y fait une vraie
-            // transition battue, comme pour un enchaînement naturel.
-            mixer.nextTrack()
+            // transition battue, comme pour un enchaînement naturel —
+            // ou une COUPE sur double appui.
+            if (cut) mixer.cutNow() else mixer.nextTrack()
             return
         }
+        // Double appui : la transition en cours est coupée ; s'il n'y en
+        // avait pas, saut direct sans fondu.
+        if (cut && cutTransition()) return
         // Un geste précédent encore en attente est appliqué d'abord : les
         // cibles du nouveau s'arrêtent sur l'état qui en résulte — deux
         // « suivant » rapprochés avancent bien de deux morceaux.
@@ -1234,12 +1286,13 @@ object PlayerCore {
             launchMessage.value = "Fin de la file d'attente."
             return
         }
-        crossfadeTo(exo.hasNextMediaItem()) {
+        val go = {
             when {
                 target != C.INDEX_UNSET -> exo.seekTo(target, 0)
                 else -> exo.seekToNextMediaItem()
             }
         }
+        if (cut) quickSwitch(go) else crossfadeTo(exo.hasNextMediaItem(), go)
     }
 
     fun previous() {
@@ -1247,14 +1300,17 @@ object PlayerCore {
         // On peut revenir sur un morceau dont la fin a déjà été fondue : sa
         // fin doit pouvoir l'être à nouveau.
         crossfadedFrom = null
+        val cut = doubleTap(-1)
         if (mode.value == PlayerMode.DJ) {
             if (djEngineStoppedAndSay()) return
             stopTail()
             // Morceau précédent, pas phase précédente : même règle que
-            // « suivant », la navigation se fait morceau par morceau.
-            mixer.prevTrack()
+            // « suivant », la navigation se fait morceau par morceau —
+            // ou une COUPE sur double appui.
+            if (cut) mixer.cutNow() else mixer.prevTrack()
             return
         }
+        if (cut && cutTransition()) return
         // Un geste précédent encore en attente est appliqué d'abord, puis
         // les cibles sont arrêtées en ABSOLU — mêmes raisons que next().
         // « Reviens au début de CE morceau » doit rester ce morceau-là,
@@ -1272,13 +1328,14 @@ object PlayerCore {
         } else {
             exo.previousMediaItemIndex
         }
-        crossfadeTo(restart || exo.hasPreviousMediaItem()) {
+        val go = {
             when {
                 restart -> exo.seekTo(restartIndex, 0)
                 prevIndex != C.INDEX_UNSET -> exo.seekTo(prevIndex, 0)
                 else -> exo.seekToPreviousMediaItem()
             }
         }
+        if (cut) quickSwitch(go) else crossfadeTo(restart || exo.hasPreviousMediaItem(), go)
     }
 
     // Le déplacement dans le morceau passe UNIQUEMENT par

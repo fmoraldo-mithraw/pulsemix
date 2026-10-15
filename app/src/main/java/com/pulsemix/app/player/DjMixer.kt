@@ -152,6 +152,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         const val SETTLE_FRAMES: Long = 4L * 44_100L
         const val NATURAL_STEP = 0.0005f
 
+        /** Durée d'une coupe franche (double appui) : 80 ms, assez pour ne
+         *  pas claquer, assez court pour être une coupe. */
+        const val CUT_FRAMES = 3_528L
+
         /** Facteur de vitesse du cran manuel : ±8 % par cran. Fonction PURE. */
         internal fun manualFactor(level: Int): Float = 1f + 0.08f * level
         // Marge de sortie supplémentaire contre les saccades : 0,3 s de
@@ -1198,6 +1202,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
     fun nextTrack() {
         pendingJump = -2
     }
+
+    /**
+     * COUPE (double appui sur suivant/précédent) : la transition en cours
+     * ou en préparation est achevée tout de suite — fondu ramené à
+     * [CUT_FRAMES] à partir de maintenant, sans traitement spectral ni
+     * écho. Rien en vol : c'est un « suivant » qui se coupera dès que le
+     * deck sera ouvert. Consommé par la boucle audio (cutRequested).
+     */
+    fun cutNow() {
+        cutRequested = true
+    }
+
+    @Volatile private var cutRequested = false
 
     /**
      * Transition vers le morceau précédent (bouton « précédent »). Au tout
@@ -2358,6 +2375,27 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     bassSwapF = -1L
                     echoBuf = null
                 }
+                // Coupe franche demandée (double appui) : rien en vol ni en
+                // préparation → c'est un « suivant » qui se coupera dès que
+                // le deck sera ouvert.
+                if (cutRequested && deckB == null && !opening && pendingJump == -1) {
+                    pendingJump = -2
+                }
+                // Sur une transition chargée : le fondu est ramené à
+                // CUT_FRAMES à partir de maintenant — le deck entrant est
+                // seul dans 80 ms.
+                if (cutRequested && deckB != null && fadeStartF >= 0L) {
+                    cutRequested = false
+                    val cutEnd = framesGlobal + CUT_FRAMES
+                    if (fadeStartF + fadeLenF > cutEnd) {
+                        fadeStartF = framesGlobal
+                        fadeLenF = CUT_FRAMES
+                        fadeKindF = KIND_CUT
+                        bassSwapF = -1L
+                        echoBuf = null
+                        diag("coupe franche (double appui) : transition achevée en 80 ms")
+                    }
+                }
 
                 // Déplacement demandé dans le morceau en cours : on rouvre
                 // le même morceau à l'endroit visé et on y fait une vraie
@@ -2682,6 +2720,15 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         }
                         fadeKindF = ready.fadeKind
                         lastFadeKind = ready.fadeKind
+                        // Coupe franche en attente (double appui pendant
+                        // l'ouverture du deck) : pas de fondu du tout.
+                        if (cutRequested) {
+                            cutRequested = false
+                            fadeStartF = framesGlobal
+                            fadeLenF = CUT_FRAMES
+                            fadeKindF = KIND_CUT
+                            diag("coupe franche (double appui) : arrivée directe")
+                        }
                         // Compteur de drop-swaps enchaînés (fadeSpecPro) :
                         // permis deux fois d'affilée, jamais trois.
                         dropStreak =
@@ -2786,8 +2833,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                         // allouée ICI (jamais dans la boucle par bloc),
                         // pour la coupe écho ET pour le drop-swap, qui en
                         // fait sa queue d'un temps.
-                        echoBuf = if (ready.fadeKind == KIND_CUT ||
-                            ready.fadeKind == KIND_DROP
+                        echoBuf = if (fadeLenF > CUT_FRAMES &&
+                            (ready.fadeKind == KIND_CUT || ready.fadeKind == KIND_DROP)
                         ) {
                             echoPos = 0
                             FloatArray(
