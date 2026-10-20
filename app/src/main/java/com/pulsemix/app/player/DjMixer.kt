@@ -2090,6 +2090,38 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         }
 
         /**
+         * Coupe franche IMMÉDIATE : jette ce que la sortie avait en tampon
+         * (~2,3 s déjà mixées, pas encore entendues) pour que le prochain
+         * bloc écrit soit entendu tout de suite. Sans ça, un double appui
+         * calculait bien la coupe sur-le-champ… mais on l'entendait 2,3 s
+         * plus tard — « le passage au morceau suivant est lent ». Le deck
+         * sortant saute d'autant (il part de toute façon) ; à n'appeler
+         * que si l'entrant n'a presque rien dans le tampon (voir les
+         * appelants). La tête de lecture est remise à zéro par flush() :
+         * la comptabilité suit. @return ms jetées.
+         */
+        fun flushOutput(): Long {
+            val played = try {
+                audioTrack.playbackHeadPosition.toLong() and 0xffffffffL
+            } catch (_: Exception) {
+                framesWrittenOut
+            }
+            val unplayed = (framesWrittenOut - played).coerceAtLeast(0L)
+            try {
+                audioTrack.pause()
+                audioTrack.flush()
+                audioTrack.play()
+            } catch (_: Exception) {
+            }
+            framesWrittenOut = 0L
+            outFlushedAtFrame = framesGlobal
+            // Le premier bloc après la purge part sur un tampon vide : une
+            // sous-alimentation comptée qui n'est pas une saccade.
+            fadeUnderrunAt = audioTrack.underrunCount + 1
+            return unplayed * 1000L / OUT_SR
+        }
+
+        /**
          * Reconstruit la sortie audio en cours de set — changement de canal
          * (fin du réveil), ou sortie morte — sur la MÊME session audio
          * (l'égaliseur suit), en y réécrivant ce que l'ancienne avait en
@@ -2388,12 +2420,23 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     cutRequested = false
                     val cutEnd = framesGlobal + CUT_FRAMES
                     if (fadeStartF + fadeLenF > cutEnd) {
+                        // L'entrant est-il déjà dans le tampon de sortie ?
+                        // Pas encore (fondu programmé plus tard) ou à peine
+                        // (< 200 ms) : on PURGE le tampon, la coupe
+                        // s'entend tout de suite au lieu de 2,3 s plus tard.
+                        // Au-delà, purger jetterait le début de l'entrant
+                        // (son drop) : on garde le tampon.
+                        val startedF = framesGlobal - fadeStartF
                         fadeStartF = framesGlobal
                         fadeLenF = CUT_FRAMES
                         fadeKindF = KIND_CUT
                         bassSwapF = -1L
                         echoBuf = null
-                        diag("coupe franche (double appui) : transition achevée en 80 ms")
+                        val flushed = if (startedF <= OUT_SR / 5L) flushOutput() else -1L
+                        diag(
+                            "coupe franche (double appui) : transition achevée en 80 ms" +
+                                (if (flushed >= 0L) ", tampon purgé ($flushed ms)" else "")
+                        )
                     }
                 }
 
@@ -2727,7 +2770,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                             fadeStartF = framesGlobal
                             fadeLenF = CUT_FRAMES
                             fadeKindF = KIND_CUT
-                            diag("coupe franche (double appui) : arrivée directe")
+                            // Le tampon ne contient que le sortant : purgé,
+                            // l'entrant est entendu tout de suite.
+                            val flushed = flushOutput()
+                            diag("coupe franche (double appui) : arrivée directe, tampon purgé ($flushed ms)")
                         }
                         // Compteur de drop-swaps enchaînés (fadeSpecPro) :
                         // permis deux fois d'affilée, jamais trois.
@@ -3497,6 +3543,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                 if (wrote > 0) recordOut(out)
                 recorder?.write(out, BLOCK_FRAMES * 2)
                 framesGlobal += BLOCK_FRAMES
+                framesGlobalShared = framesGlobal
                 a.advancePhase(BLOCK_FRAMES)
 
                 // Fin du crossfade : B devient le deck actif. JAMAIS tant
@@ -3539,7 +3586,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     // cellule qui se répète s'entend comme un saut.
                     val loopedMs =
                         (a.loopTotalOut - fadeLoopedA) * 1000L / OUT_SR
-                    val under = audioTrack.underrunCount - fadeUnderrunAt
+                    val under = (audioTrack.underrunCount - fadeUnderrunAt).coerceAtLeast(0)
                     underrunsSeen += under
                     val squashDb = if (limMinInFade < 0.999f)
                         20.0 * kotlin.math.log10(limMinInFade.toDouble()) else 0.0
@@ -3681,10 +3728,22 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         // est celui qu'on entend, pas celui qu'on vient de calculer. À la
         // livraison, le set a pu être arrêté (et un autre mode lancé) :
         // l'annonce d'un set mort écrasait le morceau courant du nouveau.
+        // Après une purge du tampon (coupe franche), ce qu'on calcule EST
+        // ce qu'on entend : annonce immédiate.
+        val sinceFlush = framesGlobalNow() - outFlushedAtFrame
+        val delay = if (outFlushedAtFrame >= 0L && sinceFlush * 1000L / OUT_SR < outLatencyMs) 0L
+        else outLatencyMs
         ui.postDelayed({
             if (running && gen == runGeneration) listener.onTrackChanged(t, p)
-        }, outLatencyMs)
+        }, delay)
     }
+
+    /** Position de sortie (frames) au moment de la dernière purge du
+     *  tampon (coupe franche) ; -1 = jamais. */
+    @Volatile private var outFlushedAtFrame = -1L
+    /** Position de sortie courante, vue hors de la boucle (annonce). */
+    @Volatile private var framesGlobalShared = 0L
+    private fun framesGlobalNow(): Long = framesGlobalShared
 
     // computeRate et fadeSpec : voir le companion object (fonctions pures,
     // internal, testées en JVM).

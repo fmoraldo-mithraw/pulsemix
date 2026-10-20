@@ -1292,7 +1292,7 @@ object PlayerCore {
                 else -> exo.seekToNextMediaItem()
             }
         }
-        if (cut) quickSwitch(go) else crossfadeTo(exo.hasNextMediaItem(), go)
+        if (cut) quickSwitch(go, CUT_FADE_MS) else crossfadeTo(exo.hasNextMediaItem(), go)
     }
 
     fun previous() {
@@ -1335,7 +1335,8 @@ object PlayerCore {
                 else -> exo.seekToPreviousMediaItem()
             }
         }
-        if (cut) quickSwitch(go) else crossfadeTo(restart || exo.hasPreviousMediaItem(), go)
+        if (cut) quickSwitch(go, CUT_FADE_MS)
+        else crossfadeTo(restart || exo.hasPreviousMediaItem(), go)
     }
 
     // Le déplacement dans le morceau passe UNIQUEMENT par
@@ -1406,12 +1407,16 @@ object PlayerCore {
      * long pour couvrir la mise en tampon du morceau d'arrivée — à plein
      * volume, elle s'entendait comme un claquement suivi d'un blanc.
      */
-    private fun quickSwitch(go: () -> Unit) {
+    private fun quickSwitch(go: () -> Unit, fadeMs: Long = NO_TAIL_FADE_MS) {
         fadeGain = 0f
         applyVolume()
         go()
-        fadeInMain(NO_TAIL_FADE_MS)
+        fadeInMain(fadeMs)
     }
+
+    /** Remontée après une coupe franche (double appui) : plus courte que
+     *  le saut ordinaire — l'utilisateur a demandé « tout de suite ». */
+    private const val CUT_FADE_MS = 120L
 
     /** Gain du fondu d'entrée du lecteur principal (multiplie le volume). */
     @Volatile private var fadeGain = 1f
