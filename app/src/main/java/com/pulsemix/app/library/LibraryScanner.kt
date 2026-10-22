@@ -125,7 +125,11 @@ object LibraryScanner {
                                 title = meta.first,
                                 artist = meta.second,
                                 durationMs = meta.third,
-                                analyzed = false
+                                analyzed = false,
+                                // Date d'entrée : le tri « Ajouté » de la
+                                // bibliothèque. Conservée ensuite à chaque
+                                // réanalyse (cf. plus bas).
+                                addedAt = System.currentTimeMillis()
                             )
                         )
                         added++
@@ -284,7 +288,9 @@ object LibraryScanner {
                                         // passent par l'analyse l'obtiennent —
                                         // les anciens restent sans structure.
                                         structure = features.structure,
-                                        phraseProfile = features.phraseProfile
+                                        phraseProfile = features.phraseProfile,
+                                        passageRefused = cur?.passageRefused ?: "",
+                                        addedAt = cur?.addedAt ?: 0L
                                     )
                                 } else {
                                     Track(
@@ -303,7 +309,9 @@ object LibraryScanner {
                                         excluded = cur?.excluded == true,
                                         notEpic = cur?.notEpic == true,
                                         bpmLocked = lockedBpm != null,
-                                        segmentLocked = lockedSeg != null
+                                        segmentLocked = lockedSeg != null,
+                                        passageRefused = cur?.passageRefused ?: "",
+                                        addedAt = cur?.addedAt ?: 0L
                                     )
                                 }
                                 // Pas de tag genre : déduire du titre ou de la

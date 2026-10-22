@@ -14,6 +14,8 @@ data class PlaybackState(
     val planDescription: String? = null,
     val phaseNames: List<String> = emptyList(),
     val phaseUris: List<List<String>> = emptyList(),
+    /** Humeur de chaque phase (nom de Passages.Mood ; vide = FORT). */
+    val phaseMoods: List<String> = emptyList(),
     val currentIndex: Int = 0,
     val positionMs: Long = 0L,
     val currentPhase: Int = 0,
@@ -52,6 +54,7 @@ class PlaybackStateStore(context: Context) {
             for (i in state.phaseNames.indices) {
                 val p = JSONObject()
                 p.put("name", state.phaseNames[i])
+                state.phaseMoods.getOrNull(i)?.let { p.put("mood", it) }
                 p.put("uris", JSONArray(state.phaseUris.getOrElse(i) { emptyList<String>() }))
                 phases.put(p)
             }
@@ -71,11 +74,13 @@ class PlaybackStateStore(context: Context) {
                 for (i in 0 until queueArr.length()) queue.add(queueArr.getString(i))
 
                 val phaseNames = ArrayList<String>()
+                val phaseMoods = ArrayList<String>()
                 val phaseUris = ArrayList<List<String>>()
                 val phasesArr = o.optJSONArray("phases") ?: JSONArray()
                 for (i in 0 until phasesArr.length()) {
                     val p = phasesArr.getJSONObject(i)
                     phaseNames.add(p.optString("name", "?"))
+                    if (p.has("mood")) phaseMoods.add(p.optString("mood", "FORT"))
                     val uris = ArrayList<String>()
                     val urisArr = p.optJSONArray("uris") ?: JSONArray()
                     for (j in 0 until urisArr.length()) uris.add(urisArr.getString(j))
@@ -90,6 +95,10 @@ class PlaybackStateStore(context: Context) {
                     planDescription = o.optString("planDesc").takeIf { it.isNotEmpty() },
                     phaseNames = phaseNames,
                     phaseUris = phaseUris,
+                    // Humeurs : liste complète ou vide (ancien fichier, ou
+                    // état encodé sans humeurs) — jamais partielle
+                    phaseMoods = if (phaseMoods.size == phaseNames.size) phaseMoods
+                    else emptyList(),
                     currentIndex = o.optInt("index", 0),
                     positionMs = o.optLong("positionMs", 0L),
                     currentPhase = o.optInt("phase", 0),

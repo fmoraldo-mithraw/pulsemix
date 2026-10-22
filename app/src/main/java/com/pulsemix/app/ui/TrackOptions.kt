@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -250,6 +251,63 @@ fun TrackOptionsDialogs(
                             vm.unlockSegment(track)
                             onClose()
                         }) { Text("Déverrouiller (réanalysable)") }
+                    }
+                    // Passages par rôle (montée, groove, calme) dérivés de
+                    // l'analyse : le mode DJ les choisit selon l'ambiance du
+                    // mix. Écoute et refus par rôle ; le passage fort (celui
+                    // réglé ci-dessus) reste toujours disponible.
+                    val live = tracks.firstOrNull { it.uri == track.uri } ?: track
+                    val candidates = remember(live.structure, live.phraseProfile, live.bestStartMs, live.segmentMs) {
+                        com.pulsemix.app.mix.Passages.candidates(live)
+                    }
+                    val refusedRoles = com.pulsemix.app.mix.Passages.refused(live)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Passages selon l'ambiance",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    if (candidates.isEmpty()) {
+                        Text(
+                            if (live.durationMs < com.pulsemix.app.mix.Passages.MIN_TRACK_MS)
+                                "Morceau court : un seul passage, le fort."
+                            else
+                                "Aucun autre passage détecté (analyse sans structure " +
+                                    "ni profil : réanalyser le morceau)."
+                            ,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    } else {
+                        Text(
+                            "Le mode DJ joue le calme ou le groove en chill et en " +
+                                "accalmie, la montée dans les phases qui montent, le fort " +
+                                "quand ça tape — et change de passage d'un set au suivant.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        for (p in candidates) {
+                            val refused = p.role in refusedRoles
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "${p.role.label.replaceFirstChar { it.uppercase() }} · " +
+                                        com.pulsemix.app.mix.Passages.describe(p),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (refused)
+                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                                    else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = {
+                                    vm.previewSegment(track, p.startMs, p.lengthMs)
+                                }) { Text("▶") }
+                                TextButton(onClick = {
+                                    vm.setPassageRefused(track, p.role, !refused)
+                                }) { Text(if (refused) "Autoriser" else "Refuser") }
+                            }
+                        }
                     }
                 }
             },

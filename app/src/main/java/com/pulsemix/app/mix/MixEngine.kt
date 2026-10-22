@@ -18,7 +18,16 @@ object MixEngine {
 
     enum class Band { CALME, GROOVE, DANCE, INTENSE }
 
-    data class Phase(val name: String, val tracks: List<Track>)
+    /**
+     * Une phase du plan : ses morceaux et ce qu'elle attend d'eux en mode
+     * DJ ([mood], voir Passages) — le drop pour une phase qui tape, le
+     * calme ou le groove pour une accalmie ou un set chill.
+     */
+    data class Phase(
+        val name: String,
+        val tracks: List<Track>,
+        val mood: Passages.Mood = Passages.Mood.FORT
+    )
 
     data class MixPlan(
         val id: String,
@@ -349,10 +358,10 @@ object MixEngine {
             )
 
             val phases = listOfNotNull(
-                phaseOrNull("Chauffe", chainOrder(warmupPool, ascending = true)),
-                phaseOrNull("Montée", chainOrder(buildPool, ascending = true)),
+                phaseOrNull("Chauffe", chainOrder(warmupPool, ascending = true), Passages.Mood.DOUX),
+                phaseOrNull("Montée", chainOrder(buildPool, ascending = true), Passages.Mood.MONTEE),
                 phaseOrNull("Peak", chainOrder(peakPool, ascending = true)),
-                phaseOrNull("Pause", chainOrder(pausePool, ascending = false)),
+                phaseOrNull("Pause", chainOrder(pausePool, ascending = false), Passages.Mood.DOUX),
                 phaseOrNull("Relance", chainOrder(reprisePool, ascending = true))
             )
             if (phases.size >= 4) {
@@ -372,9 +381,15 @@ object MixEngine {
             val spread = sorted.last().bpm - sorted.first().bpm
             if (tracks.size >= 6 && spread >= 25f) {
                 val ordered = chainOrder(sorted, ascending = true, maxLength = 36)
+                // De la montée au drop : chaque morceau entre par sa montée
+                // (quand elle est connue), le dernier tiers prend le drop
                 val phases = splitIntoPhases(
                     ordered,
-                    listOf("Décollage", "Croisière", "Accélération", "Apogée")
+                    listOf("Décollage", "Croisière", "Accélération", "Apogée"),
+                    listOf(
+                        Passages.Mood.GROOVE, Passages.Mood.MONTEE,
+                        Passages.Mood.MONTEE, Passages.Mood.FORT
+                    )
                 )
                 plans.add(
                     MixPlan(
@@ -393,7 +408,12 @@ object MixEngine {
             )
             if (soft.size >= 4) {
                 val ordered = chainOrder(soft, ascending = true)
-                val phases = splitIntoPhases(ordered, listOf("Pose", "Flottement", "Descente"))
+                // Que du doux : le calme ou le groove des morceaux, jamais
+                // leur drop quand ils offrent autre chose
+                val phases = splitIntoPhases(
+                    ordered, listOf("Pose", "Flottement", "Descente"),
+                    List(3) { Passages.Mood.DOUX }
+                )
                 plans.add(
                     MixPlan(
                         "chill", "Chill",
@@ -440,7 +460,9 @@ object MixEngine {
                 if (soft.isNotEmpty() && hard.isNotEmpty()) {
                     val rest = ArrayList<Track>()
                     repeat(min(2, soft.size)) { rest.add(soft.removeAt(0)) }
-                    phases.add(Phase("Accalmie $wave", rest))
+                    // L'accalmie joue le calme des morceaux doux, pas leur
+                    // passage le plus fort
+                    phases.add(Phase("Accalmie $wave", rest, Passages.Mood.DOUX))
                 }
                 wave++
             }
@@ -458,9 +480,12 @@ object MixEngine {
         // 6. Flow : sélection enchaînée proprement (toujours proposé)
         run {
             val ordered = chainOrder(tracks, ascending = true, maxLength = 30)
+            // Le groove plutôt que le drop : un flow se tient sur la matière
+            // rythmique (le fort revient par rotation d'un set au suivant)
             val phases = splitIntoPhases(
                 ordered,
-                listOf("Partie 1", "Partie 2", "Partie 3", "Partie 4")
+                listOf("Partie 1", "Partie 2", "Partie 3", "Partie 4"),
+                List(4) { Passages.Mood.GROOVE }
             )
             plans.add(
                 MixPlan(
@@ -486,7 +511,11 @@ object MixEngine {
                             "ça finit en apothéose.",
                         splitIntoPhases(
                             ordered,
-                            listOf("Prélude", "Montée", "Apothéose", "Épilogue")
+                            listOf("Prélude", "Montée", "Apothéose", "Épilogue"),
+                            listOf(
+                                Passages.Mood.DOUX, Passages.Mood.MONTEE,
+                                Passages.Mood.FORT, Passages.Mood.DOUX
+                            )
                         )
                     )
                 )
@@ -500,9 +529,13 @@ object MixEngine {
                 MixPlan(
                     "auto", "Auto-DJ (toute la bibliothèque)",
                     "Enchaîne tous les morceaux par compatibilité, sans s'arrêter.",
+                    // Toute la nuit : fort et groove en alternance d'un set
+                    // au suivant (rotation), pour ne pas rejouer la même
+                    // minute de chaque morceau à chaque fois
                     splitIntoPhases(
                         ordered,
-                        listOf("Set 1", "Set 2", "Set 3", "Set 4", "Set 5", "Set 6")
+                        listOf("Set 1", "Set 2", "Set 3", "Set 4", "Set 5", "Set 6"),
+                        List(6) { Passages.Mood.VARIE }
                     )
                 )
             )
@@ -599,7 +632,7 @@ object MixEngine {
                     true
                 }
             }
-            if (kept.isEmpty()) null else Phase(ph.name, kept)
+            if (kept.isEmpty()) null else Phase(ph.name, kept, ph.mood)
         }
         return MixPlan(plan.id, plan.name, plan.description, phases)
     }
@@ -634,7 +667,7 @@ object MixEngine {
         return MixPlan(
             plan.id, plan.name, plan.description,
             plan.phases.mapIndexedNotNull { i, ph ->
-                if (phases[i].isEmpty()) null else Phase(ph.name, phases[i].toList())
+                if (phases[i].isEmpty()) null else Phase(ph.name, phases[i].toList(), ph.mood)
             }
         )
     }
@@ -695,7 +728,7 @@ object MixEngine {
         }
         return MixPlan(
             plan.id, plan.name, plan.description,
-            plan.phases.mapIndexed { i, ph -> Phase(ph.name, phases[i].toList()) }
+            plan.phases.mapIndexed { i, ph -> Phase(ph.name, phases[i].toList(), ph.mood) }
         )
     }
 
@@ -759,7 +792,11 @@ object MixEngine {
                 "similar",
                 "Comme « ${seed.title} »",
                 "Morceaux du même style et de la même énergie, enchaînés depuis celui-ci.",
-                splitIntoPhases(ordered, listOf("Même veine 1", "Même veine 2", "Même veine 3", "Même veine 4"))
+                splitIntoPhases(
+                    ordered,
+                    listOf("Même veine 1", "Même veine 2", "Même veine 3", "Même veine 4"),
+                    List(4) { Passages.Mood.VARIE }
+                )
             )
         )
         // Même plancher d'une heure que les autres mix. La rallonge pioche
@@ -821,10 +858,19 @@ object MixEngine {
         return candidates.sortedByDescending { scores[it.uri] }.take(5)
     }
 
-    private fun phaseOrNull(name: String, tracks: List<Track>): Phase? =
-        if (tracks.isEmpty()) null else Phase(name, tracks)
+    private fun phaseOrNull(
+        name: String,
+        tracks: List<Track>,
+        mood: Passages.Mood = Passages.Mood.FORT
+    ): Phase? = if (tracks.isEmpty()) null else Phase(name, tracks, mood)
 
-    private fun splitIntoPhases(ordered: List<Track>, names: List<String>): List<Phase> {
+    /** Découpe [ordered] en au plus `names.size` phases (une pour quatre
+     *  morceaux) ; [moods] est parallèle à [names] (FORT à défaut). */
+    private fun splitIntoPhases(
+        ordered: List<Track>,
+        names: List<String>,
+        moods: List<Passages.Mood> = emptyList()
+    ): List<Phase> {
         if (ordered.isEmpty()) return emptyList()
         val n = min(names.size, (ordered.size + 3) / 4).coerceAtLeast(1)
         val per = (ordered.size + n - 1) / n
@@ -833,7 +879,12 @@ object MixEngine {
         var p = 0
         while (i < ordered.size && p < n) {
             val end = min(ordered.size, i + per)
-            phases.add(Phase(names[p], ordered.subList(i, end).toList()))
+            phases.add(
+                Phase(
+                    names[p], ordered.subList(i, end).toList(),
+                    moods.getOrElse(p) { Passages.Mood.FORT }
+                )
+            )
             i = end
             p++
         }

@@ -3319,6 +3319,7 @@ object PlayerCore {
                     planName = it.name,
                     planDescription = it.description,
                     phaseNames = it.phases.map { ph -> ph.name },
+                    phaseMoods = it.phases.map { ph -> ph.mood.name },
                     phaseUris = phaseUris,
                     currentIndex = exo.currentMediaItemIndex,
                     positionMs = exo.currentPosition.coerceAtLeast(0L),
@@ -3333,6 +3334,7 @@ object PlayerCore {
                     planName = it.name,
                     planDescription = it.description,
                     phaseNames = it.phases.map { ph -> ph.name },
+                    phaseMoods = it.phases.map { ph -> ph.mood.name },
                     phaseUris = it.phases.map { ph -> ph.tracks.map { t -> t.uri } },
                     currentPhase = currentPhase.value.coerceAtLeast(0)
                 )
@@ -3465,7 +3467,12 @@ object PlayerCore {
         for (i in saved.phaseNames.indices) {
             val tracks = saved.phaseUris.getOrElse(i) { emptyList() }
                 .mapNotNull { byUri[it] }
-            if (tracks.isNotEmpty()) phases.add(MixEngine.Phase(saved.phaseNames[i], tracks))
+            if (tracks.isNotEmpty()) {
+                val mood = saved.phaseMoods.getOrNull(i)?.let { m ->
+                    com.pulsemix.app.mix.Passages.Mood.entries.firstOrNull { it.name == m }
+                } ?: com.pulsemix.app.mix.Passages.Mood.FORT
+                phases.add(MixEngine.Phase(saved.phaseNames[i], tracks, mood))
+            }
         }
         if (phases.isEmpty()) return null
         return MixEngine.MixPlan(
@@ -3845,7 +3852,7 @@ object PlayerCore {
         if (musicEndFor(d) - exo.currentPosition < MIN_AUTO_CROSSFADE_REMAIN_MS + 500L) return false
         val known = queueTracks.map { it.uri }.toHashSet()
         val phases = next.phases
-            .map { ph -> MixEngine.Phase(ph.name, ph.tracks.filter { it.uri !in known }) }
+            .map { ph -> MixEngine.Phase(ph.name, ph.tracks.filter { it.uri !in known }, ph.mood) }
             .filter { it.tracks.isNotEmpty() }
         val newTracks = phases.flatMap { it.tracks }
         if (newTracks.isEmpty()) return false

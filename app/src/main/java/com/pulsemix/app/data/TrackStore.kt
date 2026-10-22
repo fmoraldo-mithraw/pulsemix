@@ -84,7 +84,14 @@ data class Track(
     val structure: String = "",
     /** Profil phrase par phrase (énergie, basses, médiums), encodé par
      *  PhraseProfile.encode ; vide = pas de profil (ancienne analyse). */
-    val phraseProfile: String = ""
+    val phraseProfile: String = "",
+    /** Rôles de passage refusés par l'utilisateur (« GROOVE,CALME » —
+     *  voir Passages) : le mode DJ ne les choisit plus pour ce morceau.
+     *  Réglage manuel, conservé à la réanalyse. */
+    val passageRefused: String = "",
+    /** Date d'entrée dans la bibliothèque (ms epoch, 0 = inconnue : morceau
+     *  indexé avant l'arrivée du champ). Tri « Ajouté » de la bibliothèque. */
+    val addedAt: Long = 0L
 )
 
 /**
@@ -245,6 +252,8 @@ class TrackStore(context: Context) {
             o.put("gainDb", t.gainDb.toDouble())
             o.put("structure", t.structure)
             o.put("phraseProfile", t.phraseProfile)
+            o.put("passageRefused", t.passageRefused)
+            o.put("addedAt", t.addedAt)
             return o
         }
 
@@ -280,7 +289,9 @@ class TrackStore(context: Context) {
             notEpic = o.optBoolean("notEpic", false),
             gainDb = o.optDouble("gainDb", 0.0).toFloat(),
             structure = o.optString("structure", ""),
-            phraseProfile = o.optString("phraseProfile", "")
+            phraseProfile = o.optString("phraseProfile", ""),
+            passageRefused = o.optString("passageRefused", ""),
+            addedAt = o.optLong("addedAt", 0L)
         )
     }
 
@@ -335,7 +346,9 @@ class TrackStore(context: Context) {
                 favorite = it.favorite,
                 excluded = it.excluded,
                 genre = it.genre,
-                genreLocked = it.genreLocked
+                genreLocked = it.genreLocked,
+                passageRefused = it.passageRefused,
+                addedAt = it.addedAt
             )
         }
     }

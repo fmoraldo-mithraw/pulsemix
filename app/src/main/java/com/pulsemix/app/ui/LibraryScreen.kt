@@ -62,7 +62,10 @@ import com.pulsemix.app.mix.MixEngine
 import kotlin.math.abs
 
 private enum class SortMode(val label: String, val naturalDesc: Boolean = false) {
-    TITRE("Titre"), BPM("BPM"), ENERGIE("Énergie", naturalDesc = true), CLE("Clé")
+    TITRE("Titre"), BPM("BPM"), ENERGIE("Énergie", naturalDesc = true), CLE("Clé"),
+    /** Dernier ajouté en tête (date d'entrée dans la bibliothèque ; les
+     *  morceaux indexés avant l'arrivée de la date viennent en dernier). */
+    AJOUT("Ajouté", naturalDesc = true)
 }
 
 @Composable
@@ -363,6 +366,10 @@ fun LibraryScreen(
                             SortMode.BPM -> list.sortedBy { it.bpm }
                             SortMode.ENERGIE -> list.sortedByDescending { it.energyPeak }
                             SortMode.CLE -> list.sortedBy { camelotSortKey(it.camelot) }
+                            SortMode.AJOUT -> list.sortedWith(
+                                compareByDescending<Track> { it.addedAt }
+                                    .thenBy { it.title.lowercase() }
+                            )
                         }
                     }
                     .let { if (sortReversed) it.asReversed() else it }

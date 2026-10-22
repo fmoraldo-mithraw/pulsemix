@@ -303,6 +303,44 @@ Pour chaque morceau, l'analyse a retenu son **passage fort** (`bestStartMs`,
   la musique si « sauter les intros ») ; **dernier morceau** : lu jusqu'à
   la vraie fin — sauf si un set suivant vient s'y greffer (§4).
 
+**Passages par rôle** (`Passages`, pur, testé en JVM). La « meilleure
+minute » n'est plus la seule : au lancement du set, chaque morceau reçoit
+un passage selon l'**humeur de sa phase** (`Phase.mood`), dérivé *sans
+réanalyse* de la structure et du profil phrase par phrase déjà en base :
+
+| Rôle | Ce que c'est | Dérivation |
+|---|---|---|
+| **FORT** | le passage de l'analyse (`bestStartMs`) | toujours disponible ; calage historique ci-dessus (ancre sur le drop, pré-roll) |
+| **MONTÉE** | de la montée au drop | section BUILD (≥ 1 phrase) qui finit à ± une mesure de l'ancre du fort, jouée jusqu'à la fin du fort |
+| **GROOVE** | la matière rythmique | suite de phrases d'énergie moyenne (0,55–0,78 de la crête) la plus **stable** (faible écart-type), kick présent (basses ≥ médiane), sans hook |
+| **CALME** | la respiration | suite de phrases calmes (< 0,55, hors silence) la plus **musicale** (relief des médiums), bonus dans un BREAK, malus intro/outro |
+
+Un candidat ne chevauche jamais le fort (sauf MONTÉE, par définition),
+tient **≥ 2 phrases** de 16 temps et s'arrête avant les 15 dernières
+secondes ; morceau de **moins de 3 min** : un seul passage, le fort. Sans
+profil, la structure seule sert (énergie déduite du type de section) ;
+sans l'un ni l'autre : rien d'autre que le fort.
+
+Humeurs par type de mix : **Peak**, **Vague**, **Relance** → FORT seul
+(jamais de calme quand ça tape) ; **Chill**, **Accalmie**, **Chauffe**,
+**Pause**, **Prélude/Épilogue** → CALME, puis GROOVE, puis FORT ; **Montée**
+(soirée, montée progressive, épique) → MONTÉE puis FORT ; **Flow**,
+**Décollage** → GROOVE puis FORT ; **Auto-DJ**, **similaires** → FORT et
+GROOVE en alternance. `Passages.choose` prend le premier rôle préféré que
+le morceau offre et que l'utilisateur n'a pas **refusé**
+(`Track.passageRefused`, réglable dans « Meilleur passage », avec écoute de
+chaque candidat) ; **rotation** : le rôle joué la dernière fois
+(`PlayHistory.lastPassage`, mémorisé à l'annonce du deck) cède la place au
+suivant compatible, pour ne pas rejouer la même minute à chaque set.
+
+Le deck d'un passage par rôle part **sur son début** (pas de pré-roll : une
+montée se joue entière sous le blend, un calme n'a pas de drop à faire
+tomber) ; longueur, plancher d'une minute, allongement du va-et-vient,
+arrondi aux phrases et calage de fin s'appliquent comme au fort. La
+programmation de la transition lit la **même ancre** (section d'entrée,
+plan du va-et-vient). Journal : `passage « Titre » : calme (1:30 → 2:00,
+3 connus)`.
+
 À la fin du passage, une **boucle de sortie** (les 8 derniers temps, couture
 fondue) tient le deck sous le fondu si nécessaire ; chaque répétition
 au-delà de la première s'atténue (×0,82, plancher 0,35). Depuis que la

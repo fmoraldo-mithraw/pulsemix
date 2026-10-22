@@ -1323,7 +1323,7 @@ private fun removeTrackFromPlan(plan: MixEngine.MixPlan, track: Track): MixEngin
         plan.id, plan.name, plan.description,
         plan.phases.mapNotNull { ph ->
             val remaining = ph.tracks.filter { it.uri != track.uri }
-            if (remaining.isEmpty()) null else MixEngine.Phase(ph.name, remaining)
+            if (remaining.isEmpty()) null else MixEngine.Phase(ph.name, remaining, ph.mood)
         }
     )
 
@@ -1369,9 +1369,16 @@ private fun rebuildPlan(
         else runs.add(phase to mutableListOf(t))
     }
     val names = runs.map { it.first }
+    // L'humeur (passage voulu en DJ) suit le nom de la phase d'origine
+    val moods = plan.phases.associate { it.name to it.mood }
     val phases =
         if (names.size == names.distinct().size)
-            runs.map { MixEngine.Phase(it.first, it.second) }
+            runs.map {
+                MixEngine.Phase(
+                    it.first, it.second,
+                    moods[it.first] ?: com.pulsemix.app.mix.Passages.Mood.FORT
+                )
+            }
         else listOf(MixEngine.Phase("Mix modifié", entries.map { it.second }))
     return MixEngine.MixPlan(plan.id, plan.name, plan.description, phases)
 }

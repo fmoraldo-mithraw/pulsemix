@@ -208,7 +208,7 @@ object AlarmClock {
             val end = (i + ph.tracks.size).coerceAtMost(ordered.size)
             val slice = ordered.subList(i, end).toList()
             i = end
-            MixEngine.Phase(ph.name, slice)
+            MixEngine.Phase(ph.name, slice, ph.mood)
         }
         return MixEngine.MixPlan(plan.id, plan.name, plan.description, phases)
     }

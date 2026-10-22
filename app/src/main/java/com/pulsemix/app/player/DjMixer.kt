@@ -11,6 +11,7 @@ import com.pulsemix.app.analysis.AudioDecoder
 import com.pulsemix.app.analysis.StructureDetector
 import com.pulsemix.app.data.Track
 import com.pulsemix.app.mix.MixEngine
+import com.pulsemix.app.mix.Passages
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -55,7 +56,30 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         fun onSetEnding(remainingMs: Long) {}
     }
 
-    private data class Segment(val track: Track, val phaseIndex: Int)
+    /**
+     * Un passage du set : le morceau, sa phase, et le PASSAGE choisi pour
+     * lui (Passages.choose, selon l'humeur de la phase et la rotation) —
+     * null = passage fort historique (ancre sur le drop, `bestStartMs`).
+     */
+    private data class Segment(
+        val track: Track,
+        val phaseIndex: Int,
+        val passage: Passages.Passage? = null
+    )
+
+    /** Construit le passage d'un morceau pour une phase d'humeur [mood] :
+     *  rotation d'après le dernier rôle joué (PlayHistory). */
+    private fun segmentFor(track: Track, phaseIndex: Int, mood: Passages.Mood): Segment {
+        val last = try {
+            com.pulsemix.app.data.PlayHistory.lastPassage(track.uri)?.let { r ->
+                Passages.Role.entries.firstOrNull { it.name == r }
+            }
+        } catch (_: Exception) {
+            null
+        }
+        val p = Passages.choose(track, mood, last)
+        return Segment(track, phaseIndex, if (p.role == Passages.Role.FORT) null else p)
+    }
 
     /**
      * Plan d'un va-et-vient : pour chacune des 6 cellules, qui a la
@@ -493,6 +517,11 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             return if (firstBeatMs in bestStartMs..(bestStartMs + segmentMs)) firstBeatMs
             else bestStartMs
         }
+
+        /** Ancre d'un passage par rôle : son début, borné pour laisser 15 s
+         *  de morceau (même borne que le passage fort). */
+        internal fun passageAnchor(passage: Passages.Passage, durationMs: Long): Long =
+            passage.startMs.coerceIn(0L, max(0L, durationMs - 15_000L))
 
         /** Section qui contient l'instant [ms] (null sans structure). */
         internal fun sectionAt(
@@ -1061,7 +1090,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         if (!running) return 0
         val base = phaseLengthFactor.size
         val fresh = plan.phases.flatMapIndexed { pi, ph ->
-            ph.tracks.filter { it.analyzed && it.bpm > 0f }.map { Segment(it, base + pi) }
+            ph.tracks.filter { it.analyzed && it.bpm > 0f }
+                .map { segmentFor(it, base + pi, ph.mood) }
         }
         if (fresh.isEmpty()) return 0
         phaseLengthFactor = phaseLengthFactor + lengthFactors(plan)
@@ -1145,8 +1175,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         rehearsal = rehearsalMode
         pendingFirstSeekMs = firstSeekMs
         this.plan = plan
+        // Le passage de chaque morceau est choisi ICI, une fois pour le set
+        // (humeur de la phase + rotation d'après le dernier rôle joué) :
+        // le deck et la programmation des transitions lisent le même.
         segments = plan.phases.flatMapIndexed { pi, phase ->
-            phase.tracks.filter { it.analyzed && it.bpm > 0f }.map { Segment(it, pi) }
+            phase.tracks.filter { it.analyzed && it.bpm > 0f }
+                .map { segmentFor(it, pi, phase.mood) }
         }
         if (segments.isEmpty()) {
             ui.post { listener.onStopped(false) }
@@ -1585,14 +1619,19 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // Vide (ancienne analyse) : comportement historique.
             val sections = if (track.structure.isEmpty()) emptyList()
             else StructureDetector.decode(track.structure)
+            // Passage par RÔLE (montée, groove, calme — Passages) choisi
+            // pour ce set : son début est l'ancre, sa longueur la base du
+            // passage. Sans (passage fort) : calage historique.
+            val pas = segment.passage
             // Ancre : début du DROP le plus proche du passage fort quand la
             // structure le connaît, sinon premier beat du passage
-            val anchor = anchorFor(
+            val anchor = if (pas != null) passageAnchor(pas, track.durationMs)
+            else anchorFor(
                 best, track.segmentMs, beat, track.bpm, track.durationMs, sections
             )
             // Modulation par phase, puis ré-arrondi aux phrases de 16 temps
             // pour que la fin reste sur une frontière musicale.
-            var segMs = (track.segmentMs * lengthFactor).toLong()
+            var segMs = ((pas?.lengthMs ?: track.segmentMs) * lengthFactor).toLong()
             // Plancher : un passage plus court ne laisse pas le temps
             // d'apprécier le morceau (les fondus mangent déjà ~30 s à eux
             // deux). Borné par ce qu'il reste de morceau après l'ancre.
@@ -1638,7 +1677,10 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // La fin (logicalEndMs) ne bouge pas : le passage s'allonge
             // du pré-roll, c'est voulu. L'annonce du morceau, elle,
             // reste liée au fondu — rien ne change pour l'interface.
-            val preRoll = if (seekFromMs == null && !playFromStart)
+            // Passage par rôle : pas de pré-roll — son début EST l'entrée
+            // voulue (une montée se joue entière sous le blend, un calme ou
+            // un groove n'a pas de drop à faire tomber après le fondu).
+            val preRoll = if (seekFromMs == null && !playFromStart && pas == null)
                 preRollMs(
                     anchor, Math.round(preFadeS * 1000.0), track.bpm, sections,
                     relaxed = preRelaxed
@@ -2537,10 +2579,14 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                                 emptyList()
                             else StructureDetector.decode(nx.structure)
                         }
-                        val best = nx.bestStartMs
-                            .coerceIn(0L, max(0L, nx.durationMs - 15_000L))
-                        val anchor = anchorFor(
-                            best, nx.segmentMs, nx.firstBeatMs, nx.bpm,
+                        // Passage par rôle choisi pour ce segment : même
+                        // ancre que celle que prendra Deck.init.
+                        val nxPassage = segments[nextIdx].passage
+                        val anchor = if (nxPassage != null)
+                            passageAnchor(nxPassage, nx.durationMs)
+                        else anchorFor(
+                            nx.bestStartMs.coerceIn(0L, max(0L, nx.durationMs - 15_000L)),
+                            nx.segmentMs, nx.firstBeatMs, nx.bpm,
                             nx.durationMs, proSections
                         )
                         val (rawFadeS, fadeKind) = if (proMode) {
@@ -3724,6 +3770,18 @@ class DjMixer(private val context: Context, private val listener: Listener) {
         val t = deck.track
         val p = deck.segment.phaseIndex
         val gen = runGeneration
+        // Passage joué : mémorisé pour la rotation du prochain set, et
+        // journalisé (rôle, bornes, nombre de passages que le morceau offre).
+        try {
+            val pas = deck.segment.passage ?: Passages.fort(t)
+            com.pulsemix.app.data.PlayHistory.recordPassage(t.uri, pas.role.name)
+            val known = 1 + Passages.candidates(t).size
+            diag(
+                "passage « ${t.title} » : ${pas.role.label} " +
+                    "(${Passages.describe(pas)}, $known connu${if (known > 1) "s" else ""})"
+            )
+        } catch (_: Exception) {
+        }
         // Retardé de la latence du tampon de sortie : le morceau annoncé
         // est celui qu'on entend, pas celui qu'on vient de calculer. À la
         // livraison, le set a pu être arrêté (et un autre mode lancé) :

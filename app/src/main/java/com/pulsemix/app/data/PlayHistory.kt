@@ -19,6 +19,11 @@ object PlayHistory {
     private var countPrefs: SharedPreferences? = null
     @Volatile private var avgCache = -1f
 
+    /** Rôle du dernier passage joué en mode DJ par morceau (rotation entre
+     *  sets, voir Passages.choose). Purgé avec [map]. */
+    private val passages = ConcurrentHashMap<String, String>()
+    private var passagePrefs: SharedPreferences? = null
+
     fun init(context: Context) {
         val p = context.getSharedPreferences("play_history", Context.MODE_PRIVATE)
         prefs = p
@@ -26,7 +31,19 @@ object PlayHistory {
         val c = context.getSharedPreferences("play_counts", Context.MODE_PRIVATE)
         countPrefs = c
         for ((k, v) in c.all) if (v is Int) counts[k] = v
+        val s = context.getSharedPreferences("passage_history", Context.MODE_PRIVATE)
+        passagePrefs = s
+        for ((k, v) in s.all) if (v is String) passages[k] = v
     }
+
+    /** Mémorise le rôle du passage joué (« FORT », « CALME »…) pour [uri]. */
+    fun recordPassage(uri: String, role: String) {
+        passages[uri] = role
+        passagePrefs?.edit()?.putString(uri, role)?.apply()
+    }
+
+    /** Rôle du dernier passage joué de [uri], null si jamais joué en DJ. */
+    fun lastPassage(uri: String): String? = passages[uri]
 
     fun record(uri: String) {
         val now = System.currentTimeMillis()
@@ -39,11 +56,15 @@ object PlayHistory {
         if (map.size > MAX) {
             val oldest = map.entries.sortedBy { it.value }.take(map.size - MAX + 40)
             val editor = prefs?.edit()
+            val pEditor = passagePrefs?.edit()
             for (e in oldest) {
                 map.remove(e.key)
                 editor?.remove(e.key)
+                passages.remove(e.key)
+                pEditor?.remove(e.key)
             }
             editor?.apply()
+            pEditor?.apply()
         }
     }
 

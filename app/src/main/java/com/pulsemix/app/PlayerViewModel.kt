@@ -805,6 +805,18 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         it.copy(segmentLocked = false)
     }
 
+    /** Refuse (ou ré-autorise) un rôle de passage pour ce morceau en mode
+     *  DJ : un rôle refusé n'est plus choisi, le passage fort reste. */
+    fun setPassageRefused(
+        track: Track,
+        role: com.pulsemix.app.mix.Passages.Role,
+        refused: Boolean
+    ) = updateTrack(track.uri) {
+        val set = com.pulsemix.app.mix.Passages.refused(it).toMutableSet()
+        if (refused) set.add(role) else set.remove(role)
+        it.copy(passageRefused = com.pulsemix.app.mix.Passages.encodeRefused(set))
+    }
+
     /** Pré-écoute d'un passage arbitraire (réglage du segment manuel). */
     fun previewSegment(track: Track, startMs: Long, durMs: Long) =
         PlayerCore.playPreview(track.copy(bestStartMs = startMs, segmentMs = durMs))
