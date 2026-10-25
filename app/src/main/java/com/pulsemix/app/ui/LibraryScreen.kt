@@ -226,7 +226,8 @@ fun LibraryScreen(
                 Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(onClick = { vm.rescan() }) {
+                // Bouton explicite : analyse même si l'analyse auto est coupée
+                OutlinedButton(onClick = { vm.rescan(analyze = true) }) {
                     Text(
                         if (unanalyzed > 0) "Reprendre l'analyse ($unanalyzed restants)"
                         else "Analyser à nouveau"

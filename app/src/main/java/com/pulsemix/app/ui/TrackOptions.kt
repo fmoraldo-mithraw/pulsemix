@@ -99,6 +99,13 @@ fun TrackOptionsDialogs(
                             else "Exclure des mix"
                         )
                     }
+                    // Un seul morceau, sans réanalyser tout le dossier
+                    TextButton(onClick = { vm.analyzeTrack(track); onClose() }) {
+                        Text(
+                            if (track.analyzed) "Réanalyser ce morceau"
+                            else "Analyser ce morceau"
+                        )
+                    }
                     TextButton(onClick = { bpmEdit = true; menuOpen = false }) {
                         Text("Corriger le BPM (${track.bpm})")
                     }

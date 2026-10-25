@@ -17,10 +17,12 @@ import com.pulsemix.app.MainActivity
 import com.pulsemix.app.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Service en avant-plan pour l'analyse de la bibliothèque : l'analyse
@@ -32,13 +34,26 @@ class AnalysisService : Service() {
 
     companion object {
         private const val EXTRA_FROM_SCRATCH = "fromScratch"
+        private const val EXTRA_ANALYZE = "analyze"
+        private const val EXTRA_URIS = "uris"
         private const val ACTION_STOP = "com.pulsemix.app.analysis.STOP"
         private const val CHANNEL_ID = "analysis"
         private const val NOTIF_ID = 2
 
-        fun start(context: Context, fromScratch: Boolean = false) {
+        /** @param analyze false : indexe les nouveaux fichiers sans les
+         *  analyser (analyse automatique désactivée). */
+        fun start(context: Context, fromScratch: Boolean = false, analyze: Boolean = true) {
             val i = Intent(context, AnalysisService::class.java)
                 .putExtra(EXTRA_FROM_SCRATCH, fromScratch)
+                .putExtra(EXTRA_ANALYZE, analyze)
+            ContextCompat.startForegroundService(context, i)
+        }
+
+        /** Analyse seulement ces morceaux, sans parcourir les dossiers.
+         *  Pendant une analyse en cours : mis en file, faits juste après. */
+        fun analyzeTracks(context: Context, uris: List<String>) {
+            val i = Intent(context, AnalysisService::class.java)
+                .putStringArrayListExtra(EXTRA_URIS, ArrayList(uris))
             ContextCompat.startForegroundService(context, i)
         }
     }
@@ -75,6 +90,10 @@ class AnalysisService : Service() {
             return START_NOT_STICKY
         }
 
+        // Morceaux demandés un par un : en file, quel que soit l'état
+        val uris = intent?.getStringArrayListExtra(EXTRA_URIS)
+        if (uris != null) LibraryScanner.enqueue(uris)
+
         if (running) return START_NOT_STICKY // une analyse tourne déjà
         running = true
 
@@ -85,7 +104,15 @@ class AnalysisService : Service() {
                 acquire(6 * 60 * 60 * 1000L) // garde-fou : 6 h max
             }
 
-        val fromScratch = intent?.getBooleanExtra(EXTRA_FROM_SCRATCH, false) ?: false
+        launchJob(
+            scanFolders = uris == null,
+            fromScratch = intent?.getBooleanExtra(EXTRA_FROM_SCRATCH, false) ?: false,
+            analyze = intent?.getBooleanExtra(EXTRA_ANALYZE, true) ?: true
+        )
+        return START_NOT_STICKY
+    }
+
+    private fun launchJob(scanFolders: Boolean, fromScratch: Boolean, analyze: Boolean) {
         scope.launch {
             val notifJob = launch {
                 LibraryScanner.progress.collect { p ->
@@ -101,22 +128,36 @@ class AnalysisService : Service() {
                 val store = Graph.store
                 store.loaded.first { it }
                 val folders = store.folders.value.map { Uri.parse(it) }
-                if (folders.isNotEmpty()) {
+                if (scanFolders && folders.isNotEmpty()) {
                     if (fromScratch) {
                         store.resetAnalysis()
                         store.save()
                     }
                     LibraryScanner.scan(
                         applicationContext, folders, store,
-                        restoreBackup = !fromScratch
+                        restoreBackup = !fromScratch,
+                        analyze = analyze
                     )
+                }
+                // Morceaux demandés un par un (avant ou pendant le scan)
+                while (true) {
+                    val batch = LibraryScanner.drainPending()
+                    if (batch.isEmpty()) break
+                    LibraryScanner.analyzeTracks(applicationContext, batch, store, folders)
                 }
             } finally {
                 notifJob.cancel()
-                stopSelf()
+                // Sur le thread principal, comme onStartCommand : un morceau
+                // mis en file juste après le dernier passage n'est pas perdu.
+                withContext(NonCancellable + Dispatchers.Main) {
+                    if (LibraryScanner.hasPending()) {
+                        launchJob(scanFolders = false, fromScratch = false, analyze = true)
+                    } else {
+                        stopSelf()
+                    }
+                }
             }
         }
-        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
