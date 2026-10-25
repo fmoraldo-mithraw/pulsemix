@@ -112,6 +112,19 @@ fun SettingsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
         )
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
+        val autoAnalysis by vm.autoAnalysis.collectAsStateWithLifecycle()
+        SettingSwitch(
+            title = "Analyse automatique",
+            subtitle = "Analyse les nouveaux morceaux dès l'ouverture de l'appli " +
+                "ou l'ajout d'un dossier. Désactivée, ils apparaissent quand " +
+                "même dans la bibliothèque : lance l'analyse avec le bouton de " +
+                "la bibliothèque, ou morceau par morceau (menu du morceau → " +
+                "« Analyser ce morceau »).",
+            checked = autoAnalysis,
+            onChange = { vm.setAutoAnalysis(it) }
+        )
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
         // ------------------------------------------- tags dans les fichiers
         val writeTags by vm.writeTagsToFiles.collectAsStateWithLifecycle()
         val tagWriteMsg by vm.tagWriteMessage.collectAsStateWithLifecycle()

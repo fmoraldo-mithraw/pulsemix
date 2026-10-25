@@ -47,6 +47,23 @@ object LibraryScanner {
      *  reprise sautera les morceaux déjà analysés). */
     fun requestStop() {
         stopRequested = true
+        synchronized(pending) { pending.clear() }
+    }
+
+    /** Morceaux demandés un par un, en attente d'analyse (ordre d'appui). */
+    private val pending = java.util.Collections.synchronizedSet(LinkedHashSet<String>())
+
+    fun enqueue(uris: Collection<String>) {
+        pending.addAll(uris)
+    }
+
+    fun hasPending(): Boolean = pending.isNotEmpty()
+
+    /** Vide la file d'attente et rend son contenu. */
+    fun drainPending(): List<String> = synchronized(pending) {
+        val out = pending.toList()
+        pending.clear()
+        out
     }
 
     private val audioExtensions = setOf(
@@ -57,12 +74,15 @@ object LibraryScanner {
      * @param restoreBackup false pour un « tout réanalyser » : les sauvegardes
      * présentes dans les dossiers sont supprimées au lieu d'être restaurées,
      * sinon elles réinjecteraient les anciennes analyses.
+     * @param analyze false : indexe les nouveaux fichiers sans les analyser
+     * (analyse automatique désactivée dans les réglages).
      */
     suspend fun scan(
         context: Context,
         treeUris: List<Uri>,
         store: TrackStore,
-        restoreBackup: Boolean = true
+        restoreBackup: Boolean = true,
+        analyze: Boolean = true
     ) =
         withContext(Dispatchers.Default) {
             if (!scanning.compareAndSet(false, true)) return@withContext
@@ -171,7 +191,9 @@ object LibraryScanner {
                 // nettement plus court sur les gros dossiers.
                 val analyzer = AudioAnalyzer()
                 val permits = Semaphore(2)
-                coroutineScope {
+                // Analyse auto désactivée : indexation seule, l'analyse se
+                // lance à la demande (bouton, ou morceau par morceau).
+                if (analyze) coroutineScope {
                     for (doc in audioFiles) {
                         if (stopRequested) break
                         val uriStr = doc.uri.toString()
@@ -204,153 +226,12 @@ object LibraryScanner {
                         launch {
                             permits.withPermit {
                                 if (stopRequested) return@withPermit
-                                // Le moteur DJ décode déjà 2 morceaux en temps
-                                // réel : analyser en même temps fait saccader
-                                // le son (surtout écran verrouillé, CPU
-                                // ralenti). On attend la fin du set.
-                                while (!stopRequested &&
-                                    PlayerCore.mode.value ==
-                                    com.pulsemix.app.player.PlayerMode.DJ &&
-                                    PlayerCore.isPlaying.value
-                                ) {
-                                    kotlinx.coroutines.delay(3_000)
-                                }
-                                if (stopRequested) return@withPermit
-                                // Priorité minimale : ne jamais voler de
-                                // cycles à la lecture en cours.
-                                try {
-                                    android.os.Process.setThreadPriority(
-                                        android.os.Process.THREAD_PRIORITY_BACKGROUND
-                                    )
-                                } catch (_: Exception) {
-                                }
-                                val name = doc.name ?: "?"
-                                _progress.value = Progress(done.get(), total, name)
-
-                                // Un SEUL MediaMetadataRetriever pour titre/
-                                // artiste/durée ET genre : en ouvrir deux sur
-                                // le même fichier doublait le coût d'ouverture
-                                // (extracteur natif + I/O SAF) pour chaque
-                                // morceau analysé.
-                                val (meta, tagGenre) =
-                                    readMetaAndGenre(context, doc.uri, name)
-                                // Type choisi à la main : toujours conservé
-                                val genre =
-                                    if (existing?.genreLocked == true) existing.genre
-                                    else tagGenre
-                                val features = try {
-                                    analyzer.analyze(context, doc.uri, meta.third) { !stopRequested }
-                                } catch (_: Exception) {
-                                    null
-                                }
-                                // Stop pendant le décodage : ne pas marquer le
-                                // morceau en échec, la reprise le refera.
-                                if (stopRequested && features == null) return@withPermit
-                                // État FRAIS du morceau, pas l'instantané pris
-                                // avant l'analyse : une correction de tag, un
-                                // favori ou une exclusion appliqués pendant
-                                // qu'il décodait étaient silencieusement
-                                // écrasés par la photo d'avant.
-                                val cur = store.get(uriStr) ?: existing
-                                // Réglages faits à la main : ils survivent à
-                                // l'analyse. Sans ça, un BPM corrigé ou un
-                                // meilleur passage choisi sur un morceau pas
-                                // encore analysé était écrasé au scan suivant.
-                                val lockedBpm = cur?.takeIf { it.bpmLocked }
-                                val lockedSeg = cur?.takeIf { it.segmentLocked }
-                                // Titre et artiste : la bibliothèque fait foi
-                                // pour un morceau déjà connu. Les corrections
-                                // de tags (MusicBrainz, manuelles) n'existent
-                                // que là — les relire du fichier les perdait
-                                // à chaque réanalyse.
-                                val keptTitle = cur?.title?.takeIf { it.isNotBlank() }
-                                    ?: meta.first
-                                val keptArtist = if (cur != null) cur.artist else meta.second
-                                val track = if (features != null) {
-                                    Track(
-                                        uri = uriStr,
-                                        title = keptTitle,
-                                        artist = keptArtist,
-                                        durationMs = if (features.durationMs > 0) features.durationMs else meta.third,
-                                        bpm = lockedBpm?.bpm ?: features.bpm,
-                                        keyName = features.keyName,
-                                        camelot = features.camelot,
-                                        energyMean = features.energyMean,
-                                        energyPeak = features.energyPeak,
-                                        centroid = features.centroid,
-                                        onsetRate = features.onsetRate,
-                                        bestStartMs =
-                                            lockedSeg?.bestStartMs ?: features.bestStartMs,
-                                        segmentMs =
-                                            lockedSeg?.segmentMs ?: features.segmentMs,
-                                        firstBeatMs =
-                                            lockedSeg?.firstBeatMs ?: features.firstBeatMs,
-                                        musicStartMs = features.musicStartMs,
-                                        musicEndMs = features.musicEndMs,
-                                        analyzed = lockedBpm != null || features.bpm > 0f,
-                                        genre = genre,
-                                        genreLocked = cur?.genreLocked == true,
-                                        favorite = cur?.favorite == true,
-                                        excluded = cur?.excluded == true,
-                                        notEpic = cur?.notEpic == true,
-                                        bpmLocked = lockedBpm != null,
-                                        segmentLocked = lockedSeg != null,
-                                        energySlope = features.energySlope,
-                                        dynamicSpread = features.dynamicSpread,
-                                        sustainRatio = features.sustainRatio,
-                                        lowMidRatio = features.lowMidRatio,
-                                        featuresVersion = AudioAnalyzer.FEATURES_VERSION,
-                                        // Gain de normalisation MESURÉ (RMS
-                                        // global) : seuls les morceaux qui
-                                        // passent par l'analyse l'obtiennent
-                                        // — pas de bump de FEATURES_VERSION,
-                                        // les autres gardent l'ancienne
-                                        // formule (gainDb = 0).
-                                        gainDb = AudioAnalyzer.gainDbFor(features.loudness),
-                                        // Segmentation en sections : comme le
-                                        // gain mesuré, seuls les morceaux qui
-                                        // passent par l'analyse l'obtiennent —
-                                        // les anciens restent sans structure.
-                                        structure = features.structure,
-                                        phraseProfile = features.phraseProfile,
-                                        passageRefused = cur?.passageRefused ?: "",
-                                        addedAt = cur?.addedAt ?: 0L
-                                    )
-                                } else {
-                                    Track(
-                                        uri = uriStr,
-                                        title = keptTitle,
-                                        artist = keptArtist,
-                                        durationMs = meta.third,
-                                        bpm = lockedBpm?.bpm ?: 0f,
-                                        bestStartMs = lockedSeg?.bestStartMs ?: 0L,
-                                        segmentMs = lockedSeg?.segmentMs ?: 60_000L,
-                                        firstBeatMs = lockedSeg?.firstBeatMs ?: 0L,
-                                        analyzed = lockedBpm != null,
-                                        genre = genre,
-                                        genreLocked = cur?.genreLocked == true,
-                                        favorite = cur?.favorite == true,
-                                        excluded = cur?.excluded == true,
-                                        notEpic = cur?.notEpic == true,
-                                        bpmLocked = lockedBpm != null,
-                                        segmentLocked = lockedSeg != null,
-                                        passageRefused = cur?.passageRefused ?: "",
-                                        addedAt = cur?.addedAt ?: 0L
-                                    )
-                                }
-                                // Pas de tag genre : déduire du titre ou de la
-                                // signature acoustique
-                                val lockedGenre = cur?.takeIf { it.genreLocked }?.genre
-                                val finalTrack = when {
-                                    lockedGenre != null ->
-                                        track.copy(genre = lockedGenre, genreLocked = true)
-                                    track.genre == "-" ->
-                                        track.copy(genre = GenreClassifier.infer(track))
-                                    else -> track
-                                }
-                                store.put(finalTrack)
+                                val title = analyzeOne(
+                                    context, doc.uri, doc.name ?: "?", existing, store, analyzer
+                                ) { name -> _progress.value = Progress(done.get(), total, name) }
+                                    ?: return@withPermit
                                 val d = done.incrementAndGet()
-                                _progress.value = Progress(d, total, meta.first)
+                                _progress.value = Progress(d, total, title)
                                 if (d % 5 == 0) store.saveSoon()
                             }
                         }
@@ -365,6 +246,223 @@ object LibraryScanner {
                 scanning.set(false)
             }
         }
+
+    /**
+     * Analyse seulement les morceaux [uris] (déjà indexés), sans parcourir
+     * les dossiers : réanalyse forcée même s'ils étaient à jour. Les
+     * sauvegardes des dossiers [treeUris] sont réécrites à la fin.
+     * @return false si un scan tournait déjà : les morceaux sont remis en
+     * file, à redemander après lui.
+     */
+    suspend fun analyzeTracks(
+        context: Context,
+        uris: List<String>,
+        store: TrackStore,
+        treeUris: List<Uri>
+    ): Boolean =
+        withContext(Dispatchers.Default) {
+            if (uris.isEmpty()) return@withContext true
+            if (!scanning.compareAndSet(false, true)) {
+                // Un scan tourne (indexation hors service) : on repasse après lui
+                enqueue(uris)
+                return@withContext false
+            }
+            stopRequested = false
+            try {
+                val total = uris.size
+                var done = 0
+                _progress.value = Progress(0, total, "")
+                val analyzer = AudioAnalyzer()
+                for (u in uris) {
+                    if (stopRequested) break
+                    val uri = Uri.parse(u)
+                    val existing = store.get(u)
+                    val name = try {
+                        DocumentFile.fromSingleUri(context, uri)?.name
+                    } catch (_: Exception) {
+                        null
+                    } ?: existing?.title ?: "?"
+                    val title = analyzeOne(context, uri, name, existing, store, analyzer) {
+                        _progress.value = Progress(done, total, it)
+                    } ?: break
+                    done++
+                    _progress.value = Progress(done, total, title)
+                }
+                store.save()
+                for (root in treeUris.mapNotNull { DocumentFile.fromTreeUri(context, it) }) {
+                    writeFolderBackup(context, root, store)
+                }
+                true
+            } finally {
+                _progress.value = null
+                scanning.set(false)
+            }
+        }
+
+    /**
+     * Analyse un seul fichier et range le résultat dans [store], en gardant
+     * les réglages faits à la main. Partagé par le scan complet et l'analyse
+     * morceau par morceau.
+     * @return le titre analysé, ou null si interrompu par un stop.
+     */
+    private suspend fun analyzeOne(
+        context: Context,
+        uri: Uri,
+        name: String,
+        existing: Track?,
+        store: TrackStore,
+        analyzer: AudioAnalyzer,
+        onStart: (String) -> Unit
+    ): String? {
+        val uriStr = uri.toString()
+        // Le moteur DJ décode déjà 2 morceaux en temps
+        // réel : analyser en même temps fait saccader
+        // le son (surtout écran verrouillé, CPU
+        // ralenti). On attend la fin du set.
+        while (!stopRequested &&
+            PlayerCore.mode.value ==
+            com.pulsemix.app.player.PlayerMode.DJ &&
+            PlayerCore.isPlaying.value
+        ) {
+            kotlinx.coroutines.delay(3_000)
+        }
+        if (stopRequested) return null
+        // Priorité minimale : ne jamais voler de
+        // cycles à la lecture en cours.
+        try {
+            android.os.Process.setThreadPriority(
+                android.os.Process.THREAD_PRIORITY_BACKGROUND
+            )
+        } catch (_: Exception) {
+        }
+        onStart(name)
+
+        // Un SEUL MediaMetadataRetriever pour titre/
+        // artiste/durée ET genre : en ouvrir deux sur
+        // le même fichier doublait le coût d'ouverture
+        // (extracteur natif + I/O SAF) pour chaque
+        // morceau analysé.
+        val (meta, tagGenre) =
+            readMetaAndGenre(context, uri, name)
+        // Type choisi à la main : toujours conservé
+        val genre =
+            if (existing?.genreLocked == true) existing.genre
+            else tagGenre
+        val features = try {
+            analyzer.analyze(context, uri, meta.third) { !stopRequested }
+        } catch (_: Exception) {
+            null
+        }
+        // Stop pendant le décodage : ne pas marquer le
+        // morceau en échec, la reprise le refera.
+        if (stopRequested && features == null) return null
+        // État FRAIS du morceau, pas l'instantané pris
+        // avant l'analyse : une correction de tag, un
+        // favori ou une exclusion appliqués pendant
+        // qu'il décodait étaient silencieusement
+        // écrasés par la photo d'avant.
+        val cur = store.get(uriStr) ?: existing
+        // Réglages faits à la main : ils survivent à
+        // l'analyse. Sans ça, un BPM corrigé ou un
+        // meilleur passage choisi sur un morceau pas
+        // encore analysé était écrasé au scan suivant.
+        val lockedBpm = cur?.takeIf { it.bpmLocked }
+        val lockedSeg = cur?.takeIf { it.segmentLocked }
+        // Titre et artiste : la bibliothèque fait foi
+        // pour un morceau déjà connu. Les corrections
+        // de tags (MusicBrainz, manuelles) n'existent
+        // que là — les relire du fichier les perdait
+        // à chaque réanalyse.
+        val keptTitle = cur?.title?.takeIf { it.isNotBlank() }
+            ?: meta.first
+        val keptArtist = if (cur != null) cur.artist else meta.second
+        val track = if (features != null) {
+            Track(
+                uri = uriStr,
+                title = keptTitle,
+                artist = keptArtist,
+                durationMs = if (features.durationMs > 0) features.durationMs else meta.third,
+                bpm = lockedBpm?.bpm ?: features.bpm,
+                keyName = features.keyName,
+                camelot = features.camelot,
+                energyMean = features.energyMean,
+                energyPeak = features.energyPeak,
+                centroid = features.centroid,
+                onsetRate = features.onsetRate,
+                bestStartMs =
+                    lockedSeg?.bestStartMs ?: features.bestStartMs,
+                segmentMs =
+                    lockedSeg?.segmentMs ?: features.segmentMs,
+                firstBeatMs =
+                    lockedSeg?.firstBeatMs ?: features.firstBeatMs,
+                musicStartMs = features.musicStartMs,
+                musicEndMs = features.musicEndMs,
+                analyzed = lockedBpm != null || features.bpm > 0f,
+                genre = genre,
+                genreLocked = cur?.genreLocked == true,
+                favorite = cur?.favorite == true,
+                excluded = cur?.excluded == true,
+                notEpic = cur?.notEpic == true,
+                bpmLocked = lockedBpm != null,
+                segmentLocked = lockedSeg != null,
+                energySlope = features.energySlope,
+                dynamicSpread = features.dynamicSpread,
+                sustainRatio = features.sustainRatio,
+                lowMidRatio = features.lowMidRatio,
+                featuresVersion = AudioAnalyzer.FEATURES_VERSION,
+                // Gain de normalisation MESURÉ (RMS
+                // global) : seuls les morceaux qui
+                // passent par l'analyse l'obtiennent
+                // — pas de bump de FEATURES_VERSION,
+                // les autres gardent l'ancienne
+                // formule (gainDb = 0).
+                gainDb = AudioAnalyzer.gainDbFor(features.loudness),
+                // Segmentation en sections : comme le
+                // gain mesuré, seuls les morceaux qui
+                // passent par l'analyse l'obtiennent —
+                // les anciens restent sans structure.
+                structure = features.structure,
+                phraseProfile = features.phraseProfile,
+                passageRefused = cur?.passageRefused ?: "",
+                addedAt = cur?.addedAt ?: 0L
+            )
+        } else {
+            Track(
+                uri = uriStr,
+                title = keptTitle,
+                artist = keptArtist,
+                durationMs = meta.third,
+                bpm = lockedBpm?.bpm ?: 0f,
+                bestStartMs = lockedSeg?.bestStartMs ?: 0L,
+                segmentMs = lockedSeg?.segmentMs ?: 60_000L,
+                firstBeatMs = lockedSeg?.firstBeatMs ?: 0L,
+                analyzed = lockedBpm != null,
+                genre = genre,
+                genreLocked = cur?.genreLocked == true,
+                favorite = cur?.favorite == true,
+                excluded = cur?.excluded == true,
+                notEpic = cur?.notEpic == true,
+                bpmLocked = lockedBpm != null,
+                segmentLocked = lockedSeg != null,
+                passageRefused = cur?.passageRefused ?: "",
+                addedAt = cur?.addedAt ?: 0L
+            )
+        }
+        // Pas de tag genre : déduire du titre ou de la
+        // signature acoustique
+        val lockedGenre = cur?.takeIf { it.genreLocked }?.genre
+        val finalTrack = when {
+            lockedGenre != null ->
+                track.copy(genre = lockedGenre, genreLocked = true)
+            track.genre == "-" ->
+                track.copy(genre = GenreClassifier.infer(track))
+            else -> track
+        }
+        store.put(finalTrack)
+        // Fait (scan complet compris) : plus besoin de le garder en attente
+        pending.remove(uriStr)
+        return meta.first
+    }
 
     // ------------------------------------------- sauvegarde dans le dossier
 

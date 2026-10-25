@@ -84,10 +84,35 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         rescan()
     }
 
-    fun rescan() {
+    /**
+     * Analyse automatique des nouveaux morceaux (démarrage, dossier ajouté,
+     * import…). Désactivée, ces scans ne font qu'indexer : l'analyse se lance
+     * au bouton de la bibliothèque ou morceau par morceau.
+     */
+    val autoAnalysis = kotlinx.coroutines.flow.MutableStateFlow(
+        app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+            .getBoolean("autoAnalysis", true)
+    )
+
+    fun setAutoAnalysis(enabled: Boolean) {
+        autoAnalysis.value = enabled
+        getApplication<Application>()
+            .getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean("autoAnalysis", enabled).apply()
+    }
+
+    /** Scan déclenché tout seul : analyse seulement si l'option est active. */
+    fun rescan() = rescan(analyze = autoAnalysis.value)
+
+    fun rescan(analyze: Boolean) {
         if (folders.value.isEmpty()) return
         // Service en avant-plan : l'analyse continue appli quittée/écran éteint
-        AnalysisService.start(getApplication())
+        AnalysisService.start(getApplication(), analyze = analyze)
+    }
+
+    /** Analyse (ou réanalyse) ce seul morceau, sans toucher au reste. */
+    fun analyzeTrack(track: Track) {
+        AnalysisService.analyzeTracks(getApplication(), listOf(track.uri))
     }
 
     /** Arrêt propre de l'analyse en cours (reprise possible plus tard). */
