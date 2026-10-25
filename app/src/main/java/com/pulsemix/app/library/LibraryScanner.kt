@@ -112,11 +112,33 @@ object LibraryScanner {
                 // attendre l'analyse), l'analyse suit derrière.
                 run {
                     val existingUris = store.tracks.value.associateBy { it.uri }
+                    // Premier scan (bibliothèque vide) : tous les morceaux
+                    // entrent dans la même seconde, l'heure courante ne dit
+                    // rien de leur ordre — la date du fichier, si.
+                    val firstScan = existingUris.isEmpty()
+                    val now = System.currentTimeMillis()
                     var added = 0
+                    var dated = 0
                     for (doc in audioFiles) {
                         if (stopRequested) break
                         val uriStr = doc.uri.toString()
-                        if (existingUris[uriStr] != null) continue
+                        val prev = existingUris[uriStr]
+                        if (prev != null) {
+                            // Morceau indexé avant l'arrivée de la date (0) :
+                            // sans rattrapage, toute la bibliothèque est à
+                            // égalité et le tri « Ajouté » retombe sur
+                            // l'ordre alphabétique — il semblait sans effet.
+                            if (prev.addedAt == 0L) {
+                                val d = fileDate(doc, now)
+                                if (d > 0L) {
+                                    store.update(uriStr) {
+                                        if (it.addedAt == 0L) it.copy(addedAt = d) else it
+                                    }
+                                    dated++
+                                }
+                            }
+                            continue
+                        }
                         val name = doc.name ?: "?"
                         val meta = readMetadata(context, doc.uri, name)
                         store.put(
@@ -129,13 +151,15 @@ object LibraryScanner {
                                 // Date d'entrée : le tri « Ajouté » de la
                                 // bibliothèque. Conservée ensuite à chaque
                                 // réanalyse (cf. plus bas).
-                                addedAt = System.currentTimeMillis()
+                                addedAt = if (firstScan)
+                                    fileDate(doc, now).takeIf { it > 0L } ?: now
+                                else now
                             )
                         )
                         added++
                         if (added % 25 == 0) store.saveSoon()
                     }
-                    if (added > 0) store.save()
+                    if (added > 0 || dated > 0) store.save()
                 }
 
                 val known = store.tracks.value.associateBy { it.uri }
@@ -352,6 +376,14 @@ object LibraryScanner {
         // nouvelle : le filet est la seule version complète restante
         ?: root.findFile("$BACKUP_BASENAME.bak")
 
+    /** Date de modification du fichier (SAF), bornée à [now] ; 0 si
+     *  inconnue. Approximation de son arrivée dans le dossier. */
+    private fun fileDate(doc: DocumentFile, now: Long): Long = try {
+        doc.lastModified().takeIf { it > 0L }?.coerceAtMost(now) ?: 0L
+    } catch (_: Exception) {
+        0L
+    }
+
     /**
      * Importe les analyses depuis le fichier de sauvegarde présent dans le
      * dossier de musique. Correspondance par URI exacte, sinon par nom de
@@ -408,7 +440,11 @@ object LibraryScanner {
                 val targetUri = target.uri.toString()
                 val existing = store.get(targetUri)
                 if (existing == null || !existing.analyzed) {
-                    store.put(t.copy(uri = targetUri))
+                    // Sauvegarde antérieure à la date d'ajout (0) : garder
+                    // celle déjà connue plutôt que l'effacer.
+                    val addedAt = if (t.addedAt > 0L) t.addedAt
+                    else existing?.addedAt ?: 0L
+                    store.put(t.copy(uri = targetUri, addedAt = addedAt))
                     restored++
                 }
             }
