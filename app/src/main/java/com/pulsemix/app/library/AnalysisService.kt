@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,10 +44,33 @@ class AnalysisService : Service() {
         /** @param analyze false : indexe les nouveaux fichiers sans les
          *  analyser (analyse automatique désactivée). */
         fun start(context: Context, fromScratch: Boolean = false, analyze: Boolean = true) {
+            if (!analyze && !fromScratch) {
+                index(context.applicationContext)
+                return
+            }
             val i = Intent(context, AnalysisService::class.java)
                 .putExtra(EXTRA_FROM_SCRATCH, fromScratch)
                 .putExtra(EXTRA_ANALYZE, analyze)
             ContextCompat.startForegroundService(context, i)
+        }
+
+        /** Indexations sans analyse : hors service, elles ne durent pas. */
+        private val indexScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+        /**
+         * Analyse auto coupée : simple indexation des nouveaux fichiers, sans
+         * service en avant-plan ni notification — elle est courte et n'a pas
+         * besoin de survivre à la fermeture de l'appli.
+         */
+        private fun index(app: Context) {
+            indexScope.launch {
+                val store = Graph.store
+                store.loaded.first { it }
+                val folders = store.folders.value.map { Uri.parse(it) }
+                if (folders.isNotEmpty()) {
+                    LibraryScanner.scan(app, folders, store, analyze = false)
+                }
+            }
         }
 
         /** Analyse seulement ces morceaux, sans parcourir les dossiers.
@@ -143,7 +167,11 @@ class AnalysisService : Service() {
                 while (true) {
                     val batch = LibraryScanner.drainPending()
                     if (batch.isEmpty()) break
-                    LibraryScanner.analyzeTracks(applicationContext, batch, store, folders)
+                    // Indexation en cours (hors service) : attendre qu'elle
+                    // lâche la main, les morceaux sont restés en file
+                    if (!LibraryScanner.analyzeTracks(applicationContext, batch, store, folders)) {
+                        delay(1_000)
+                    }
                 }
             } finally {
                 notifJob.cancel()

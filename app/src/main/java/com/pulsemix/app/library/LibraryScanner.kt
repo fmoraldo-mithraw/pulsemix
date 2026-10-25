@@ -251,19 +251,21 @@ object LibraryScanner {
      * Analyse seulement les morceaux [uris] (déjà indexés), sans parcourir
      * les dossiers : réanalyse forcée même s'ils étaient à jour. Les
      * sauvegardes des dossiers [treeUris] sont réécrites à la fin.
+     * @return false si un scan tournait déjà : les morceaux sont remis en
+     * file, à redemander après lui.
      */
     suspend fun analyzeTracks(
         context: Context,
         uris: List<String>,
         store: TrackStore,
         treeUris: List<Uri>
-    ) =
+    ): Boolean =
         withContext(Dispatchers.Default) {
-            if (uris.isEmpty()) return@withContext
+            if (uris.isEmpty()) return@withContext true
             if (!scanning.compareAndSet(false, true)) {
-                // Un scan tourne : on repasse après lui
+                // Un scan tourne (indexation hors service) : on repasse après lui
                 enqueue(uris)
-                return@withContext
+                return@withContext false
             }
             stopRequested = false
             try {
@@ -290,6 +292,7 @@ object LibraryScanner {
                 for (root in treeUris.mapNotNull { DocumentFile.fromTreeUri(context, it) }) {
                     writeFolderBackup(context, root, store)
                 }
+                true
             } finally {
                 _progress.value = null
                 scanning.set(false)
