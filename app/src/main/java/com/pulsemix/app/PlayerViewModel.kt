@@ -60,6 +60,25 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun setAlarmProgressive(enabled: Boolean) =
         com.pulsemix.app.player.AlarmClock.setProgressive(getApplication(), enabled)
 
+    /**
+     * Analyse automatique des nouveaux morceaux (démarrage, dossier ajouté,
+     * import…). Désactivée, ces scans ne font qu'indexer : l'analyse se lance
+     * au bouton de la bibliothèque ou morceau par morceau.
+     * Déclarée AVANT init : le scan de démarrage la lit, parfois tout de
+     * suite (Main.immediate, bibliothèque déjà chargée).
+     */
+    val autoAnalysis = kotlinx.coroutines.flow.MutableStateFlow(
+        app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+            .getBoolean("autoAnalysis", true)
+    )
+
+    fun setAutoAnalysis(enabled: Boolean) {
+        autoAnalysis.value = enabled
+        getApplication<Application>()
+            .getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean("autoAnalysis", enabled).apply()
+    }
+
     init {
         // Playlists intelligentes : chargement des règles persistées
         // (idempotent, le ViewModel peut être recréé à la rotation).
@@ -82,23 +101,6 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         store.removeFolder(uri)
         viewModelScope.launch(Dispatchers.IO) { store.save() }
         rescan()
-    }
-
-    /**
-     * Analyse automatique des nouveaux morceaux (démarrage, dossier ajouté,
-     * import…). Désactivée, ces scans ne font qu'indexer : l'analyse se lance
-     * au bouton de la bibliothèque ou morceau par morceau.
-     */
-    val autoAnalysis = kotlinx.coroutines.flow.MutableStateFlow(
-        app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
-            .getBoolean("autoAnalysis", true)
-    )
-
-    fun setAutoAnalysis(enabled: Boolean) {
-        autoAnalysis.value = enabled
-        getApplication<Application>()
-            .getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
-            .edit().putBoolean("autoAnalysis", enabled).apply()
     }
 
     /** Scan déclenché tout seul : analyse seulement si l'option est active. */
