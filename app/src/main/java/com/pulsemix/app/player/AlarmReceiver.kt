@@ -15,6 +15,11 @@ import android.content.Intent
  */
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == AlarmClock.ACTION_REFRESH) {
+            com.pulsemix.app.Graph.init(context)
+            AlarmClock.rearm(context, "contrôle horaire de l'agenda")
+            return
+        }
         if (intent.action != AlarmClock.ACTION_FIRE) return
         // goAsync : la lecture démarre après un chargement asynchrone
         // de la bibliothèque, au-delà du onReceive synchrone. Filet :
@@ -33,7 +38,7 @@ class AlarmReceiver : BroadcastReceiver() {
         }
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ finish() }, 25_000L)
         try {
-            AlarmClock.fire(context) { finish() }
+            AlarmClock.fire(context, intent) { finish() }
         } catch (e: Exception) {
             try {
                 com.pulsemix.app.player.PlayerCore.engineLog(
@@ -47,7 +52,7 @@ class AlarmReceiver : BroadcastReceiver() {
 }
 
 /**
- * Ré-arme l'alarme quotidienne après un redémarrage du téléphone — et après
+ * Ré-arme les réveils après un redémarrage du téléphone — et après
  * une MISE À JOUR de l'appli : selon les constructeurs, les alarmes d'une
  * appli réinstallée par-dessus ne survivent pas, et l'utilisateur qui
  * installe une version par jour se retrouvait sans réveil tant qu'il
@@ -58,7 +63,14 @@ class AlarmBootReceiver : BroadcastReceiver() {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
             "android.intent.action.QUICKBOOT_POWERON",
-            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+            Intent.ACTION_MY_PACKAGE_REPLACED,
+            // Heure ou fuseau changés : les sonneries sont en heure locale
+            Intent.ACTION_TIME_CHANGED,
+            Intent.ACTION_TIMEZONE_CHANGED,
+            // Agenda : rappel système ou modification signalée par le
+            // fournisseur — l'occasion de relire les événements
+            android.provider.CalendarContract.ACTION_EVENT_REMINDER,
+            Intent.ACTION_PROVIDER_CHANGED -> {
                 com.pulsemix.app.Graph.init(context)
                 AlarmClock.rearm(context, intent.action ?: "?")
             }

@@ -19,6 +19,10 @@ object PlaylistStore {
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists
 
+    /** Vrai une fois playlists.json lu (le réveil attend ce signal dans
+     *  un processus tout neuf). */
+    val loaded = MutableStateFlow(false)
+
     private var file: File? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -39,6 +43,8 @@ object PlaylistStore {
                 }
                 _playlists.value = list
             } catch (_: Exception) {
+            } finally {
+                loaded.value = true
             }
         }
     }

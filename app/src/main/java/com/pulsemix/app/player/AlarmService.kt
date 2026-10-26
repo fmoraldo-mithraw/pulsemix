@@ -118,7 +118,7 @@ class AlarmService : Service() {
 
             val b = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_app)
-                .setContentTitle("Réveil PulseMix")
+                .setContentTitle(AlarmClock.ringLabel.value)
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setContentIntent(full)
