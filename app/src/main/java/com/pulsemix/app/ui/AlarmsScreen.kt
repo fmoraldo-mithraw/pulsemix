@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Event
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -47,6 +48,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -60,6 +68,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +89,7 @@ import com.pulsemix.app.player.AlarmSchedule
 import com.pulsemix.app.player.CalendarAlarms
 import com.pulsemix.app.player.CalendarConfig
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** Jours de la semaine (java.time : 1 = lundi) → initiale, nom court. */
 private val DAYS = listOf(
@@ -153,6 +163,8 @@ fun AlarmsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
     var expanded by remember { mutableStateOf(setOf<Int>()) }
     var scrollTo by remember { mutableStateOf<Int?>(null) }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(scrollTo, alarms) {
         val id = scrollTo ?: return@LaunchedEffect
         val idx = alarms.indexOfFirst { it.id == id }
@@ -196,6 +208,42 @@ fun AlarmsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
                 }
             }
             items(alarms, key = { it.id }) { a ->
+                // Glisser à gauche : dupliquer (la carte revient en place) ;
+                // à droite : supprimer, avec « Annuler » dans la barre du bas.
+                val dismissState = rememberSwipeToDismissBoxState(
+                    confirmValueChange = { value ->
+                        when (value) {
+                            SwipeToDismissBoxValue.EndToStart -> {
+                                vm.duplicateAlarm(a.id)?.let { scrollTo = it }
+                                scope.launch { snackbar.showSnackbar("Réveil dupliqué") }
+                                false
+                            }
+                            SwipeToDismissBoxValue.StartToEnd -> {
+                                // Lambda mémorisée par l'état : on relit la
+                                // liste du moment, pas celle de la composition
+                                val list = vm.alarms.value
+                                val index = list.indexOfFirst { it.id == a.id }
+                                val gone = list.getOrNull(index) ?: a
+                                expanded = expanded - a.id
+                                vm.deleteAlarm(a.id)
+                                scope.launch {
+                                    val r = snackbar.showSnackbar(
+                                        "Réveil %02d:%02d supprimé".format(gone.hour, gone.minute),
+                                        actionLabel = "Annuler",
+                                        duration = SnackbarDuration.Long
+                                    )
+                                    if (r == SnackbarResult.ActionPerformed) vm.restoreAlarm(gone, index)
+                                }
+                                true
+                            }
+                            else -> false
+                        }
+                    }
+                )
+                SwipeToDismissBox(
+                    state = dismissState,
+                    backgroundContent = { SwipeBackground(dismissState.dismissDirection) }
+                ) {
                 AlarmCard(
                     alarm = a,
                     now = now,
@@ -211,6 +259,7 @@ fun AlarmsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
                     },
                     onToggleSkip = { vm.toggleSkipNext(a.id) }
                 )
+                }
             }
             item { CommonSettingsCard(vm) }
             item { CalendarCard(vm, sources, resumeTick, now) }
@@ -225,6 +274,45 @@ fun AlarmsScreen(vm: PlayerViewModel, modifier: Modifier = Modifier) {
                 .align(Alignment.BottomEnd)
                 .padding(16.dp)
         ) { Icon(Icons.Rounded.Add, contentDescription = "Ajouter un réveil") }
+        SnackbarHost(
+            snackbar,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 80.dp)
+        )
+    }
+}
+
+/** Fond révélé en glissant une carte : dupliquer (vers la gauche) ou
+ *  supprimer (vers la droite). */
+@Composable
+private fun SwipeBackground(direction: SwipeToDismissBoxValue) {
+    val delete = direction == SwipeToDismissBoxValue.StartToEnd
+    if (direction == SwipeToDismissBoxValue.Settled) return
+    Row(
+        Modifier
+            .fillMaxSize()
+            .clip(MaterialTheme.shapes.medium)
+            .background(
+                if (delete) MaterialTheme.colorScheme.errorContainer
+                else MaterialTheme.colorScheme.secondaryContainer
+            )
+            .padding(horizontal = 24.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = if (delete) Arrangement.Start else Arrangement.End
+    ) {
+        Icon(
+            if (delete) Icons.Rounded.Delete else Icons.Rounded.ContentCopy,
+            contentDescription = null,
+            tint = if (delete) MaterialTheme.colorScheme.onErrorContainer
+            else MaterialTheme.colorScheme.onSecondaryContainer
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (delete) "Supprimer" else "Dupliquer",
+            color = if (delete) MaterialTheme.colorScheme.onErrorContainer
+            else MaterialTheme.colorScheme.onSecondaryContainer
+        )
     }
 }
 

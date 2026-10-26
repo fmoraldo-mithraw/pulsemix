@@ -249,6 +249,28 @@ object AlarmClock {
         schedule(context)
     }
 
+    /** Copie d'un réveil, insérée juste après lui ; rend l'id de la copie. */
+    fun duplicateAlarm(context: Context, id: Int): Int? {
+        val list = alarms.value
+        val i = list.indexOfFirst { it.id == id }
+        if (i < 0) return null
+        val newId = (list.maxOfOrNull { it.id } ?: 0) + 1
+        alarms.value = list.toMutableList().apply { add(i + 1, list[i].copy(id = newId, skipAt = 0L)) }
+        persistAlarms(context)
+        schedule(context)
+        return newId
+    }
+
+    /** Remet un réveil supprimé à sa place (annulation de la suppression). */
+    fun restoreAlarm(context: Context, alarm: Alarm, index: Int) {
+        if (alarms.value.any { it.id == alarm.id }) return
+        alarms.value = alarms.value.toMutableList().apply {
+            add(index.coerceIn(0, size), alarm)
+        }
+        persistAlarms(context)
+        schedule(context)
+    }
+
     fun deleteAlarm(context: Context, id: Int) {
         alarms.value = alarms.value.filter { it.id != id }
         persistAlarms(context)

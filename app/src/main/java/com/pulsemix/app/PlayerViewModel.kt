@@ -56,6 +56,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun updateAlarm(alarm: com.pulsemix.app.player.Alarm) =
         alarmClock.updateAlarm(getApplication(), alarm)
     fun deleteAlarm(id: Int) = alarmClock.deleteAlarm(getApplication(), id)
+    fun duplicateAlarm(id: Int): Int? = alarmClock.duplicateAlarm(getApplication(), id)
+    fun restoreAlarm(alarm: com.pulsemix.app.player.Alarm, index: Int) =
+        alarmClock.restoreAlarm(getApplication(), alarm, index)
     fun toggleSkipNext(id: Int) = alarmClock.toggleSkipNext(getApplication(), id)
     fun setAlarmRamp(minutes: Int) = alarmClock.setRamp(getApplication(), minutes)
 
