@@ -158,11 +158,36 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Lit un fichier audio ouvert depuis une autre appli (lecteur par défaut). */
     fun playExternal(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            // WMA ouvert depuis une autre appli : ExoPlayer ne lit pas l'ASF,
+            // on joue sa conversion M4A (stockage de l'appli, gardée).
+            val doc = try {
+                androidx.documentfile.provider.DocumentFile.fromSingleUri(app, uri)
+            } catch (_: Exception) {
+                null
+            }
+            val isWma = com.pulsemix.app.library.WmaConverter.isWma(
+                doc?.name ?: uri.lastPathSegment ?: ""
+            ) || app.contentResolver.getType(uri) == "audio/x-ms-wma"
+            val playUri = if (isWma && doc != null) {
+                withContext(Dispatchers.Main) {
+                    PlayerCore.launchMessage.value = "Conversion du WMA…"
+                }
+                com.pulsemix.app.library.WmaConverter.convert(app, doc, null)?.uri
+                    ?: run {
+                        withContext(Dispatchers.Main) {
+                            PlayerCore.launchMessage.value =
+                                "Ce WMA n'a pas pu être converti (protégé par DRM ?)."
+                        }
+                        return@launch
+                    }
+            } else uri
+            if (isWma) withContext(Dispatchers.Main) { PlayerCore.launchMessage.value = null }
             val mmr = android.media.MediaMetadataRetriever()
             val track = try {
-                mmr.setDataSource(getApplication<Application>(), uri)
+                mmr.setDataSource(app, playUri)
                 Track(
-                    uri = uri.toString(),
+                    uri = playUri.toString(),
                     title = mmr.extractMetadata(
                         android.media.MediaMetadataRetriever.METADATA_KEY_TITLE
                     )?.takeIf { it.isNotBlank() }
@@ -176,7 +201,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 )
             } catch (_: Exception) {
                 Track(
-                    uri = uri.toString(),
+                    uri = playUri.toString(),
                     title = uri.lastPathSegment?.substringAfterLast('/') ?: "Titre",
                     artist = "",
                     durationMs = 0L

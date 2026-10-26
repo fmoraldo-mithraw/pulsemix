@@ -640,11 +640,12 @@ object LibraryScanner {
     }
 
     /**
-     * Les WMA ne sont lisibles par aucun Android standard (ni le conteneur
-     * ASF ni le codec ne sont fournis). Ceux que ce téléphone ne sait pas
-     * décoder sont convertis une fois en M4A à côté de l'original, et c'est
-     * la conversion qui entre dans la bibliothèque — sinon ils s'y
-     * ajouteraient pour rester muets.
+     * Les WMA ne passent pas dans ExoPlayer (aucun extracteur ASF), même
+     * quand le système du téléphone sait les décoder : TOUS sont convertis
+     * une fois en M4A ([WmaConverter]), et c'est la conversion qui entre
+     * dans la bibliothèque — sinon ils s'y ajouteraient pour rester muets.
+     * Un WMA dont la conversion échoue reste hors de la bibliothèque (la
+     * raison est dans le journal, tag [WMA]).
      */
     private fun convertUnplayable(
         context: Context,
@@ -652,24 +653,30 @@ object LibraryScanner {
     ): List<DocumentFile> {
         val wma = files.filter { WmaConverter.isWma(it.name ?: "") }
         if (wma.isEmpty()) return files
-        val byName = files.mapNotNull { it.name }.toHashSet()
-        val out = files.toMutableList()
-        for (f in wma) {
-            if (stopRequested) break
+        val wmaSet = wma.toHashSet()
+        // Les conversions déposées à côté des originaux sont déjà dans
+        // [files] : elles seront remplacées par celle que rend le
+        // convertisseur (même fichier), pour ne jamais compter double.
+        val convertedNames = wma.mapNotNull { it.name }.map(WmaConverter::convertedName).toHashSet()
+        val out = files.filter { it !in wmaSet && it.name !in convertedNames }.toMutableList()
+        var failed = 0
+        for ((i, f) in wma.withIndex()) {
             val name = f.name ?: continue
-            // Converti lors d'un passage précédent : ne garder que la copie
-            if (WmaConverter.convertedName(name) in byName) {
-                out.remove(f)
-                continue
+            val parent = f.parentFile
+            // Arrêt demandé : plus de nouvelle conversion, mais les
+            // conversions existantes restent (sinon purgées de la bibliothèque)
+            val converted = WmaConverter.existing(context, f, parent) ?: if (stopRequested) null else run {
+                _progress.value = Progress(i, wma.size, "Conversion de $name…")
+                WmaConverter.convert(context, f, parent)
             }
-            // Certains appareils savent lire le WMA : ne pas convertir pour rien
-            if (WmaConverter.playable(context, f.uri)) continue
-            _progress.value = Progress(0, 0, "Conversion de $name…")
-            val parent = f.parentFile ?: continue
-            val converted = WmaConverter.convert(context, f, parent)
-            if (converted != null) {
-                out.remove(f)
-                out.add(converted)
+            if (converted != null) out.add(converted) else failed++
+        }
+        if (failed > 0) {
+            try {
+                com.pulsemix.app.player.PlayerCore.engineLog(
+                    "WMA", "$failed WMA sur ${wma.size} non convertis (voir lignes précédentes)"
+                )
+            } catch (_: Exception) {
             }
         }
         return out
