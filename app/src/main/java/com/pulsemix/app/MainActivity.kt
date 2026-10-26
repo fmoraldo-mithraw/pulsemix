@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Alarm
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Settings
@@ -28,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pulsemix.app.ui.AlarmsScreen
 import com.pulsemix.app.ui.LibraryScreen
 import com.pulsemix.app.ui.PlayerScreen
 import com.pulsemix.app.ui.SettingsScreen
@@ -119,6 +121,12 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = screen == 2,
                                 onClick = { screen = 2 },
+                                icon = { Icon(Icons.Rounded.Alarm, null) },
+                                label = { Text("Réveils") }
+                            )
+                            NavigationBarItem(
+                                selected = screen == 3,
+                                onClick = { screen = 3 },
                                 icon = { Icon(Icons.Rounded.Settings, null) },
                                 label = { Text("Réglages") }
                             )
@@ -131,6 +139,7 @@ class MainActivity : ComponentActivity() {
                         1 -> LibraryScreen(vm, mod, onPickFolder = {
                             folderPicker.launch(null)
                         })
+                        2 -> AlarmsScreen(vm, mod)
                         else -> SettingsScreen(vm, mod)
                     }
                 }

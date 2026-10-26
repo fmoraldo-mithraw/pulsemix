@@ -20,13 +20,18 @@ import kotlinx.coroutines.withContext
 import java.util.Calendar
 
 /**
- * Réveil matin : à l'heure choisie, la musique se lance (type de mix
- * configuré dans les réglages) et le volume média monte petit à petit
- * jusqu'au maximum du téléphone.
+ * Réveils musicaux : à l'heure choisie, la musique se lance (type de mix,
+ * playlist ou playlist intelligente, au choix pour chaque réveil) et le
+ * volume monte petit à petit jusqu'au maximum du téléphone.
  *
- * L'alarme utilise setAlarmClock (icône réveil dans la barre d'état,
- * fiable même en veille profonde) et se ré-arme chaque jour ainsi
- * qu'après un redémarrage du téléphone ([AlarmReceiver]).
+ * Plusieurs réveils, chacun avec ses jours de répétition (aucun = réveil
+ * unique), activable à part, et dont on peut sauter la prochaine sonnerie.
+ * L'agenda ([CalendarAlarms]) ajoute ses propres sonneries.
+ *
+ * Une seule alarme système est tenue : la plus proche de toutes. Elle
+ * utilise setAlarmClock (icône réveil dans la barre d'état, fiable même en
+ * veille profonde) et se ré-arme à chaque sonnerie, à chaque modification,
+ * après un redémarrage du téléphone et une mise à jour ([AlarmReceiver]).
  */
 object AlarmClock {
 
@@ -40,10 +45,21 @@ object AlarmClock {
         "shuffle" to "Aléatoire (toute la bibliothèque)"
     )
 
-    val enabled = MutableStateFlow(false)
-    val hour = MutableStateFlow(7)
-    val minute = MutableStateFlow(0)
-    val mixId = MutableStateFlow("douce")
+    /** Libellé lisible d'une source de réveil (« mix:… », « playlist:… »,
+     *  « smart:… »). */
+    fun sourceLabel(source: String): String = when {
+        source.startsWith("playlist:") -> "Playlist « ${source.removePrefix("playlist:")} »"
+        source.startsWith("smart:") -> "Playlist intelligente « ${source.removePrefix("smart:")} »"
+        else -> {
+            val id = source.removePrefix("mix:")
+            MIX_CHOICES.firstOrNull { it.first == id }?.second ?: id
+        }
+    }
+
+    /** Tous les réveils, dans l'ordre de création. */
+    val alarms = MutableStateFlow<List<Alarm>>(emptyList())
+
+    /** Durée de la montée du volume (commune à tous les réveils). */
     val rampMinutes = MutableStateFlow(3)
 
     /** Réveil progressif : la file du réveil réordonnée du calme (faible
@@ -54,9 +70,34 @@ object AlarmClock {
     val SNOOZE_CHOICES = listOf(10, 15, 20)
 
     const val ACTION_FIRE = "com.pulsemix.app.ALARM_FIRE"
+    /** Ré-armement périodique (agenda modifié appli fermée). */
+    const val ACTION_REFRESH = "com.pulsemix.app.ALARM_REFRESH"
     private const val PREFS = "alarm"
+    private const val KEY_ALARMS = "alarms"
     private const val REQ_FIRE = 4242
     private const val REQ_SNOOZE = 4243
+    private const val REQ_REFRESH = 4244
+
+    // Ce qui a programmé la sonnerie, porté par l'intent de l'alarme
+    private const val EXTRA_KIND = "kind"
+    private const val EXTRA_ALARM_ID = "alarmId"
+    private const val EXTRA_KEY = "key"
+    private const val EXTRA_AT = "at"
+    private const val EXTRA_SOURCE = "source"
+    private const val EXTRA_LABEL = "label"
+    private const val KIND_ALARM = "alarm"
+    private const val KIND_CALENDAR = "calendar"
+    private const val KIND_SNOOZE = "snooze"
+
+    /** Source et titre de la sonnerie en cours (copiés en prefs : le
+     *  service ou l'écran du réveil peuvent lancer la musique dans un
+     *  processus tout neuf). */
+    private const val KEY_RING_SOURCE = "ringSource"
+    private const val KEY_RING_LABEL = "ringLabel"
+
+    /** Titre de la sonnerie en cours (notification, écran du réveil). */
+    val ringLabel = MutableStateFlow("Réveil PulseMix")
+    private var ringSource = "mix:douce"
 
     /** Volume média d'avant le réveil, copié en prefs (voir restoreVolume). */
     private const val KEY_VOLUME_BEFORE = "volumeBeforeAlarm"
@@ -79,8 +120,8 @@ object AlarmClock {
     private const val KEY_SCHEDULED_FOR = "scheduledFor"
     private const val KEY_LAST_FIRED = "lastFiredAt"
 
-    /** État de l'armement, lisible dans les réglages : « Prochaine
-     *  sonnerie : … (exacte) », ou l'anomalie constatée. */
+    /** État de l'armement, lisible dans l'écran des réveils : « Prochaine
+     *  sonnerie : … », ou l'anomalie constatée. */
     val armedInfo = MutableStateFlow("")
 
     /** Vrai si le système autorise les alarmes exactes (API 31+ ; toujours
@@ -103,12 +144,27 @@ object AlarmClock {
         if (!loaded) {
             loaded = true
             val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            enabled.value = p.getBoolean("enabled", false)
-            hour.value = p.getInt("hour", 7)
-            minute.value = p.getInt("minute", 0)
-            mixId.value = p.getString("mixId", "douce") ?: "douce"
+            alarms.value = if (p.contains(KEY_ALARMS)) {
+                AlarmSchedule.readAlarms(p.getString(KEY_ALARMS, "[]") ?: "[]")
+            } else if (p.contains("hour")) {
+                // Ancien réveil unique (réglages) : devient le premier réveil
+                // de la liste, quotidien comme avant.
+                val legacy = Alarm(
+                    id = 1,
+                    hour = p.getInt("hour", 7),
+                    minute = p.getInt("minute", 0),
+                    days = (1..7).toSet(),
+                    enabled = p.getBoolean("enabled", false),
+                    source = "mix:" + (p.getString("mixId", "douce") ?: "douce")
+                )
+                p.edit().putString(KEY_ALARMS, AlarmSchedule.writeAlarms(listOf(legacy))).apply()
+                listOf(legacy)
+            } else emptyList()
             rampMinutes.value = p.getInt("ramp", 3)
             progressive.value = p.getBoolean("alarmProgressive", false)
+            ringSource = p.getString(KEY_RING_SOURCE, "mix:douce") ?: "mix:douce"
+            ringLabel.value = p.getString(KEY_RING_LABEL, "Réveil PulseMix") ?: "Réveil PulseMix"
+            CalendarAlarms.load(context)
             // Un réveil interrompu par la mort du processus n'a jamais rendu
             // le volume : la clé traîne encore dans les prefs. On le rend
             // maintenant — sinon la première vidéo ou le premier morceau
@@ -121,7 +177,7 @@ object AlarmClock {
             // que le système sait, pour ne plus la chercher à l'aveugle.
             val scheduledFor = p.getLong(KEY_SCHEDULED_FOR, 0L)
             val lastFired = p.getLong(KEY_LAST_FIRED, 0L)
-            if (enabled.value && scheduledFor > 0L &&
+            if (scheduledFor > 0L &&
                 System.currentTimeMillis() > scheduledFor + 2 * 60_000L &&
                 lastFired < scheduledFor
             ) {
@@ -134,17 +190,18 @@ object AlarmClock {
                 lastMissed = msg
             }
         }
-        if (enabled.value) schedule(context)
+        CalendarAlarms.observe(context)
+        schedule(context)
     }
 
-    /** Ré-armement explicite (redémarrage, mise à jour de l'appli) :
-     *  journalisé, puis même chemin que le démarrage. */
+    /** Ré-armement explicite (redémarrage, mise à jour de l'appli, agenda
+     *  modifié…) : journalisé, puis même chemin que le démarrage. */
     fun rearm(context: Context, reason: String) {
         log("ré-armement demandé ($reason)")
         init(context)
     }
 
-    /** Dernier réveil manqué constaté (pour les réglages), sinon null. */
+    /** Dernier réveil manqué constaté (pour l'écran), sinon null. */
     @Volatile private var lastMissed: String? = null
 
     private fun batteryIgnored(context: Context): Boolean = try {
@@ -158,28 +215,63 @@ object AlarmClock {
         java.text.SimpleDateFormat("EEE dd/MM HH:mm", java.util.Locale.FRANCE)
             .format(java.util.Date(ms))
 
-    /** Applique et persiste la configuration, puis (ré)arme ou annule. */
-    fun configure(
-        context: Context,
-        en: Boolean,
-        h: Int,
-        m: Int,
-        mix: String,
-        ramp: Int
-    ) {
-        enabled.value = en
-        hour.value = h.coerceIn(0, 23)
-        minute.value = m.coerceIn(0, 59)
-        mixId.value = mix
-        rampMinutes.value = ramp.coerceIn(1, 15)
+    // ------------------------------------------------ édition des réveils
+
+    private fun persistAlarms(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean("enabled", enabled.value)
-            .putInt("hour", hour.value)
-            .putInt("minute", minute.value)
-            .putString("mixId", mixId.value)
-            .putInt("ramp", rampMinutes.value)
+            .putString(KEY_ALARMS, AlarmSchedule.writeAlarms(alarms.value))
             .apply()
-        if (en) schedule(context) else cancel(context)
+    }
+
+    /** Ajoute un réveil (7:00, unique, mix doux, activé) et rend son id. */
+    fun addAlarm(context: Context): Int {
+        val id = (alarms.value.maxOfOrNull { it.id } ?: 0) + 1
+        alarms.value = alarms.value + Alarm(id = id)
+        persistAlarms(context)
+        schedule(context)
+        return id
+    }
+
+    /** Remplace le réveil de même id, persiste et ré-arme. Une heure ou
+     *  des jours changés annulent le saut de la prochaine sonnerie (elle
+     *  ne désigne plus la même occurrence). */
+    fun updateAlarm(context: Context, alarm: Alarm) {
+        val old = alarms.value.firstOrNull { it.id == alarm.id } ?: return
+        val fixed = alarm.copy(
+            hour = alarm.hour.coerceIn(0, 23),
+            minute = alarm.minute.coerceIn(0, 59),
+            skipAt = if (old.hour != alarm.hour || old.minute != alarm.minute ||
+                old.days != alarm.days
+            ) 0L else alarm.skipAt
+        )
+        alarms.value = alarms.value.map { if (it.id == alarm.id) fixed else it }
+        persistAlarms(context)
+        schedule(context)
+    }
+
+    fun deleteAlarm(context: Context, id: Int) {
+        alarms.value = alarms.value.filter { it.id != id }
+        persistAlarms(context)
+        schedule(context)
+    }
+
+    /** Désactive la prochaine sonnerie d'un réveil à répétition — ou la
+     *  réactive si elle l'était déjà. */
+    fun toggleSkipNext(context: Context, id: Int) {
+        val a = alarms.value.firstOrNull { it.id == id } ?: return
+        if (!a.repeating) return
+        val now = System.currentTimeMillis()
+        val skip = if (AlarmSchedule.isSkipping(a, now)) 0L
+        else AlarmSchedule.occurrenceAfter(a, now)
+        updateAlarm(context, a.copy(skipAt = skip))
+        log(if (skip > 0L) "prochaine sonnerie sautée (${fmt(skip)})" else "prochaine sonnerie réactivée")
+    }
+
+    /** Durée de la montée du volume (1-15 min, commune à tous les réveils). */
+    fun setRamp(context: Context, minutes: Int) {
+        rampMinutes.value = minutes.coerceIn(1, 15)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt("ramp", rampMinutes.value).apply()
     }
 
     /** Active/désactive le réveil progressif (réglage indépendant du reste :
@@ -213,47 +305,92 @@ object AlarmClock {
         return MixEngine.MixPlan(plan.id, plan.name, plan.description, phases)
     }
 
-    /** Prochain déclenchement : aujourd'hui si l'heure n'est pas passée. */
-    fun nextTriggerMillis(): Long {
-        val cal = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, hour.value)
-            set(Calendar.MINUTE, minute.value)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-            if (timeInMillis <= System.currentTimeMillis()) {
-                add(Calendar.DAY_OF_YEAR, 1)
-            }
-        }
-        return cal.timeInMillis
-    }
+    // ------------------------------------------------------ programmation
 
-    private fun firePending(context: Context): PendingIntent =
+    private fun alarmLabel(a: Alarm) =
+        a.label.ifBlank { "Réveil %02d:%02d".format(a.hour, a.minute) }
+
+    /** Intent de sonnerie : FLAG_UPDATE_CURRENT remplace les extras, la
+     *  même PendingIntent porte toujours la prochaine sonnerie. */
+    private fun firePending(context: Context, extras: Intent.() -> Unit = {}): PendingIntent =
         PendingIntent.getBroadcast(
             context, REQ_FIRE,
-            Intent(context, AlarmReceiver::class.java).setAction(ACTION_FIRE),
+            Intent(context, AlarmReceiver::class.java).setAction(ACTION_FIRE).apply(extras),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-    private fun schedule(context: Context) {
+    private fun refreshPending(context: Context): PendingIntent =
+        PendingIntent.getBroadcast(
+            context, REQ_REFRESH,
+            Intent(context, AlarmReceiver::class.java).setAction(ACTION_REFRESH),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    /**
+     * (Ré)arme l'alarme système sur la sonnerie la plus proche : réveils
+     * actifs (saut de la prochaine sonnerie compris) et agenda. Rien à
+     * venir : l'alarme est annulée.
+     */
+    fun schedule(context: Context) {
         val am = context.getSystemService(AlarmManager::class.java) ?: return
+        val now = System.currentTimeMillis()
+        val nextAlarm = alarms.value
+            .mapNotNull { a -> AlarmSchedule.nextFire(a, now)?.let { a to it } }
+            .minByOrNull { it.second }
+        val cal = CalendarAlarms.nextTrigger(context, now)
+
+        // Agenda : ré-armement horaire, pour voir les événements ajoutés
+        // appli fermée (non réveillant : passe au prochain réveil du CPU).
+        try {
+            if (CalendarAlarms.active(context)) {
+                am.setInexactRepeating(
+                    AlarmManager.RTC, now + AlarmManager.INTERVAL_HOUR,
+                    AlarmManager.INTERVAL_HOUR, refreshPending(context)
+                )
+            } else am.cancel(refreshPending(context))
+        } catch (_: Exception) {
+        }
+
+        val useCal = cal != null && (nextAlarm == null || cal.at < nextAlarm.second)
+        if (nextAlarm == null && cal == null) {
+            unschedule(context)
+            return
+        }
+        // Une sonnerie d'agenda tout juste échue (dans la marge de grâce)
+        // part dans la seconde.
+        val at: Long
+        val description: String
+        val pending = if (useCal) {
+            at = maxOf(cal!!.at, now + 1_000L)
+            description = "agenda « ${cal.title} »"
+            firePending(context) {
+                putExtra(EXTRA_KIND, KIND_CALENDAR)
+                putExtra(EXTRA_KEY, cal.key)
+                putExtra(EXTRA_AT, cal.at)
+                putExtra(EXTRA_SOURCE, cal.source)
+                putExtra(EXTRA_LABEL, cal.title)
+            }
+        } else {
+            val (a, t) = nextAlarm!!
+            at = t
+            description = alarmLabel(a)
+            firePending(context) {
+                putExtra(EXTRA_KIND, KIND_ALARM)
+                putExtra(EXTRA_ALARM_ID, a.id)
+                putExtra(EXTRA_AT, t)
+            }
+        }
         val show = PendingIntent.getActivity(
             context, 0, Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val at = nextTriggerMillis()
         var exact = true
         try {
-            am.setAlarmClock(
-                AlarmManager.AlarmClockInfo(at, show),
-                firePending(context)
-            )
+            am.setAlarmClock(AlarmManager.AlarmClockInfo(at, show), pending)
         } catch (_: SecurityException) {
             // Permission « alarmes exactes » révoquée : réveil approximatif
             exact = false
-            am.setWindow(
-                AlarmManager.RTC_WAKEUP, at, 10 * 60_000L,
-                firePending(context)
-            )
+            am.setWindow(AlarmManager.RTC_WAKEUP, at, 10 * 60_000L, pending)
         }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putLong(KEY_SCHEDULED_FOR, at).apply()
@@ -271,35 +408,35 @@ object AlarmClock {
         val ours = next != null && next.showIntent?.creatorPackage == context.packageName &&
             kotlin.math.abs(next.triggerTime - at) < 60_000L
         log(
-            "alarme programmée pour ${fmt(at)} (${if (exact) "exacte" else "approximative"}) ; " +
+            "alarme programmée pour ${fmt(at)} — $description " +
+                "(${if (exact) "exacte" else "approximative"}) ; " +
                 "prochaine alarme-réveil connue du système : $nextText" +
                 (if (ours) " (la nôtre)" else "")
         )
-        armedInfo.value = "Prochaine sonnerie : ${fmt(at)}" +
+        armedInfo.value = "Prochaine sonnerie : ${fmt(at)} — $description" +
             (if (exact) "" else " (approximative : alarmes exactes refusées)") +
             (lastMissed?.let { "\n⚠ $it" } ?: "")
     }
 
-    private fun cancel(context: Context) {
+    private fun unschedule(context: Context) {
         val am = context.getSystemService(AlarmManager::class.java) ?: return
         am.cancel(firePending(context))
-        am.cancel(snoozePending(context))
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .remove(KEY_SCHEDULED_FOR).apply()
         armedInfo.value = ""
-        log("alarme annulée (réveil désactivé)")
+        log("alarme annulée (aucun réveil actif)")
     }
 
-    private fun snoozePending(context: Context): PendingIntent =
+    private fun snoozePending(context: Context, extras: Intent.() -> Unit = {}): PendingIntent =
         PendingIntent.getBroadcast(
             context, REQ_SNOOZE,
-            Intent(context, AlarmReceiver::class.java).setAction(ACTION_FIRE),
+            Intent(context, AlarmReceiver::class.java).setAction(ACTION_FIRE).apply(extras),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
     /**
      * Répéter : coupe la musique et reprogramme la sonnerie dans
-     * [minutes] minutes (sans toucher à l'alarme quotidienne).
+     * [minutes] minutes (sans toucher aux réveils programmés).
      */
     fun snooze(context: Context, minutes: Int) {
         stopRinging(context)
@@ -311,14 +448,16 @@ object AlarmClock {
                 context, 0, Intent(context, MainActivity::class.java),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
+            // La répétition rejoue la même chose (source et titre)
+            val pending = snoozePending(context) {
+                putExtra(EXTRA_KIND, KIND_SNOOZE)
+                putExtra(EXTRA_SOURCE, ringSource)
+                putExtra(EXTRA_LABEL, ringLabel.value)
+            }
             try {
-                am.setAlarmClock(
-                    AlarmManager.AlarmClockInfo(at, show), snoozePending(context)
-                )
+                am.setAlarmClock(AlarmManager.AlarmClockInfo(at, show), pending)
             } catch (_: SecurityException) {
-                am.setWindow(
-                    AlarmManager.RTC_WAKEUP, at, 60_000L, snoozePending(context)
-                )
+                am.setWindow(AlarmManager.RTC_WAKEUP, at, 60_000L, pending)
             }
         }
         AlarmService.stop(context)
@@ -484,22 +623,70 @@ object AlarmClock {
 
     /**
      * Sonnerie — appelé par [AlarmReceiver] à l'heure dite, appli
-     * éventuellement fermée. Ré-arme pour demain puis délègue le
-     * lancement à [AlarmService] (service en avant-plan : le processus
-     * est protégé pendant tout le chargement, un broadcast seul n'est
-     * garanti que ~10 s).
+     * éventuellement fermée. Identifie ce qui sonne (réveil, agenda,
+     * répétition), ré-arme sur la sonnerie suivante puis lance la musique
+     * (voir plus bas : notification, lancement direct, service).
      */
-    fun fire(context: Context, onDone: () -> Unit) {
+    fun fire(context: Context, intent: Intent, onDone: () -> Unit) {
         com.pulsemix.app.Graph.init(context)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putLong(KEY_LAST_FIRED, System.currentTimeMillis()).apply()
         lastMissed = null
-        log("alarme reçue (réveil ${if (enabled.value) "actif" else "désactivé"})")
-        if (!enabled.value) {
-            onDone()
-            return
+        val kind = intent.getStringExtra(EXTRA_KIND)
+        log("alarme reçue (${kind ?: "sans détail"})")
+        val source: String
+        val label: String
+        when (kind) {
+            KIND_ALARM -> {
+                val id = intent.getIntExtra(EXTRA_ALARM_ID, -1)
+                val a = alarms.value.firstOrNull { it.id == id }
+                if (a == null || !a.enabled) {
+                    log("réveil $id supprimé ou désactivé entre-temps : rien à jouer")
+                    schedule(context)
+                    onDone()
+                    return
+                }
+                // Réveil unique : il a sonné, il se désactive
+                if (!a.repeating) updateAlarm(context, a.copy(enabled = false))
+                source = a.source
+                label = alarmLabel(a)
+            }
+            KIND_CALENDAR -> {
+                val key = intent.getStringExtra(EXTRA_KEY) ?: ""
+                CalendarAlarms.markFired(context, key, intent.getLongExtra(EXTRA_AT, 0L))
+                if (!CalendarAlarms.active(context)) {
+                    log("agenda désactivé entre-temps : rien à jouer")
+                    schedule(context)
+                    onDone()
+                    return
+                }
+                source = intent.getStringExtra(EXTRA_SOURCE) ?: "mix:douce"
+                label = intent.getStringExtra(EXTRA_LABEL) ?: "Agenda"
+            }
+            KIND_SNOOZE -> {
+                source = intent.getStringExtra(EXTRA_SOURCE) ?: ringSource
+                label = intent.getStringExtra(EXTRA_LABEL) ?: ringLabel.value
+            }
+            else -> {
+                // Alarme posée par une version précédente (sans détail) :
+                // on sonne avec le premier réveil actif, s'il y en a un.
+                val a = alarms.value.firstOrNull { it.enabled }
+                if (a == null) {
+                    schedule(context)
+                    onDone()
+                    return
+                }
+                source = a.source
+                label = alarmLabel(a)
+            }
         }
-        schedule(context) // demain, même heure
+        ringSource = source
+        ringLabel.value = label
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_RING_SOURCE, source)
+            .putString(KEY_RING_LABEL, label)
+            .apply()
+        schedule(context) // sonnerie suivante
         log("état : ${backgroundState(context)}")
         // Journal 14 : cinq matins de suite, « alarme reçue », « alarme
         // programmée »… puis PLUS RIEN — le service de réveil en
@@ -575,7 +762,6 @@ object AlarmClock {
     /** L'écran du réveil est au premier plan (fullScreenIntent) : de là,
      *  tout est permis — si la musique n'est pas partie, on la lance. */
     fun ensureLaunched(context: Context) {
-        if (!enabled.value) return
         val recent = android.os.SystemClock.elapsedRealtime() - lastLaunchAt < 2 * 60_000L
         if (recent || PlayerCore.isPlaying.value) return
         launchOnce(context, "écran du réveil") {}
@@ -603,7 +789,7 @@ object AlarmClock {
         GlobalScope.launch(Dispatchers.Main) {
             var launched = false
             try {
-                log("sonnerie : mix « ${mixId.value} », rampe ${rampMinutes.value} min")
+                log("sonnerie « ${ringLabel.value} » : ${sourceLabel(ringSource)}, rampe ${rampMinutes.value} min")
                 val store = com.pulsemix.app.Graph.store
                 // Bibliothèque pas lue au bout de 30 s (disque lent, fichier
                 // énorme) : on ne reste pas muet, la sonnerie de secours part.
@@ -646,7 +832,44 @@ object AlarmClock {
                     startFallbackRingtone(context)
                     return@launch
                 }
-                when (val id = mixId.value) {
+                val src = ringSource
+                val playlist: List<com.pulsemix.app.data.Track>? = when {
+                    src.startsWith("playlist:") -> {
+                        val name = src.removePrefix("playlist:")
+                        kotlinx.coroutines.withTimeoutOrNull(10_000L) {
+                            com.pulsemix.app.data.PlaylistStore.loaded.first { it }
+                        }
+                        val byUri = all.associateBy { it.uri }
+                        com.pulsemix.app.data.PlaylistStore.playlists.value
+                            .firstOrNull { it.name == name }
+                            ?.uris?.mapNotNull { byUri[it] }.orEmpty()
+                    }
+                    src.startsWith("smart:") -> {
+                        val name = src.removePrefix("smart:")
+                        kotlinx.coroutines.withTimeoutOrNull(10_000L) {
+                            com.pulsemix.app.data.SmartPlaylists.loaded.first { it }
+                        }
+                        val sp = com.pulsemix.app.data.SmartPlaylists.playlists.value
+                            .firstOrNull { it.name == name }
+                        if (sp == null) emptyList() else withContext(Dispatchers.Default) {
+                            com.pulsemix.app.data.SmartPlaylists.evaluate(
+                                sp.rule, all, System.currentTimeMillis()
+                            ) { uri -> com.pulsemix.app.data.PlayHistory.lastPlayed(uri) }
+                        }
+                    }
+                    else -> null
+                }
+                if (playlist != null) {
+                    // Playlist supprimée, vide ou morceaux introuvables : le
+                    // réveil sonne quand même, sur toute la bibliothèque.
+                    if (playlist.isEmpty()) {
+                        log("${sourceLabel(src)} vide ou introuvable : lecture aléatoire")
+                        PlayerCore.playNormal(wakeOrder(all.shuffled()), 0)
+                    } else {
+                        log("${sourceLabel(src)} : ${playlist.size} morceau(x)")
+                        PlayerCore.playNormal(wakeOrder(playlist), 0)
+                    }
+                } else when (val id = src.removePrefix("mix:")) {
                     "douce" -> {
                         // La douce va déjà du plus doux au moins doux : le
                         // réveil progressif n'y changerait rien.
@@ -676,7 +899,7 @@ object AlarmClock {
                     }
                 }
                 launched = true
-                log("lancement demandé (${mixId.value})")
+                log("lancement demandé ($ringSource)")
             } catch (e: Exception) {
                 // Une exception ici laissait la notification affichée et
                 // le téléphone MUET, sans une trace : journalisée, et la

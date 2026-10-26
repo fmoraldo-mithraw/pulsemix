@@ -18,6 +18,8 @@ object Graph {
             PlayHistory.init(context)
             com.pulsemix.app.data.TransitionFeedback.init(context)
             com.pulsemix.app.data.PlaylistStore.init(context)
+            // Le réveil peut jouer une playlist intelligente appli fermée
+            com.pulsemix.app.data.SmartPlaylists.init(context)
             com.pulsemix.app.library.TagFixer.init(context)
             com.pulsemix.app.player.AlarmClock.init(context)
         }

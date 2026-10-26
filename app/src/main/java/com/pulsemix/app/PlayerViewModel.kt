@@ -41,24 +41,53 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** Rang du morceau en cours dans la file (-1 si inconnu). */
     val currentIndex = PlayerCore.currentIndex
 
-    // ------------------------------------------------------- réveil matin
-    val alarmEnabled = com.pulsemix.app.player.AlarmClock.enabled
-    val alarmHour = com.pulsemix.app.player.AlarmClock.hour
-    val alarmMinute = com.pulsemix.app.player.AlarmClock.minute
-    val alarmMixId = com.pulsemix.app.player.AlarmClock.mixId
-    val alarmRamp = com.pulsemix.app.player.AlarmClock.rampMinutes
-    val alarmProgressive = com.pulsemix.app.player.AlarmClock.progressive
-    /** État de l'armement du réveil (prochaine sonnerie, anomalie). */
-    val alarmArmedInfo = com.pulsemix.app.player.AlarmClock.armedInfo
+    // ------------------------------------------------------------ réveils
+    private val alarmClock = com.pulsemix.app.player.AlarmClock
+    private val calendarAlarms = com.pulsemix.app.player.CalendarAlarms
 
-    fun setAlarm(enabled: Boolean, hour: Int, minute: Int, mixId: String, ramp: Int) =
-        com.pulsemix.app.player.AlarmClock.configure(
-            getApplication(), enabled, hour, minute, mixId, ramp
-        )
+    val alarms = alarmClock.alarms
+    val alarmRamp = alarmClock.rampMinutes
+    val alarmProgressive = alarmClock.progressive
+    /** État de l'armement des réveils (prochaine sonnerie, anomalie). */
+    val alarmArmedInfo = alarmClock.armedInfo
+
+    /** Nouveau réveil ; rend son id (l'écran l'ouvre déplié). */
+    fun addAlarm(): Int = alarmClock.addAlarm(getApplication())
+    fun updateAlarm(alarm: com.pulsemix.app.player.Alarm) =
+        alarmClock.updateAlarm(getApplication(), alarm)
+    fun deleteAlarm(id: Int) = alarmClock.deleteAlarm(getApplication(), id)
+    fun toggleSkipNext(id: Int) = alarmClock.toggleSkipNext(getApplication(), id)
+    fun setAlarmRamp(minutes: Int) = alarmClock.setRamp(getApplication(), minutes)
 
     /** Réveil progressif : la file du réveil part du calme vers l'énergique. */
     fun setAlarmProgressive(enabled: Boolean) =
-        com.pulsemix.app.player.AlarmClock.setProgressive(getApplication(), enabled)
+        alarmClock.setProgressive(getApplication(), enabled)
+
+    // Agenda
+    val calendarEnabled = calendarAlarms.enabled
+    val calendarConfigs = calendarAlarms.configs
+    val calendarNext = calendarAlarms.next
+
+    fun calendarPermission(): Boolean = calendarAlarms.hasPermission(getApplication())
+
+    suspend fun listCalendars(): List<com.pulsemix.app.player.CalendarAlarms.CalendarInfo> =
+        withContext(Dispatchers.IO) { calendarAlarms.listCalendars(getApplication()) }
+
+    fun setCalendarEnabled(on: Boolean) {
+        calendarAlarms.setEnabled(getApplication(), on)
+        alarmClock.schedule(getApplication())
+    }
+
+    fun setCalendarConfig(cfg: com.pulsemix.app.player.CalendarConfig) {
+        calendarAlarms.setConfig(getApplication(), cfg)
+        alarmClock.schedule(getApplication())
+    }
+
+    /** Permission d'agenda tout juste accordée : suivi + ré-armement. */
+    fun onCalendarPermissionGranted() {
+        calendarAlarms.observe(getApplication())
+        alarmClock.schedule(getApplication())
+    }
 
     /**
      * Analyse automatique des nouveaux morceaux (démarrage, dossier ajouté,

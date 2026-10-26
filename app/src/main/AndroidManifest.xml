@@ -22,6 +22,9 @@
     <!-- Sonnerie plein écran par-dessus l'écran verrouillé -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
+    <!-- Réveils de l'agenda : lecture des événements (agenda Google
+         synchronisé sur le téléphone) -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
 
     <application
         android:name=".PulseMixApp"
@@ -133,6 +136,16 @@
                 <!-- Mise à jour de l'appli : ré-armer sans attendre qu'elle
                      soit rouverte (livré uniquement à l'appli elle-même). -->
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <!-- Heure / fuseau changés : sonneries en heure locale -->
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+            <!-- Agenda : rappel système ou modification, l'occasion de
+                 relire les événements appli fermée -->
+            <intent-filter>
+                <action android:name="android.intent.action.EVENT_REMINDER" />
+                <action android:name="android.intent.action.PROVIDER_CHANGED" />
+                <data android:scheme="content" android:host="com.android.calendar" />
             </intent-filter>
         </receiver>
 

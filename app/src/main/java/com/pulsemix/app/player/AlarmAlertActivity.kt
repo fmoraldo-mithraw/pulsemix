@@ -72,8 +72,9 @@ class AlarmAlertActivity : ComponentActivity() {
                         style = MaterialTheme.typography.displayLarge,
                         fontWeight = FontWeight.Bold
                     )
+                    val label by AlarmClock.ringLabel.collectAsStateWithLifecycle()
                     Text(
-                        "Réveil PulseMix",
+                        label,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )

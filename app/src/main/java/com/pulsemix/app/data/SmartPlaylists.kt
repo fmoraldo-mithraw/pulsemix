@@ -44,6 +44,9 @@ object SmartPlaylists {
     private val _playlists = MutableStateFlow<List<SmartPlaylist>>(emptyList())
     val playlists: StateFlow<List<SmartPlaylist>> = _playlists
 
+    /** Vrai une fois smart_playlists.json lu (voir PlaylistStore.loaded). */
+    val loaded = MutableStateFlow(false)
+
     private var file: File? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -63,6 +66,8 @@ object SmartPlaylists {
                     loaded.filter { l -> cur.none { it.name == l.name } } + cur
                 }
             } catch (_: Exception) {
+            } finally {
+                loaded.value = true
             }
         }
     }
