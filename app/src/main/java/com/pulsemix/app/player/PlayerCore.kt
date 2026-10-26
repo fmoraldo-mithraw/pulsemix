@@ -1815,6 +1815,17 @@ object PlayerCore {
      *  [TAIL_SETTLE_MS] plus tard (voir TAIL_SETTLE_MS). */
     private var preparedDisturbedAt = 0L
 
+    /** Instant du dernier SEEK de la queue pré-armée. Seul un seek
+     *  redémarre sa sortie audio — et c'est ce redémarrage qui fausse les
+     *  lectures précoces (biais, voir TAIL_SETTLE_MS). Un glissement de
+     *  vitesse, logiciel, ne redémarre rien : une lecture faite après lui
+     *  n'a PAS à être corrigée du biais. Journal 15 : trois bascules sur
+     *  onze ajoutaient ~350 ms de biais à une lecture juste (« estimé »
+     *  après un glissement), recalaient la queue sur ce résidu fantôme,
+     *  la décalaient pour de bon de −300 ms… et coupaient sec, sans
+     *  aucune transition. */
+    private var preparedSeekAt = 0L
+
     /** Résidu final du pré-alignement (ms, vrai ou estimé) : à la bascule,
      *  une lecture précoce ne vaut pas mieux que cette estimation. */
     private var preparedResidualMs = 0L
@@ -1898,6 +1909,7 @@ object PlayerCore {
             player.seekTo(exo.currentPosition + lag0)
             player.play()
             preparedDisturbedAt = t0
+            preparedSeekAt = t0
             if (!awaitTailAdvance(player, ::gone)) return
             val early = medianResidual(player)
             // Lecture stabilisée : la seule qui vaille
@@ -1913,6 +1925,7 @@ object PlayerCore {
             if (kotlin.math.abs(residual) > RESEEK_TOLERANCE_MS) {
                 reseeks++
                 preparedDisturbedAt = android.os.SystemClock.elapsedRealtime()
+                preparedSeekAt = preparedDisturbedAt
                 if (!reseekTail(player, residual, tailStartupLagWarmMs, ::gone)) return
                 settled = false
             } else if (kotlin.math.abs(residual) > SEAM_TOLERANCE_MS) {
@@ -1936,7 +1949,9 @@ object PlayerCore {
                     settled = true
                 } else {
                     if (!pace(300L, ::gone)) return
-                    residual = medianResidual(player) + tailReadBiasMs()
+                    // Biais seulement après un seek (voir preparedSeekAt)
+                    residual = medianResidual(player) +
+                        (if (reseeks > 0) tailReadBiasMs() else 0L)
                 }
             }
             // Glissement fin EN AVEUGLE : après un recalage stabilisé, il
@@ -2031,6 +2046,7 @@ object PlayerCore {
         alignJob = null
         preparedAlignedPlayer = null
         preparedDisturbedAt = 0L
+        preparedSeekAt = 0L
         val eq = preparedEq
         preparedEq = null
         try {
@@ -2211,6 +2227,7 @@ object PlayerCore {
         // refaire, la bascule sera immédiate. Son égaliseur suit.
         val preAligned = prearmed != null && preparedAlignedPlayer === prearmed
         val prearmDisturbedAt = preparedDisturbedAt
+        val prearmSeekAt = preparedSeekAt
         val prearmResidual = preparedResidualMs
         val takenEq = if (prearmed != null) preparedEq else null
         if (prearmed != null) {
@@ -2218,6 +2235,7 @@ object PlayerCore {
             alignJob = null
             preparedAlignedPlayer = null
             preparedDisturbedAt = 0L
+            preparedSeekAt = 0L
             preparedEq = null
             preparedTail = null
             preparedUri = null
@@ -2363,16 +2381,20 @@ object PlayerCore {
                     // seek de la queue est PRÉCOCE : corrigée du biais
                     // appris (voir TAIL_SETTLE_MS). Pré-alignée sans
                     // manœuvre récente : lecture stabilisée, la vraie.
-                    val disturbedAt = if (compensated)
-                        android.os.SystemClock.elapsedRealtime() else prearmDisturbedAt
+                    // Le biais ne concerne que les lectures qui suivent un
+                    // SEEK (redémarrage de la sortie), pas un glissement de
+                    // vitesse (voir preparedSeekAt).
+                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                    val disturbedAt = if (compensated) nowMs else prearmSeekAt
                     val bias = tailReadBiasMs()
-                    var settled = android.os.SystemClock.elapsedRealtime() - disturbedAt >=
-                        TAIL_SETTLE_MS
+                    var settled = nowMs - disturbedAt >= TAIL_SETTLE_MS
                     var residual = medianResidual(player) + (if (settled) 0L else bias)
-                    // Pré-alignée mais lue trop tôt (glissement fin tout
-                    // juste appliqué) : l'estimation du pré-armement vaut
-                    // mieux que cette lecture, sauf désaccord flagrant.
-                    if (preAligned && !settled &&
+                    // Pré-alignée mais lue trop tôt, ou glissement fin dont
+                    // l'effet n'est pas encore sorti du tampon : l'estimation
+                    // du pré-armement vaut mieux que cette lecture, sauf
+                    // désaccord flagrant.
+                    val slideInFlight = nowMs - prearmDisturbedAt < TAIL_BUFFER_MS + 500L
+                    if (preAligned && (!settled || slideInFlight) &&
                         kotlin.math.abs(residual) <= ESTIMATE_TRUST_MS
                     ) {
                         residual = prearmResidual
@@ -2436,11 +2458,14 @@ object PlayerCore {
                         (if (preAligned) ", pré-alignée" else "") +
                         (if (fromGesture) ", geste" else "") +
                         (if (settled) ")" else ", estimé, biais $bias ms)")
-                    // Résidu toujours trop grand malgré les recalages —
-                    // rejoue comme élision s'entendraient : arrivée franche.
+                    // Résidu toujours trop grand malgré les recalages : on
+                    // garde QUAND MÊME le fondu. Un petit saut dans le
+                    // morceau sortant, noyé sous un pont élargi, s'entend
+                    // bien moins qu'une coupe sèche sans transition (ce que
+                    // faisait l'ancienne « bascule sèche »).
                     if (tailAudible && kotlin.math.abs(residual) > MAX_TAIL_DRIFT_MS) {
-                        transLog("bascule sèche : résidu ${residual0} -> ${residual} ms $detail")
-                        tailAudible = false
+                        seamResidual = residual
+                        transLog("raccord approximatif (fondu gardé) : résidu ${residual0} -> ${residual} ms $detail")
                     } else if (tailAudible) {
                         seamResidual = residual
                         transLog("raccord aligné : résidu ${residual0} -> ${residual} ms $detail")
@@ -2544,8 +2569,11 @@ object PlayerCore {
                 // Pont PROPORTIONNEL au résidu : 60 ms noient un accroc de
                 // 20 ms, mais floutent la phase pour rien quand le raccord
                 // est à 0 ms. 20 ms + 3 × |résidu|, bornés à l'ancien 60 ms.
+                // Raccord approximatif : pont élargi à 250 ms pour noyer le saut.
+                val bridgeMax = if (kotlin.math.abs(seamResidual) > MAX_TAIL_DRIFT_MS) 250L
+                else BRIDGE_STEPS * BRIDGE_STEP_MS
                 val bridgeDur = (20L + 3L * kotlin.math.abs(seamResidual))
-                    .coerceIn(20L, BRIDGE_STEPS * BRIDGE_STEP_MS).toFloat()
+                    .coerceIn(20L, bridgeMax).toFloat()
                 while (true) {
                     val x = ((android.os.SystemClock.elapsedRealtime() - bridge0) /
                         bridgeDur).coerceAtMost(1f)
