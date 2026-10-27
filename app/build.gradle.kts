@@ -61,6 +61,24 @@ android {
             // sont livrés comme des .so et doivent être extraits sur disque
             // pour pouvoir être exécutés.
             useLegacyPackaging = true
+            // ffmpeg de bytedeco (WMA) : filtres, périphériques, images et
+            // exécutables inutiles — ~12 Mo de moins
+            excludes += listOf(
+                "**/libavfilter.so", "**/libjniavfilter.so",
+                "**/libavdevice.so", "**/libjniavdevice.so",
+                "**/libswscale.so", "**/libjniswscale.so",
+                "**/libpostproc.so", "**/libjnipostproc.so",
+                "lib/*/ffmpeg", "lib/*/ffprobe"
+            )
+        }
+        resources {
+            // Jars bytedeco : configs GraalVM, poms et module-info en double
+            // d'un jar à l'autre
+            excludes += listOf(
+                "META-INF/native-image/**",
+                "META-INF/maven/**",
+                "META-INF/versions/9/module-info.class"
+            )
         }
     }
 }
@@ -90,4 +108,14 @@ dependencies {
     // ffmpeg est nécessaire pour l'extraction/conversion audio (-x).
     implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
+
+    // Lecture NATIVE des WMA : ffmpeg compilé pour Android (bytedeco,
+    // JavaCPP). Seuls avformat/avcodec/swresample servent (voir packaging).
+    implementation("org.bytedeco:javacpp:1.5.12")
+    implementation("org.bytedeco:javacpp:1.5.12:android-arm64")
+    implementation("org.bytedeco:ffmpeg:7.1.1-1.5.12")
+    implementation("org.bytedeco:ffmpeg:7.1.1-1.5.12:android-arm64")
+    // Tests du décodeur WMA sur la JVM du poste / de la CI
+    testImplementation("org.bytedeco:javacpp:1.5.12:linux-x86_64")
+    testImplementation("org.bytedeco:ffmpeg:7.1.1-1.5.12:linux-x86_64")
 }

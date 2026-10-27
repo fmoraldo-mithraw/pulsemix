@@ -162,30 +162,22 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun playExternal(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             val app = getApplication<Application>()
-            // WMA ouvert depuis une autre appli : ExoPlayer ne lit pas l'ASF,
-            // on joue sa conversion M4A (stockage de l'appli, gardée).
-            val doc = try {
-                androidx.documentfile.provider.DocumentFile.fromSingleUri(app, uri)
-            } catch (_: Exception) {
-                null
+            val playUri = uri
+            // WMA ouvert depuis une autre appli : lu par le décodeur natif,
+            // tags compris (MediaMetadataRetriever ne lit pas l'ASF)
+            if (com.pulsemix.app.audio.WmaFiles.available &&
+                com.pulsemix.app.audio.WmaFiles.isWma(app, uri)
+            ) {
+                val m = com.pulsemix.app.audio.WmaFiles.meta(app, uri)
+                val t = Track(
+                    uri = uri.toString(),
+                    title = m?.title ?: (uri.lastPathSegment?.substringAfterLast('/') ?: "Titre"),
+                    artist = m?.artist ?: "",
+                    durationMs = m?.durationMs ?: 0L
+                )
+                withContext(Dispatchers.Main) { PlayerCore.playNormal(listOf(t), 0) }
+                return@launch
             }
-            val isWma = com.pulsemix.app.library.WmaConverter.isWma(
-                doc?.name ?: uri.lastPathSegment ?: ""
-            ) || app.contentResolver.getType(uri) == "audio/x-ms-wma"
-            val playUri = if (isWma && doc != null) {
-                withContext(Dispatchers.Main) {
-                    PlayerCore.launchMessage.value = "Conversion du WMA…"
-                }
-                com.pulsemix.app.library.WmaConverter.convert(app, doc, null)?.uri
-                    ?: run {
-                        withContext(Dispatchers.Main) {
-                            PlayerCore.launchMessage.value =
-                                "Ce WMA n'a pas pu être converti (protégé par DRM ?)."
-                        }
-                        return@launch
-                    }
-            } else uri
-            if (isWma) withContext(Dispatchers.Main) { PlayerCore.launchMessage.value = null }
             val mmr = android.media.MediaMetadataRetriever()
             val track = try {
                 mmr.setDataSource(app, playUri)

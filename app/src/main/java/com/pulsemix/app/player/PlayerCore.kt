@@ -383,6 +383,7 @@ object PlayerCore {
         )
 
         exo = ExoPlayer.Builder(appContext, bigBufferRenderers(platformSpeed = true))
+            .setMediaSourceFactory(mediaSources())
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
         exo.addAnalyticsListener(underrunWatch("principal"))
@@ -1723,6 +1724,13 @@ object PlayerCore {
      * résidu sont justes. L'alignement s'y adapte : seeks compensés, et
      * des glissements lents au pré-armement seulement (voir alignPrepared).
      */
+    /** Sources du lecteur : les WMA sont décodés en natif et servis en WAV
+     *  ([com.pulsemix.app.audio.WmaDataSource]), le reste passe tel quel. */
+    private fun mediaSources() =
+        androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+            com.pulsemix.app.audio.PulseDataSourceFactory(appContext)
+        )
+
     private fun bigBufferRenderers(platformSpeed: Boolean): DefaultRenderersFactory =
         object : DefaultRenderersFactory(appContext) {
             override fun buildAudioSink(
@@ -1770,7 +1778,8 @@ object PlayerCore {
      * toute l'intro).
      */
     private fun newTailPlayer(track: Track): ExoPlayer =
-        ExoPlayer.Builder(appContext, bigBufferRenderers(platformSpeed = false)).build().apply {
+        ExoPlayer.Builder(appContext, bigBufferRenderers(platformSpeed = false))
+            .setMediaSourceFactory(mediaSources()).build().apply {
             // La queue est audible pendant tout le fondu : ses saccades
             // se journalisent comme celles du principal.
             addAnalyticsListener(underrunWatch("queue"))

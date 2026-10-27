@@ -23,6 +23,13 @@ class AudioDecoder {
         maxDurationUs: Long = Long.MAX_VALUE,
         sink: (pcm: FloatArray, frames: Int, sampleRate: Int, channels: Int) -> Boolean
     ): Boolean {
+        // WMA : ni MediaExtractor ni MediaCodec ne savent le lire (sauf
+        // quelques constructeurs) — décodeur natif embarqué
+        if (com.pulsemix.app.audio.WmaFiles.isWma(context, uri) &&
+            com.pulsemix.app.audio.WmaFiles.available
+        ) {
+            return decodeWma(context, uri, startUs, maxDurationUs, sink)
+        }
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
@@ -156,5 +163,49 @@ class AudioDecoder {
             } catch (_: Exception) {
             }
         }
+    }
+
+    /** Même contrat que [decode], par le décodeur WMA natif. */
+    private fun decodeWma(
+        context: Context,
+        uri: Uri,
+        startUs: Long,
+        maxDurationUs: Long,
+        sink: (pcm: FloatArray, frames: Int, sampleRate: Int, channels: Int) -> Boolean
+    ): Boolean = try {
+        com.pulsemix.app.audio.WmaFiles.open(context, uri).use { o ->
+            val d = o.decoder
+            val ch = d.channels
+            val rate = d.sampleRate
+            if (startUs > 0) d.seekUs(startUs)
+            // Trames encore à rendre (fenêtre [startUs, startUs + maxDurationUs])
+            var left = if (maxDurationUs == Long.MAX_VALUE) Long.MAX_VALUE
+            else maxDurationUs * rate / 1_000_000L
+            var keepGoing = true
+            var bytes = ByteArray(0)
+            while (keepGoing && left > 0) {
+                var len = 0
+                val n = d.decodeNext { p, l ->
+                    if (bytes.size < l) bytes = ByteArray(l)
+                    p.get(bytes, 0, l)
+                    len = l
+                }
+                if (n < 0) break
+                var frames = len / (2 * ch)
+                if (frames.toLong() > left) frames = left.toInt()
+                val pcm = FloatArray(frames * ch)
+                for (i in pcm.indices) {
+                    val lo = bytes[2 * i].toInt() and 0xFF
+                    val hi = bytes[2 * i + 1].toInt()
+                    pcm[i] = ((hi shl 8) or lo).toShort() / 32768f
+                }
+                left -= frames
+                keepGoing = sink(pcm, frames, rate, ch)
+            }
+            true
+        }
+    } catch (e: Throwable) {
+        com.pulsemix.app.audio.WmaFiles.log("décodage impossible : ${e.message}")
+        false
     }
 }

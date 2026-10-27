@@ -100,7 +100,7 @@ object LibraryScanner {
                     walk(root, files, 0)
                     if (files.size == before) emptyRoot = true
                 }
-                val audioFiles = convertUnplayable(context, files.filter { isAudio(it) })
+                val audioFiles = withoutOldConversions(files.filter { isAudio(it) })
 
                 val uris = audioFiles.map { it.uri.toString() }.toSet()
                 // Un dossier qui ne rend AUCUN fichier ressemble bien plus à
@@ -640,46 +640,18 @@ object LibraryScanner {
     }
 
     /**
-     * Les WMA ne passent pas dans ExoPlayer (aucun extracteur ASF), même
-     * quand le système du téléphone sait les décoder : TOUS sont convertis
-     * une fois en M4A ([WmaConverter]), et c'est la conversion qui entre
-     * dans la bibliothèque — sinon ils s'y ajouteraient pour rester muets.
-     * Un WMA dont la conversion échoue reste hors de la bibliothèque (la
-     * raison est dans le journal, tag [WMA]).
+     * Les WMA se lisent désormais tels quels (décodeur natif,
+     * [com.pulsemix.app.audio.WmaDecoder]). Les copies « (converti).m4a »
+     * laissées par l'ancienne conversion à côté de leur original feraient
+     * doublon : elles sont écartées de la bibliothèque (pas supprimées).
      */
-    private fun convertUnplayable(
-        context: Context,
-        files: List<DocumentFile>
-    ): List<DocumentFile> {
-        val wma = files.filter { WmaConverter.isWma(it.name ?: "") }
-        if (wma.isEmpty()) return files
-        val wmaSet = wma.toHashSet()
-        // Les conversions déposées à côté des originaux sont déjà dans
-        // [files] : elles seront remplacées par celle que rend le
-        // convertisseur (même fichier), pour ne jamais compter double.
-        val convertedNames = wma.mapNotNull { it.name }.map(WmaConverter::convertedName).toHashSet()
-        val out = files.filter { it !in wmaSet && it.name !in convertedNames }.toMutableList()
-        var failed = 0
-        for ((i, f) in wma.withIndex()) {
-            val name = f.name ?: continue
-            val parent = f.parentFile
-            // Arrêt demandé : plus de nouvelle conversion, mais les
-            // conversions existantes restent (sinon purgées de la bibliothèque)
-            val converted = WmaConverter.existing(context, f, parent) ?: if (stopRequested) null else run {
-                _progress.value = Progress(i, wma.size, "Conversion de $name…")
-                WmaConverter.convert(context, f, parent)
-            }
-            if (converted != null) out.add(converted) else failed++
-        }
-        if (failed > 0) {
-            try {
-                com.pulsemix.app.player.PlayerCore.engineLog(
-                    "WMA", "$failed WMA sur ${wma.size} non convertis (voir lignes précédentes)"
-                )
-            } catch (_: Exception) {
-            }
-        }
-        return out
+    private fun withoutOldConversions(files: List<DocumentFile>): List<DocumentFile> {
+        val wmaBases = files.mapNotNull { it.name }
+            .filter { com.pulsemix.app.audio.WmaFiles.isWmaName(it) }
+            .map { it.substringBeforeLast('.') + " (converti).m4a" }
+            .toHashSet()
+        if (wmaBases.isEmpty()) return files
+        return files.filter { it.name !in wmaBases }
     }
 
     private fun isAudio(doc: DocumentFile): Boolean {
@@ -701,6 +673,13 @@ object LibraryScanner {
         uri: Uri,
         fallbackName: String
     ): Pair<Triple<String, String, Long>, String> {
+        wmaMeta(context, uri)?.let { m ->
+            return Triple(
+                m.title?.takeIf { it.isNotBlank() } ?: fallbackName.substringBeforeLast('.'),
+                m.artist ?: "",
+                m.durationMs
+            ) to (MixEngine.normalizeGenre(m.genre).ifBlank { "-" })
+        }
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, uri)
@@ -730,6 +709,7 @@ object LibraryScanner {
      *  (Encore utilisé seul par le rattrapage de genre des morceaux déjà
      *  analysés, qui n'a pas besoin du reste des métadonnées.) */
     private fun readGenre(context: Context, uri: Uri): String {
+        wmaMeta(context, uri)?.let { return MixEngine.normalizeGenre(it.genre).ifBlank { "-" } }
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, uri)
@@ -748,6 +728,13 @@ object LibraryScanner {
 
     /** @return (titre, artiste, duréeMs) */
     private fun readMetadata(context: Context, uri: Uri, fallbackName: String): Triple<String, String, Long> {
+        wmaMeta(context, uri)?.let { m ->
+            return Triple(
+                m.title?.takeIf { it.isNotBlank() } ?: fallbackName.substringBeforeLast('.'),
+                m.artist ?: "",
+                m.durationMs
+            )
+        }
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, uri)
@@ -769,4 +756,11 @@ object LibraryScanner {
             }
         }
     }
+
+    /** Tags d'un WMA par le décodeur natif (MediaMetadataRetriever ne lit
+     *  pas l'ASF sur la plupart des téléphones). null : pas un WMA. */
+    private fun wmaMeta(context: Context, uri: Uri): com.pulsemix.app.audio.WmaFiles.Meta? =
+        if (com.pulsemix.app.audio.WmaFiles.isWmaName(uri.toString()) &&
+            com.pulsemix.app.audio.WmaFiles.available
+        ) com.pulsemix.app.audio.WmaFiles.meta(context, uri) else null
 }

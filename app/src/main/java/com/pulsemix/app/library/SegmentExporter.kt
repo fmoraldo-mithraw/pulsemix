@@ -10,7 +10,7 @@ import java.util.Locale
 /**
  * Export du « meilleur passage » d'un morceau en fichier M4A autonome.
  *
- * Même recette que [WmaConverter] : ffmpeg ne sait pas lire une URI SAF,
+ * Même recette que les autres appels à ffmpeg : ffmpeg ne sait pas lire une URI SAF,
  * donc l'original est d'abord copié en cache, puis coupé
  * (bestStartMs → bestStartMs + segmentMs) et réencodé en AAC 192k dans le
  * dossier Extraits de l'appli. L'original n'est jamais modifié.
