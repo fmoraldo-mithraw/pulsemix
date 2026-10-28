@@ -704,8 +704,8 @@ private fun CalendarCard(
             Spacer(Modifier.height(4.dp))
             Text(
                 "Une sonnerie musicale pour tes événements : à chacune de leurs " +
-                    "notifications, ou au début de chaque événement — au choix, " +
-                    "agenda par agenda.",
+                    "notifications, au début de chaque événement, ou les deux — " +
+                    "au choix, agenda par agenda.",
                 style = MaterialTheme.typography.labelSmall,
                 color = dim
             )
@@ -807,6 +807,13 @@ private fun CalendarCard(
                                         vm.setCalendarConfig(cfg.copy(mode = CalendarConfig.MODE_EVENT))
                                     },
                                     label = { Text("Au début de l'événement") }
+                                )
+                                FilterChip(
+                                    selected = cfg.mode == CalendarConfig.MODE_BOTH,
+                                    onClick = {
+                                        vm.setCalendarConfig(cfg.copy(mode = CalendarConfig.MODE_BOTH))
+                                    },
+                                    label = { Text("Les deux") }
                                 )
                             }
                             SourcePicker(cfg.source, sources) {

@@ -53,7 +53,8 @@ data class CalendarInstance(
 )
 
 /** Réglage d'un agenda : sonner au début de chaque événement
- *  ([MODE_EVENT]) ou à chacune de ses notifications ([MODE_REMINDER]). */
+ *  ([MODE_EVENT]), à chacune de ses notifications ([MODE_REMINDER]), ou
+ *  les deux ([MODE_BOTH]). */
 data class CalendarConfig(
     val calendarId: Long,
     val enabled: Boolean = false,
@@ -63,6 +64,7 @@ data class CalendarConfig(
     companion object {
         const val MODE_EVENT = "event"
         const val MODE_REMINDER = "reminder"
+        const val MODE_BOTH = "both"
     }
 }
 
@@ -99,8 +101,8 @@ object AlarmSchedule {
 
     /**
      * Déclenchements tirés des occurrences d'agenda : au début de
-     * l'événement, ou à chacun de ses rappels, selon le réglage de son
-     * agenda. Ceux déjà joués ([fired]) et ceux échus depuis plus de
+     * l'événement, à chacun de ses rappels, ou les deux, selon le réglage
+     * de son agenda. Ceux déjà joués ([fired]) et ceux échus depuis plus de
      * [graceMs] sont écartés. Triés par heure.
      *
      * Événements « toute la journée » : le fournisseur les date à minuit
@@ -124,11 +126,16 @@ object AlarmSchedule {
                     .atStartOfDay(zone).toInstant().toEpochMilli()
             } else inst.begin
             val title = inst.title.ifBlank { "Événement" }
-            when (cfg.mode) {
-                CalendarConfig.MODE_EVENT -> if (!inst.allDay) {
-                    out.add(CalendarTrigger(begin, "${inst.eventId}:${inst.begin}:start", title, cfg.source))
-                }
-                else -> for (m in inst.reminderMinutes.distinct()) {
+            val atStart = cfg.mode == CalendarConfig.MODE_EVENT || cfg.mode == CalendarConfig.MODE_BOTH
+            val atReminders = cfg.mode != CalendarConfig.MODE_EVENT
+            val startRings = atStart && !inst.allDay
+            if (startRings) {
+                out.add(CalendarTrigger(begin, "${inst.eventId}:${inst.begin}:start", title, cfg.source))
+            }
+            if (atReminders) {
+                for (m in inst.reminderMinutes.distinct()) {
+                    // Rappel « à l'heure de l'événement » : le début sonne déjà
+                    if (m == 0 && startRings) continue
                     out.add(
                         CalendarTrigger(
                             begin - m * 60_000L, "${inst.eventId}:${inst.begin}:r$m", title, cfg.source

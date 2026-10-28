@@ -82,6 +82,21 @@ class AlarmScheduleTest {
     }
 
     @Test
+    fun bothModeRingsRemindersAndStartWithoutDoubleAtZero() {
+        val begin = ms(2026, 10, 26, 15, 0)
+        val inst = listOf(CalendarInstance(10, 1, "Réunion", begin, false, listOf(0, 15)))
+        val cfg = mapOf(1L to CalendarConfig(1, true, CalendarConfig.MODE_BOTH))
+        val t = AlarmSchedule.calendarTriggers(inst, cfg, mondayNoon, emptySet(), zone = zone)
+        // Rappel 15 min avant + début ; le rappel « 0 min » ne double pas le début
+        assertEquals(listOf(begin - 15 * 60_000L, begin), t.map { it.at })
+        // Toute la journée : pas de début, mais tous les rappels
+        val tomorrowUtc = LocalDateTime.of(2026, 10, 27, 0, 0).atZone(ZoneId.of("UTC"))
+            .toInstant().toEpochMilli()
+        val allDay = listOf(CalendarInstance(11, 1, "Férié", tomorrowUtc, true, listOf(0)))
+        assertEquals(1, AlarmSchedule.calendarTriggers(allDay, cfg, mondayNoon, emptySet(), zone = zone).size)
+    }
+
+    @Test
     fun allDayEventsOnlyRingOnReminders() {
         // Toute la journée du 27/10 : minuit UTC dans le fournisseur
         val utcMidnight = LocalDateTime.of(2026, 10, 27, 0, 0).atZone(ZoneId.of("UTC"))
