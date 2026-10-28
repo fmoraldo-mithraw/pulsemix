@@ -213,8 +213,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun playTrack(track: Track) {
-        val list = tracks.value
+    /**
+     * Lance [track] ; la file déroule [order] à partir de lui (la liste
+     * telle qu'affichée : tri, sens et filtres de la bibliothèque), sinon
+     * la bibliothèque dans son ordre brut.
+     */
+    fun playTrack(track: Track, order: List<Track>? = null) {
+        val list = order ?: tracks.value
         val idx = list.indexOfFirst { it.uri == track.uri }
         // Absent de la bibliothèque (fichier externe, morceau supprimé,
         // liste filtrée) : le jouer seul. Retomber sur l'index 0 lançait

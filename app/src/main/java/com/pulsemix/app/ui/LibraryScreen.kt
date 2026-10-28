@@ -441,7 +441,8 @@ fun LibraryScreen(
                 items(displayed, key = { it.uri }) { track ->
                     TrackRow(
                         track, maxEnergy,
-                        onClick = { vm.playTrack(track) },
+                        // La file suit l'ordre affiché (tri + filtres)
+                        onClick = { vm.playTrack(track, displayed) },
                         onMore = { optionsFor = track }
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
