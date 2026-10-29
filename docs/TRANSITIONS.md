@@ -21,7 +21,7 @@ PulseMix a **deux moteurs de lecture**, donc deux familles de transitions :
 | **NORMAL** (lecture classique, playlists, file) | ExoPlayer (media3) | fondu croisé « deux platines » entre morceaux entiers, avec échange de basses | *Fondu croisé* on/off + durée 3-15 s |
 | **DOUCE** (sélection du plus doux au moins doux) | ExoPlayer | identiques à NORMAL | idem |
 | **MIX** (plan de mix : phases → morceaux entiers) | ExoPlayer | identiques à NORMAL, plus l'enchaînement en fondu d'un mix au suivant | idem |
-| **DJ** (set : phases → *passages forts* d'une minute) | `DjMixer` (AudioTrack + décodage maison) | jonctions battues, comptées en mesures : calage de tempo partagé, filtres, échange de basses, drop-swap… | *Transitions pro* on/off |
+| **DJ** (set : phases → *passages forts* d'une minute) | `DjMixer` (AudioTrack + décodage maison) | jonctions battues, comptées en mesures : calage de tempo partagé, filtres, échange de basses ; en pro : medley, enchaînement long, drop swap | *Transitions pro* on/off |
 
 À côté de ces deux familles, trois mécanismes « transversaux » modifient le
 son au moment d'un changement : le **micro-fondu de pause/reprise**, la
@@ -335,10 +335,10 @@ suivant compatible, pour ne pas rejouer la même minute à chaque set.
 
 Le deck d'un passage par rôle part **sur son début** (pas de pré-roll : une
 montée se joue entière sous le blend, un calme n'a pas de drop à faire
-tomber) ; longueur, plancher d'une minute, allongement du va-et-vient,
+tomber) ; longueur, plancher d'une minute, allongement des transitions pro,
 arrondi aux phrases et calage de fin s'appliquent comme au fort. La
 programmation de la transition lit la **même ancre** (section d'entrée,
-plan du va-et-vient). Journal : `passage « Titre » : calme (1:30 → 2:00,
+choix du style pro). Journal : `passage « Titre » : calme (1:30 → 2:00,
 3 connus)`.
 
 À la fin du passage, une **boucle de sortie** (les 8 derniers temps, couture
@@ -393,75 +393,70 @@ palette quand la structure est connue :
 | **on sort d'un BREAK / d'une OUTRO** | blend, **jamais** de coupe |
 | **on entre directement dans un DROP** | pas de sweep grave |
 
-`fadeSpecPro` — toggle **Transitions pro (bêta)** — remplace cette palette
-dès que les tempos sont calables par
-**le va-et-vient** (`KIND_LONG`), la transition de club : 20 à 30 s pendant
-lesquelles les deux morceaux, calés temps sur temps et phrase sur phrase,
-*se répondent* par cellules de mesures, jusqu'à ce que l'entrant ait
-complètement pris le dessus. Tempos non calables : coupe + echo-out ; saut
-manuel : fondu court neutre. Le drop-swap (`KIND_DROP`) n'est plus
-sélectionné : le drop de l'entrant tombe de toute façon à la **fin** du
-va-et-vient (pré-roll, §3.6), c'en est la conclusion.
+`fadeSpecPro` — toggle **Transitions pro** — choisit à chaque jonction
+entre **trois styles**, comme un DJ qui choisit son geste :
 
-**Le va-et-vient, décodé de la pratique DJ.** Un DJ de club ne fond pas
-deux morceaux l'un dans l'autre : il les fait *dialoguer*. L'entrant est
-d'abord **teasé** — audible en retrait, sans ses basses (aigus et médiums
-seulement, −9 dB ; −15 dB si les deux morceaux sont chantés, deux voix ne
-se superposent jamais) sous le sortant qui garde la main. Puis, sur une
-frontière de cellule, l'entrant **prend la main** une cellule et le sortant
-se retire (−9 dB) ; **retour** du sortant ; sur le « 1 » du **milieu**,
-**échange des basses** (le sortant les cède d'un geste, l'entrant les
-prend : c'est lui qui porte désormais le morceau) ; un **dernier retour** du
-sortant, aminci ; puis l'entrant seul, plein spectre, pendant que le sortant
-s'efface en cosinus sur la dernière cellule — et son drop tombe là. Chaque
-bascule est une rampe d'**un temps** en cosinus (ni clic ni pompage).
+| Style | Quand | Ce qu'on entend |
+|---|---|---|
+| **Drop swap** (`KIND_DROP`) | le sortant a été calé pour finir sur sa **montée** (`Deck.dropExit`) et l'entrant a un vrai **drop** sur son ancre (`dropEntryOk` : passage fort, énergie ≥ 0,12), tempos calables | la montée du sortant, et sur le « 1 » où *son* drop devait tomber, c'est le drop de l'entrant qui tombe |
+| **Enchaînement long** | tempos calés, et les deux morceaux peuvent cohabiter : tonalités compatibles (Camelot ≥ 0,8) **ou** pas deux voix l'une sur l'autre ; jamais en sortie de temps fort | la palette ci-dessus (sweep, échange de basses, blend harmonique), **durée doublée** : 8 mesures (8 à 12 en harmonique), une phrase de club |
+| **Medley** | tout le reste (deux voix en tonalités éloignées, sortie d'un DROP, coupe) | la palette ci-dessus à sa durée courte (2-4 mesures) |
 
-| Durée | Cellules (A = sortant, B = entrant) |
-|---|---|
-| 16 mesures | A4 · B2 · A2 · **[swap]** B4 · A2 · B2 (sortie) |
-| 12 mesures | A3 · B2 · A1 · **[swap]** B3 · A1 · B2 |
-| 8 mesures | A2 · B1 · A1 · **[swap]** B2 · A1 · B1 |
+Tempos non calables : coupe + echo-out ; saut manuel : fondu court neutre.
+Journal : `transition … : <technique>, style drop|enchaînement long|medley, …`.
 
-La durée vise ~26 s (`longBars` : multiple de 4 mesures, 8 à 16) — 12
-mesures à 128 BPM (22,5 s), 16 à 140 (27 s), 8 à 90 (21 s).
+**Pourquoi plus de va-et-vient.** La version précédente du mode pro faisait
+*dialoguer* les deux morceaux par cellules de 1 à 4 mesures, l'entrant
+entendu plein (médiums et aigus) à −9 dB sous le sortant. Ce n'est pas ce
+que font les DJ : un blend de club est **un seul mouvement par phrase** —
+l'entrant entre sans ses basses, l'échange des basses tombe sur un « 1 » de
+phrase, puis le sortant se retire ; deux mélodies ou deux voix ne
+s'entendent jamais longtemps ensemble. Le va-et-vient produisait
+exactement ça, en boucle.
 
-**Quoi mettre en avant, et quand : le profil de phrases.** Le tableau
-ci-dessus est le *cadre* (le sortant ouvre, l'entrant prend les basses au
-milieu et conclut seul) ; les cellules 1, 2 et 4 sont décidées par
-`longPlan` à partir du **profil phrase par phrase** de chaque morceau
-(`PhraseProfile`, FEATURES_VERSION 5) : pour chaque phrase de 16 temps de
-la grille du premier beat, son niveau (vs la crête du morceau), sa part de
-basses (< 150 Hz) et sa part de médiums (250 Hz – 3 kHz, là où vivent voix
-et mélodies). Le `hookScore` d'une phrase — niveau + relief des médiums par
-rapport à la médiane du morceau + un peu de basses — dit ce qu'elle a à
-*montrer* ; `isVocal` (médiums nettement au-dessus de la médiane, niveau
-notable) dit si elle est chantée. À la programmation du fondu, chaque
-cellule est projetée dans la source de chaque deck (le sortant depuis sa
-position au début du fondu, l'entrant depuis son départ, pré-roll compris)
-et : l'entrant répond en cellule 1 sauf si le sortant a nettement plus à
-montrer ; le sortant revient en 2 et en 4 sauf si l'entrant a nettement
-plus à montrer (écart de score > 0,3) ; quand les DEUX phrases d'une
-cellule sont chantées, celui qui n'a pas la main est à −15 dB au lieu de
-−9. Les gains (`longGains`) interpolent dominance et niveau à chaque
-frontière (rampe d'un temps en cosinus). Sans profil (analyse antérieure à
-la v5) : A·B·A|B·A·B et le taux de voix global du morceau. Journal :
-`cellules A·B·A|B·A·B[, −15 dB sur N cellule(s)][ (sans profil de phrases)]`.
-Fonctions pures testées : `longBars`, `longBoundaries`, `longPlan`,
-`longGains`, `longTease`, `PhraseProfile.*`.
+**Le drop swap, calé à l'échantillon.** Un drop swap raté est pire que pas
+de transition : tout tient au calage.
 
-**Passages allongés.** Pour que la minute forte se joue *entière* avant que
-l'entrant ne commence à répondre, chaque passage est **allongé de la durée
-du va-et-vient** (`Deck.init`, ~26 s ; jamais plus de la moitié du passage
-n'est en jonction). Avec le pré-roll d'entrée (l'entrant démarre une
-jonction avant son ancre — admis désormais jusqu'au début de la section qui
-précède l'ancre, pas seulement dans une montée : `preRollMs(relaxed)`), un
-morceau joue donc ~2 minutes en mode DJ : pré-roll sous le blend d'entrée,
-passage fort, blend de sortie — comme dans un vrai set. Les durées de plan
-(`MixEngine.trackLenMs`) en tiennent compte.
+- **Où sort le sortant** : à l'ouverture de son deck (`Deck.init`), si le
+  passage SUIVANT peut recevoir un drop swap, la fin du passage est calée
+  sur la **fin d'une section BUILD suivie d'un DROP** (`dropExitMs`) — là
+  où son propre drop tomberait. Au moins 45 s de jeu après l'ancre, au plus
+  deux phrases au-delà de la fin calculée, 15 s de morceau derrière.
+  Frontière déjà calée sur le saut de basses à l'analyse puis sur la
+  grille de phrases. Trois drop swaps d'affilée : non (`dropStreakIn`),
+  deux c'est le geste des festivals, trois une formule.
+- **Quand** : l'instant du « 1 » est calculé sur la **position source** du
+  sortant (`srcMsNow`, frames réellement décodées), pas sur son compteur de
+  sortie, qui dérive avec les glissements de tempo. Le tempo du sortant est
+  figé dès que l'entrant est en vol ; sa boucle de sortie est retenue
+  jusqu'à ce que la source ait atteint la fin de la montée
+  (`holdLoopToSrcEnd`).
+- **L'entrant** démarre **pile sur le début de son DROP**, sans pré-roll :
+  le décodeur garde désormais le tampon qui chevauche le point de seek à
+  partir de l'échantillon visé (avant, il jetait jusqu'à ~25 ms — l'attaque
+  du drop). Il n'est lu qu'à partir du « 1 » (`startedAtFrame`).
+- **Le geste** : les 2 dernières mesures de la montée, passe-haut montant
+  sur le sortant (30 → 350 Hz, `dropHpFc`) — la tension monte, le grave se
+  dégage. Sur le « 1 » : sortant coupé en 10 ms, entrant plein en 3 ms
+  (`dropCutGainA/B`), plein spectre, basses comprises ; queue d'écho d'un
+  temps du sortant, discrète (×0,35) ; la jonction dure encore 2 mesures,
+  le temps que l'écho s'éteigne. Pas de recalage de kicks après le « 1 »
+  (le sortant, muet, n'est plus une référence).
+- **Repli** : montée déjà passée quand l'entrant est prêt → coupe courte
+  (journal : `montée manquée`).
+
+**Passages allongés.** En mode pro, chaque passage est **allongé de 8
+mesures** (`PRO_EXTRA_BARS`, `Deck.init`) pour que la minute forte se joue
+entière avant que l'enchaînement long ne commence ; les durées de plan
+(`MixEngine.trackLenMs`, `DJ_LONG_BLEND_MS`) en tiennent compte. Avec le
+pré-roll d'entrée (§3.6), l'entrant d'un enchaînement long arrive par sa
+montée et son drop tombe à la fin du blend.
 
 **Durée en mesures** (`fadeBars`) : coupe 2 mesures, blend harmonique 4
 (6 sur un passage d'au moins 48 mesures), le reste 4 ; jamais plus d'**un
-cinquième du passage sortant**, jamais moins d'une mesure. Un DJ compte des
+cinquième du passage sortant**, jamais moins d'une mesure. Enchaînement
+long (mode pro) : durées doublées, plafond à 35 % du passage ; drop swap :
+2 + 2 mesures autour du « 1 ». Un DJ compte des
 mesures, pas des secondes (8 s à 90 BPM font trois mesures, une jonction
 hors de toute structure). Sans tempo connu : plafond en secondes
 (`clampFadeS`, 15 % du passage, 8 s). La durée est arrêtée **avant**
@@ -498,16 +493,10 @@ Principe commun : **une seule source par bande à chaque instant**.
   dernière mesure avant la fin du fondu (`EQ`, `HARMONIC`), puis *mid swap*
   pour l'harmonique.
 - **Coupe** (`CUT`) : sortie raide, entrée franche, **echo-out** d'un temps.
-- **Va-et-vient** (`LONG`, §3.5) : l'entrant est entendu **plein** dès
-  qu'il est teasé (moins ses basses avant le swap), les gains par cellule
-  font le geste ; échange des basses **net** sur le « 1 » de la 3e
-  frontière (rampe d'un temps), sortant en `KIND_EQ` (pas de filtre, ses
-  basses cédées d'un geste).
-- **Drop-swap** (`DROP`, plus sélectionné, code conservé) : le sortant
-  reste à **0,8** pendant que l'entrant monte passe-haut plafonné à 0,5 ;
-  sur le « 1 » de mesure le plus proche de la fin du fondu, coupe nette du
-  sortant (queue d'écho d'un temps) et entrant à plein spectre et plein
-  volume.
+- **Drop swap** (`DROP`, §3.5) : sortant plein sous un passe-haut montant
+  (30 → 350 Hz) sur ses 2 dernières mesures de montée, coupé en 10 ms sur
+  le « 1 » ; entrant brut (aucun filtre), lu à partir du « 1 », plein en
+  3 ms ; écho d'un temps du sortant à ×0,35.
 - **Limiteur doux** de sortie, renfort dynamique des basses gelé pendant les
   fondus, écrêtage dur ±1 en dernier recours.
 

@@ -1189,16 +1189,16 @@ fun PlayerScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
-                    // Transitions pro (bêta) : le va-et-vient — 20 à 30 s où
-                    // les deux morceaux se répondent par cellules de
-                    // mesures, échange des basses au milieu, l'entrant finit
-                    // seul sur son drop. Réglage persistant, applicable à
-                    // chaud (prochaine transition).
+                    // Transitions pro : trois styles choisis à chaque
+                    // jonction — medley (court), enchaînement long (8
+                    // mesures, deux fois les normales) et drop swap calé sur
+                    // la montée du sortant. Réglage persistant, applicable
+                    // à chaud (prochaine transition).
                     val proTransitions by
                         vm.proTransitions.collectAsStateWithLifecycle()
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "Transitions pro (bêta) : va-et-vient de 20 à 30 s",
+                            "Transitions pro : medley, enchaînements longs et drops calés",
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f)
                         )

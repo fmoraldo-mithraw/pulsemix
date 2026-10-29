@@ -638,16 +638,16 @@ object MixEngine {
     }
 
     private fun trackLenMs(t: Track, dj: Boolean): Long =
-        // Mode DJ : plancher aligné sur DjMixer.MIN_SEGMENT_MS, plus le
-        // va-et-vient de sortie (~26 s, le passage est allongé d'autant
-        // par le moteur) — sinon les estimations de durée d'un plan sont
-        // trop courtes
+        // Mode DJ : plancher aligné sur DjMixer.MIN_SEGMENT_MS, plus
+        // l'allongement des transitions pro (enchaînement long de 8
+        // mesures, le passage est allongé d'autant par le moteur) — sinon
+        // les estimations de durée d'un plan sont trop courtes
         if (dj) t.segmentMs.coerceAtLeast(60_000L) + djPassageExtraMs
         else t.durationMs.coerceAtLeast(60_000L)
 
-    /** Allongement de chaque passage DJ par le va-et-vient de sortie
-     *  (transitions pro). */
-    internal const val DJ_LONG_BLEND_MS = 26_000L
+    /** Allongement de chaque passage DJ en transitions pro : 8 mesures
+     *  (DjMixer.PRO_EXTRA_BARS), ~16 s à 120 BPM. */
+    internal const val DJ_LONG_BLEND_MS = 16_000L
 
     /** Allongement effectif (0 hors mode pro) : posé par PlayerCore. */
     @Volatile var djPassageExtraMs: Long = DJ_LONG_BLEND_MS

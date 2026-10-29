@@ -108,7 +108,17 @@ class AudioDecoder {
                     }
                     outIx >= 0 -> {
                         progressed = true
-                        if (info.size > 0 && info.presentationTimeUs >= startUs) {
+                        // Tampon qui CHEVAUCHE le point de départ (seek sur la
+                        // trame de synchro d'avant) : gardé à partir de
+                        // startUs, à l'échantillon près. Le jeter entier
+                        // faisait démarrer le deck jusqu'à ~25 ms trop tard —
+                        // l'attaque d'un drop, pile ce que le drop swap vise.
+                        val ptsUs = info.presentationTimeUs
+                        val overlaps = ptsUs < startUs && sampleRate > 0 &&
+                            channels > 0 && info.size > 0 &&
+                            ptsUs + (info.size / (channels * (if (floatPcm) 4 else 2))) *
+                            1_000_000L / sampleRate > startUs
+                        if (info.size > 0 && (ptsUs >= startUs || overlaps)) {
                             val ob = codec.getOutputBuffer(outIx)
                             if (ob != null) {
                                 ob.position(info.offset)
@@ -127,7 +137,15 @@ class AudioDecoder {
                                     }
                                 }
                                 val ch = if (channels < 1) 1 else channels
-                                keepGoing = sink(pcm, pcm.size / ch, sampleRate, ch)
+                                val skip = if (overlaps)
+                                    ((startUs - ptsUs) * sampleRate / 1_000_000L).toInt()
+                                        .coerceIn(0, pcm.size / ch)
+                                else 0
+                                val kept = if (skip > 0) pcm.copyOfRange(skip * ch, pcm.size)
+                                else pcm
+                                if (kept.isNotEmpty()) {
+                                    keepGoing = sink(kept, kept.size / ch, sampleRate, ch)
+                                }
                             }
                         }
                         codec.releaseOutputBuffer(outIx, false)
