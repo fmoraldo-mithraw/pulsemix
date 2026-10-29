@@ -270,7 +270,7 @@ class MixEngineTest {
     }
 
     // Même estimation que le moteur (trackLenMs) : en DJ, le passage est
-    // allongé de l'enchaînement long des transitions pro.
+    // allongé du medley de sortie des transitions pro.
     private fun planMs(p: MixEngine.MixPlan, dj: Boolean) =
         p.phases.sumOf { ph ->
             ph.tracks.sumOf { t ->

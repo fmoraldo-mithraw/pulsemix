@@ -1190,15 +1190,15 @@ fun PlayerScreen(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                     // Transitions pro : trois styles choisis à chaque
-                    // jonction — medley (court), enchaînement long (8
-                    // mesures, deux fois les normales) et drop swap calé sur
-                    // la montée du sortant. Réglage persistant, applicable
+                    // jonction — medley (va-et-vient mélangé par bandes),
+                    // normales deux fois plus longues, et drop swap calé
+                    // sur la montée du sortant. Réglage persistant, applicable
                     // à chaud (prochaine transition).
                     val proTransitions by
                         vm.proTransitions.collectAsStateWithLifecycle()
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "Transitions pro : medley, enchaînements longs et drops calés",
+                            "Transitions pro : medley, normales ×2 et drops calés",
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f)
                         )

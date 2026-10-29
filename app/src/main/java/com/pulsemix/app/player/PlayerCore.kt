@@ -103,7 +103,7 @@ object PlayerCore {
 
     /**
      * Transitions « pro » du mode DJ (sélection fadeSpecPro du moteur) :
-     * medley court, enchaînement long (durée doublée) ou drop swap — la
+     * medley (va-et-vient), normale à durée doublée ou drop swap — la
      * montée du sortant, coupée sur le « 1 » par le drop de l'entrant. Persisté, et
      * applicable À CHAUD : la prochaine transition programmée le lit,
      * pas besoin de redémarrer le set.
@@ -113,8 +113,8 @@ object PlayerCore {
     fun setProTransitions(on: Boolean) {
         proTransitions.value = on
         mixer.setProMode(on)
-        // Les durées de plan comptent l'allongement des passages (8
-        // mesures) seulement en mode pro
+        // Les durées de plan comptent l'allongement des passages (le
+        // medley, ~26 s) seulement en mode pro
         com.pulsemix.app.mix.MixEngine.djPassageExtraMs =
             if (on) com.pulsemix.app.mix.MixEngine.DJ_LONG_BLEND_MS else 0L
         appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -610,7 +610,7 @@ object PlayerCore {
                 }
             }
         })
-        // Mode « Transitions pro » (medley, long, drop swap) : réglage
+        // Mode « Transitions pro » (medley, normale ×2, drop swap) : réglage
         // persistant transmis au moteur dès sa création, puis à chaud.
         mixer.setProMode(proTransitions.value)
         com.pulsemix.app.mix.MixEngine.djPassageExtraMs =

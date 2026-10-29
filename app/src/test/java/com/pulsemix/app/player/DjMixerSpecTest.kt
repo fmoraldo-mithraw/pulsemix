@@ -322,8 +322,8 @@ class DjMixerSpecTest {
 
     // ---------------------------------------------------------- fadeSpecPro
     // Trois styles : drop swap (sortant calé sur sa montée + vrai drop de
-    // l'entrant), enchaînement long (durée doublée) quand les deux
-    // morceaux peuvent cohabiter, medley sinon. Non calable → coupe ;
+    // l'entrant), medley (va-et-vient) quand les médiums peuvent se
+    // répondre, normale à durée doublée sinon. Non calable → coupe ;
     // saut manuel → fondu court.
 
     private fun dropAt(startMs: Long) = listOf(
@@ -339,9 +339,10 @@ class DjMixerSpecTest {
         a: Track, b: Track, rate: Float = 1f, jumping: Boolean = false,
         dropExit: Boolean = false, fort: Boolean = true,
         sections: List<StructureDetector.Section> = dropAt(60_000L),
-        exitKind: StructureDetector.SectionKind? = null
+        exitKind: StructureDetector.SectionKind? = null,
+        lastKind: Int = -1
     ) = DjMixer.fadeSpecPro(
-        a, 1f, b, rate, jumping, lastKind = -1,
+        a, 1f, b, rate, jumping, lastKind = lastKind,
         sortantDropExit = dropExit, fortPassage = fort,
         nextSections = sections, anchorMs = 60_000L, exitKind = exitKind
     )
@@ -382,22 +383,25 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `pro - morceaux compatibles - enchainement long, deux voix sans accord - medley`() {
-        // Pas chantés : long
+    fun `pro - medley si les mediums peuvent se repondre, jamais deux d affilee, sinon normale x2`() {
+        // Pas chantés : medley (va-et-vient)
         val c = pro(track("a", 128f, energyMean = 0.15f), track("b", 128f, energyMean = 0.15f))
-        assertTrue(c.long)
-        // Deux voix, tonalités éloignées : medley (court)
-        val m = pro(vocal("a", 128f, "8A"), vocal("b", 128f, "2B"))
-        assertEquals(false, m.long)
-        // Deux voix mais tonalités compatibles : long
-        val h = pro(vocal("a", 128f, "8A"), vocal("b", 128f, "9A"))
-        assertTrue(h.long)
-        // On sort d'un temps fort : jamais long
-        val d = pro(
+        assertEquals(DjMixer.KIND_LONG, c.kind)
+        assertEquals(DjMixer.LONG_TARGET_S, c.fadeS, 1e-9)
+        // Juste après un medley : normale à durée doublée
+        val n = pro(
             track("a", 128f, energyMean = 0.15f), track("b", 128f, energyMean = 0.15f),
-            exitKind = StructureDetector.SectionKind.DROP
+            lastKind = DjMixer.KIND_LONG
         )
-        assertEquals(false, d.long)
+        assertTrue(n.kind != DjMixer.KIND_LONG)
+        assertTrue(n.long)
+        // Deux voix, tonalités éloignées : normale ×2
+        val m = pro(vocal("a", 128f, "8A"), vocal("b", 128f, "2B"))
+        assertTrue(m.kind != DjMixer.KIND_LONG)
+        assertTrue(m.long)
+        // Deux voix mais tonalités compatibles : medley
+        val h = pro(vocal("a", 128f, "8A"), vocal("b", 128f, "9A"))
+        assertEquals(DjMixer.KIND_LONG, h.kind)
     }
 
     @Test
@@ -418,6 +422,121 @@ class DjMixerSpecTest {
         // Passage court : 35 % au plus (vs 20 % en medley)
         assertEquals(5, DjMixer.fadeBars(DjMixer.KIND_EQ, 17.0, long = true))
         assertEquals(3, DjMixer.fadeBars(DjMixer.KIND_EQ, 17.0))
+    }
+
+    // ------------------------------------------------------- medley pur
+
+    @Test
+    fun `longBars - 20 a 30 s selon le tempo, multiple de 4, borne 8 a 16`() {
+        assertEquals(12, DjMixer.longBars(128f))
+        assertEquals(16, DjMixer.longBars(140f))
+        assertEquals(8, DjMixer.longBars(90f))
+        assertEquals(8, DjMixer.longBars(60f))
+        assertEquals(16, DjMixer.longBars(200f))
+        for (bpm in listOf(90f, 100f, 110f, 128f, 140f, 150f)) {
+            val sec = DjMixer.longBars(bpm) * DjMixer.barSeconds(bpm)
+            assertTrue("$bpm BPM : $sec s", sec in 20.0..32.0)
+        }
+    }
+
+    @Test
+    fun `longBoundaries - swap au milieu, cellules entieres`() {
+        assertEquals(listOf(4, 6, 8, 12, 14), DjMixer.longBoundaries(16).toList())
+        assertEquals(listOf(3, 5, 6, 9, 10), DjMixer.longBoundaries(12).toList())
+        assertEquals(listOf(2, 3, 4, 6, 7), DjMixer.longBoundaries(8).toList())
+        val b = DjMixer.longBoundaries(10)
+        for (i in 1 until b.size) assertTrue(b[i] >= b[i - 1])
+        assertTrue(b[4] < 10)
+    }
+
+    @Test
+    fun `fadeBars - medley - sa duree, jamais plus de la moitie du passage`() {
+        assertEquals(12, DjMixer.fadeBars(DjMixer.KIND_LONG, 64.0, bpm = 128f))
+        assertEquals(8, DjMixer.fadeBars(DjMixer.KIND_LONG, 16.0, bpm = 128f))
+        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_LONG, 6.0, bpm = 128f))
+    }
+
+    private fun noProfilePlan() = DjMixer.longPlan(
+        FloatArray(6), FloatArray(6), BooleanArray(6), BooleanArray(6)
+    )
+
+    private fun bands(pos: Float, plan: DjMixer.LongPlan = noProfilePlan()): FloatArray {
+        val out = FloatArray(6)
+        DjMixer.longBandGains(pos, 16, DjMixer.longBoundaries(16), plan, out)
+        return out
+    }
+
+    @Test
+    fun `longPlan - sans profil A B A puis B A B, une voix garde la main et est protegee`() {
+        val p = noProfilePlan()
+        assertEquals("A·B·A|B·A·B", p.describe())
+        for (l in p.level) assertEquals(DjMixer.LONG_TEASE, l, 0f)
+        // Cellule 2 : A chante, B non, scores égaux → A garde la main et
+        // les médiums de B passent à −15 dB ; cellule 1 : B chante → B
+        val vA = booleanArrayOf(false, false, true, false, false, false)
+        val vB = booleanArrayOf(false, true, false, false, false, false)
+        val q = DjMixer.longPlan(FloatArray(6), FloatArray(6), vA, vB)
+        assertEquals(false, q.domB[2])
+        assertEquals(true, q.domB[1])
+        assertEquals(DjMixer.LONG_TEASE_VOCAL, q.level[1], 0f)
+        assertEquals(DjMixer.LONG_TEASE_VOCAL, q.level[2], 0f)
+        // Le cadre ne bouge jamais : 0 = A, 3 = B (swap), 5 = B
+        val r = DjMixer.longPlan(
+            floatArrayOf(0f, 0f, 0f, 9f, 0f, 9f), floatArrayOf(9f, 0f, 0f, 0f, 0f, 0f),
+            BooleanArray(6), BooleanArray(6)
+        )
+        assertEquals(false, r.domB[0])
+        assertEquals(true, r.domB[3])
+        assertEquals(true, r.domB[5])
+    }
+
+    @Test
+    fun `longBandGains - basses pleines, mediums de celui qui a la main, aigus melanges`() {
+        // Début : l'entrant n'est pas encore là
+        val z = bands(0f)
+        assertEquals(1f, z[1], 1e-6f)
+        assertEquals(0f, z[3] + z[4] + z[5], 1e-6f)
+        // Fin de la première mesure : A plein, B médiums −9 dB, aigus mélangés
+        val a = bands(1.5f)
+        assertEquals(1f, a[0], 1e-6f)
+        assertEquals(1f, a[1], 1e-6f)
+        assertEquals(1f, a[2], 1e-6f)
+        assertEquals(DjMixer.LONG_TEASE, a[4], 1e-6f)
+        assertEquals(DjMixer.LONG_HIGH_MIX, a[5], 1e-6f)
+        // Cellule de B (mesures 4-6) : B devant, A garde ses basses pleines
+        val b = bands(5f)
+        assertEquals(1f, b[0], 1e-6f)
+        assertEquals(DjMixer.LONG_TEASE, b[1], 1e-6f)
+        assertEquals(DjMixer.LONG_HIGH_MIX, b[2], 1e-6f)
+        assertEquals(1f, b[4], 1e-6f)
+        assertEquals(1f, b[5], 1e-6f)
+        // Dernière cellule : A s'efface jusqu'à zéro, toutes bandes
+        val e = bands(16f)
+        assertEquals(0f, e[0] + e[1] + e[2], 1e-6f)
+        assertEquals(1f, e[4], 1e-6f)
+        // Jamais de saut : au plus ~0,4 par 1/16 de mesure
+        var prev = bands(0f)
+        var x = 0f
+        while (x <= 16f) {
+            val g = bands(x)
+            for (k in 0 until 6) {
+                assertTrue("saut bande $k à $x", kotlin.math.abs(g[k] - prev[k]) <= 0.4f)
+            }
+            prev = g
+            x += 1f / 16f
+        }
+    }
+
+    @Test
+    fun `preRollMs - relaxe - entre au debut de la section precedente, jamais en plein drop`() {
+        val sections = listOf(
+            StructureDetector.Section(0L, 30_000L, StructureDetector.SectionKind.INTRO),
+            StructureDetector.Section(30_000L, 60_000L, StructureDetector.SectionKind.BREAK),
+            StructureDetector.Section(60_000L, 120_000L, StructureDetector.SectionKind.DROP)
+        )
+        assertEquals(0L, DjMixer.preRollMs(60_000L, 22_500L, 128f, sections))
+        assertEquals(22_500L, DjMixer.preRollMs(60_000L, 22_500L, 128f, sections, relaxed = true))
+        assertEquals(0L, DjMixer.preRollMs(90_000L, 22_500L, 128f, sections, relaxed = true))
     }
 
     // ------------------------------------------------------- drop swap pur
