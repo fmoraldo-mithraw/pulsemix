@@ -357,6 +357,13 @@ object PlayerCore {
         initialized = true
         appContext = context.applicationContext
         stateStore = PlaybackStateStore(appContext)
+        // Connexion d'une sortie externe pendant le canal alarme : retour
+        // au média (cf. outputWatcher). Rappels sur le fil principal.
+        try {
+            appContext.getSystemService(android.media.AudioManager::class.java)
+                ?.registerAudioDeviceCallback(outputWatcher, handler)
+        } catch (_: Exception) {
+        }
         val prefs = appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
         skipIntros.value = prefs.getBoolean("skipIntros", false)
         normalizeVolume.value = prefs.getBoolean("normalizeVolume", true)
@@ -3706,6 +3713,48 @@ object PlayerCore {
         // congédiée, le ticker la refait sur le bon canal si besoin.
         if (!on) releasePrepared()
         mixer.setAlarmUsage(on)
+    }
+
+    /** Sorties audio externes connues (ids AudioDeviceInfo), tenues par
+     *  [outputWatcher] : une sortie qui n'y est pas encore est une
+     *  connexion NOUVELLE. Fil principal seulement. */
+    private val knownExternalOutputs = HashSet<Int>()
+    private var outputWatcherPrimed = false
+
+    /**
+     * Connexion d'une sortie externe (voiture, enceinte, casque…) pendant
+     * le canal alarme : la musique redevient du média, tout de suite.
+     * Android diffuse le canal alarme sur le haut-parleur ET le Bluetooth
+     * à la fois — monter en voiture après un réveil faisait jouer le
+     * téléphone et l'autoradio ensemble jusqu'au premier geste (ou rampe
+     * + 30 min). Une sortie DÉJÀ connectée au déclenchement (écouteurs
+     * restés branchés la nuit) ne compte pas : le réveil doit aussi
+     * s'entendre sur le haut-parleur (cf. AlarmClock.chooseChannel).
+     * Le premier appel (à l'enregistrement, avec les sorties présentes)
+     * ne fait que les mémoriser.
+     */
+    private val outputWatcher = object : android.media.AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(added: Array<out android.media.AudioDeviceInfo>) {
+            val fresh = added.filter {
+                it.isSink && it.type in AlarmClock.EXTERNAL_OUTPUT_TYPES &&
+                    knownExternalOutputs.add(it.id)
+            }
+            if (!outputWatcherPrimed) {
+                outputWatcherPrimed = true
+                return
+            }
+            if (fresh.isEmpty() || !alarmAudio) return
+            engineLog(
+                "Réveil",
+                "canal média rendu (sortie connectée : " +
+                    fresh.joinToString(", ") { it.productName.toString() } + ")"
+            )
+            setAlarmAudio(false)
+        }
+
+        override fun onAudioDevicesRemoved(removed: Array<out android.media.AudioDeviceInfo>) {
+            for (d in removed) knownExternalOutputs.remove(d.id)
+        }
     }
 
     /**

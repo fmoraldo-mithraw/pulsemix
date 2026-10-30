@@ -625,7 +625,10 @@ les sorties audio et les volumes au lancement.
 **Retour au canal média** : au premier geste sur le lecteur (pause/reprise,
 suivant, précédent, déplacement, arrêt — l'utilisateur est réveillé), à
 l'arrêt ou à la répétition du réveil, quand l'utilisateur lance autre
-chose, et de toute façon **rampe + 30 min** après le lancement. Avant, le
+chose, **dès qu'une sortie externe se CONNECTE** (voiture, enceinte,
+casque — `PlayerCore.outputWatcher` ; une sortie déjà là au déclenchement
+ne compte pas, journal `canal média rendu (sortie connectée : …)`), et de
+toute façon **rampe + 30 min** après le lancement. Avant, le
 canal alarme restait posé tant que le réveil n'était pas explicitement
 arrêté : une journée entière pouvait sortir du haut-parleur *et* du
 Bluetooth. Le changement en cours de lecture : côté ExoPlayer, nouveaux

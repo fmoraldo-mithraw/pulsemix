@@ -1061,8 +1061,9 @@ object AlarmClock {
     }
 
     /** Types AudioDeviceInfo d'une sortie externe : Bluetooth A2DP/SCO,
-     *  casques et écouteurs filaires, USB, aide auditive, BLE (31+). */
-    private val EXTERNAL_OUTPUT_TYPES = setOf(
+     *  casques et écouteurs filaires, USB, aide auditive, BLE (31+).
+     *  Lu aussi par PlayerCore (fin du canal alarme à la connexion). */
+    internal val EXTERNAL_OUTPUT_TYPES = setOf(
         android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
         android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
         android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
