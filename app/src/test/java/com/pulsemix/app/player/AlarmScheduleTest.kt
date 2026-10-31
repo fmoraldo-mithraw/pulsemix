@@ -122,4 +122,31 @@ class AlarmScheduleTest {
             AlarmSchedule.readCalendarConfigs(AlarmSchedule.writeCalendarConfigs(cfgs))
         )
     }
+
+    @Test
+    fun voiceDaysConvertFromCalendar() {
+        // Calendar : 1 = dimanche, 2 = lundi, 7 = samedi
+        assertEquals(setOf(7, 1, 6), AlarmSchedule.daysFromCalendar(listOf(1, 2, 7)))
+        assertTrue(AlarmSchedule.daysFromCalendar(listOf(0, 8)).isEmpty())
+    }
+
+    @Test
+    fun voiceAlarmAddsOrReactivates() {
+        val existing = listOf(
+            Alarm(id = 3, hour = 18, minute = 0, enabled = false, label = "Sport"),
+            Alarm(id = 5, hour = 7, minute = 0, days = setOf(1, 2, 3, 4, 5))
+        )
+        // Même heure, mêmes jours : réactivé, pas de doublon
+        val (same, a) = AlarmSchedule.upsertVoice(existing, 18, 0, emptySet(), "")
+        assertEquals(2, same.size)
+        assertEquals(3, a.id)
+        assertTrue(a.enabled)
+        assertEquals("Sport", a.label)
+        // Nouvelle heure : ajouté avec un id neuf
+        val (more, b) = AlarmSchedule.upsertVoice(existing, 18, 30, emptySet(), "Dîner")
+        assertEquals(3, more.size)
+        assertEquals(6, b.id)
+        assertEquals("Dîner", b.label)
+        assertFalse(b.repeating)
+    }
 }

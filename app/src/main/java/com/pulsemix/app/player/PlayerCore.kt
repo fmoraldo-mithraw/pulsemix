@@ -3685,6 +3685,9 @@ object PlayerCore {
      */
     @Volatile private var alarmAudio = false
 
+    /** Vrai tant que la musique d'un réveil sort sur le canal alarme. */
+    internal val alarmRinging: Boolean get() = alarmAudio
+
     /** Vrai pendant que [AlarmClock] lance sa lecture : les lancements de
      *  cette fenêtre ne rendent pas le canal média (cf. resetAutoNextForLaunch). */
     @Volatile internal var alarmLaunching = false

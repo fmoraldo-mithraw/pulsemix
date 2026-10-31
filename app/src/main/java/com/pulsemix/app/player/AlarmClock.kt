@@ -249,6 +249,37 @@ object AlarmClock {
         schedule(context)
     }
 
+    /** Réveil dicté à l'Assistant (« mets une alarme à 18h ») : réactive
+     *  le réveil identique s'il existe, sinon en crée un. */
+    fun setFromVoice(
+        context: Context,
+        hour: Int,
+        minute: Int,
+        days: Set<Int>,
+        label: String
+    ): Alarm {
+        init(context)
+        val (list, alarm) = AlarmSchedule.upsertVoice(alarms.value, hour, minute, days, label)
+        alarms.value = list
+        persistAlarms(context)
+        schedule(context)
+        log("réveil dicté : ${"%02d:%02d".format(alarm.hour, alarm.minute)}" +
+            if (alarm.repeating) " (jours ${alarm.days.sorted()})" else "")
+        return alarm
+    }
+
+    /** « Supprime l'alarme de 18h » : désactive les réveils à cette heure.
+     *  Rend le nombre de réveils désactivés. */
+    fun disableAt(context: Context, hour: Int, minute: Int): Int {
+        init(context)
+        val hit = alarms.value.filter { it.enabled && it.hour == hour && it.minute == minute }
+        hit.forEach { updateAlarm(context, it.copy(enabled = false)) }
+        return hit.size
+    }
+
+    /** Un réveil sonne-t-il en ce moment ? */
+    val isRinging: Boolean get() = PlayerCore.alarmRinging
+
     /** Copie d'un réveil, insérée juste après lui ; rend l'id de la copie. */
     fun duplicateAlarm(context: Context, id: Int): Int? {
         val list = alarms.value

@@ -50,9 +50,16 @@ class MainActivity : ComponentActivity() {
     // Fichier audio ouvert depuis une autre appli (lecteur par défaut)
     private val externalUri = mutableStateOf<android.net.Uri?>(null)
 
+    // Écran des réveils demandé (Assistant : « montre mes alarmes »)
+    private val openAlarms = mutableStateOf(false)
+
     private fun handleViewIntent(intent: Intent?) {
         if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
             externalUri.value = intent.data
+        }
+        if (intent?.getBooleanExtra(EXTRA_OPEN_ALARMS, false) == true) {
+            intent.removeExtra(EXTRA_OPEN_ALARMS)
+            openAlarms.value = true
         }
     }
 
@@ -84,6 +91,14 @@ class MainActivity : ComponentActivity() {
                         vm.playExternal(it)
                         externalUri.value = null
                         screen = 0
+                    }
+                }
+
+                val wantAlarms by openAlarms
+                LaunchedEffect(wantAlarms) {
+                    if (wantAlarms) {
+                        screen = 2
+                        openAlarms.value = false
                     }
                 }
 
@@ -145,5 +160,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    companion object {
+        const val EXTRA_OPEN_ALARMS = "com.pulsemix.app.OPEN_ALARMS"
     }
 }

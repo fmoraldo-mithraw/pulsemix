@@ -147,6 +147,41 @@ object AlarmSchedule {
         return out.filter { it.at >= now - graceMs && it.key !in fired }.sortedBy { it.at }
     }
 
+    // --------------------------------------- réveils dictés (Assistant)
+
+    /** Jours de l'intent SET_ALARM (java.util.Calendar : 1 = dimanche …
+     *  7 = samedi) → jours d'[Alarm] (1 = lundi … 7 = dimanche). */
+    fun daysFromCalendar(days: Collection<Int>): Set<Int> =
+        days.filter { it in 1..7 }.map { if (it == 1) 7 else it - 1 }.toSet()
+
+    /**
+     * « Mets une alarme à 18h » : réactive un réveil existant à la même
+     * heure et aux mêmes jours plutôt que d'en empiler un doublon ; sinon
+     * en ajoute un. Rend la nouvelle liste et le réveil concerné.
+     */
+    fun upsertVoice(
+        list: List<Alarm>,
+        hour: Int,
+        minute: Int,
+        days: Set<Int>,
+        label: String
+    ): Pair<List<Alarm>, Alarm> {
+        val h = hour.coerceIn(0, 23)
+        val m = minute.coerceIn(0, 59)
+        val same = list.firstOrNull { it.hour == h && it.minute == m && it.days == days }
+        if (same != null) {
+            val updated = same.copy(
+                enabled = true,
+                skipAt = 0L,
+                label = label.ifBlank { same.label }
+            )
+            return list.map { if (it.id == same.id) updated else it } to updated
+        }
+        val id = (list.maxOfOrNull { it.id } ?: 0) + 1
+        val added = Alarm(id = id, hour = h, minute = m, days = days, label = label)
+        return (list + added) to added
+    }
+
     // ------------------------------------------------------- sérialisation
 
     fun writeAlarms(list: List<Alarm>): String {
