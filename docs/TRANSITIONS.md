@@ -21,7 +21,7 @@ PulseMix a **deux moteurs de lecture**, donc deux familles de transitions :
 | **NORMAL** (lecture classique, playlists, file) | ExoPlayer (media3) | fondu croisé « deux platines » entre morceaux entiers, avec échange de basses | *Fondu croisé* on/off + durée 3-15 s |
 | **DOUCE** (sélection du plus doux au moins doux) | ExoPlayer | identiques à NORMAL | idem |
 | **MIX** (plan de mix : phases → morceaux entiers) | ExoPlayer | identiques à NORMAL, plus l'enchaînement en fondu d'un mix au suivant | idem |
-| **DJ** (set : phases → *passages forts* d'une minute) | `DjMixer` (AudioTrack + décodage maison) | jonctions battues, comptées en mesures : calage de tempo partagé, filtres, échange de basses ; en pro : loop roll, reverb wash, brake, normales ×2, drop swap | *Transitions pro* on/off |
+| **DJ** (set : phases → *passages forts* d'une minute) | `DjMixer` (AudioTrack + décodage maison) | jonctions battues, comptées en mesures : calage de tempo partagé, filtres, échange de basses ; en pro : loop roll, reverb wash, brake, spinback, normales ×2, drop swap | *Transitions pro* on/off |
 
 À côté de ces deux familles, trois mécanismes « transversaux » modifient le
 son au moment d'un changement : le **micro-fondu de pause/reprise**, la
@@ -400,22 +400,44 @@ d'affilée :
 | Style | Quand | Ce qu'on entend |
 |---|---|---|
 | **Drop swap** (`KIND_DROP`) | le sortant a été calé pour finir sur sa **montée** (`Deck.dropExit`) et l'entrant a un vrai **drop** sur son ancre (`dropEntryOk` : passage fort, énergie ≥ 0,12), tempos calables | la montée du sortant, et sur le « 1 » où *son* drop devait tomber, c'est le drop de l'entrant qui tombe |
-| **Reverb wash** (`KIND_WASH`) | tempos calés, le sortant sort d'un **BREAK** ou d'une **OUTRO**, ou deux morceaux calmes (énergie < 0,08) | 2 mesures où le sortant part de plus en plus dans une longue réverbe (sans ses basses), coupé sur le « 1 » ; la réverbe s'éteint sur 2 mesures pendant que l'entrant arrive en un temps |
-| **Loop roll** (`KIND_ROLL`) | tempos calés, le sortant sort d'un **DROP** (structure inconnue : morceau énergique), entrant énergique (≥ 0,12) | le premier temps des 2 dernières mesures est capturé et rejoué en boucles de 1, ½, ¼ puis ⅛ de temps sous un passe-haut montant ; l'entrant tombe plein sur le « 1 », queue d'écho discrète |
-| **Brake** (`KIND_BRAKE`) | tempos **non calables** (en alternance avec la coupe écho) | le sortant ralentit jusqu'à l'arrêt sur ses 2 derniers temps (0,6 à 1,2 s), comme un vinyle qu'on stoppe ; l'entrant part plein sur le « 1 » |
+| **Reverb wash** (`KIND_WASH`) | le sortant sort d'un **BREAK** ou d'une **OUTRO**, ou deux morceaux calmes (énergie < 0,08) — **et tonalités compatibles** (Camelot ≥ 0,8) ou inconnues ; tempos calés ou non | 2 mesures où le sortant part de plus en plus dans une longue réverbe (sans ses basses), coupé sur le « 1 » ; la réverbe s'éteint sur 2 mesures pendant que l'entrant arrive en un temps |
+| **Loop roll** (`KIND_ROLL`) | tempos calés, le sortant sort d'un **DROP** (structure inconnue : morceau énergique) **et** l'entrant arrive sur **son drop** (structure inconnue : énergique, ≥ 0,12) | le premier temps des 2 dernières mesures est capturé et rejoué en boucles de 1, ½, ¼ puis ⅛ de temps sous un passe-haut montant ; l'entrant tombe plein sur le « 1 », queue d'écho discrète |
+| **Spinback** (`KIND_SPINBACK`) | tempos **non calables**, sortie chaude vers l'entrée forte de l'entrant (mêmes critères que le roll) | le disque du sortant est rattrapé (en 8 % du geste, sans saut) et lancé en arrière jusqu'à 3× : la relecture remonte ce qu'il vient de jouer, ralentit et s'éteint sur 2 temps (0,6 à 1,1 s) ; l'entrant part plein sur le « 1 » |
+| **Brake** (`KIND_BRAKE`) | tempos **non calables**, morceau qui a du corps (jamais entre deux morceaux calmes) | le sortant ralentit jusqu'à l'arrêt sur ses 2 derniers temps (0,6 à 1,2 s), comme un vinyle qu'on stoppe ; l'entrant part plein sur le « 1 » |
 | **Normale ×2** | tout le reste | la palette ci-dessus (sweep, échange de basses, blend harmonique, coupe écho), **durée doublée** : 8 mesures (8 à 12 en harmonique, 4 pour une coupe), plafond à 35 % du passage |
 
-Saut manuel : fondu court neutre.
+Tempos non calables : wash si permis, sinon spinback, sinon brake, sinon
+coupe écho. Saut manuel : fondu court neutre.
+
+**Critères d'écoute du choix.** Un geste qui fait *monter* la tension
+(roll, spinback) doit se résoudre sur un temps fort : sortie chaude **et**
+entrée forte, sinon il tombe dans le vide. Une réverbe garde la note du
+sortant sous l'entrant : le wash exige des tonalités compatibles. Le brake,
+comique sur un morceau calme, n'est pris que sur un morceau qui a du corps.
+Jamais deux fois le même geste d'affilée.
 Journal : `transition … : <technique>, style drop|geste sur le 1|normale longue|coupe, …`.
 
 **Les gestes « sur le 1 »** (roll, wash, brake) ont la géométrie du drop
 swap : c'est le « 1 » — fin de l'effet, coupe du sortant, départ de
 l'entrant sur son ancre, sans pré-roll — qui est calé sur la **phrase** du
 sortant ; l'effet le précède (2 mesures pour roll et wash, 1 pour le
-brake), la queue le suit (2 mesures pour le wash, 1 sinon). Tampons
-(capture du roll, du brake ; réverbe `WashReverb`, Freeverb réduit à 4
-peignes + 2 passe-tout) alloués au moment de programmer le fondu, jamais
-dans la boucle par bloc. Le medley (va-et-vient de 20-30 s) a été
+brake, 2 pour le spinback qui doit avoir de quoi remonter), la queue le
+suit (2 mesures pour le wash, 1 sinon). Tout le traitement est dans
+`SwapFx` (code pur : captures, réverbe `WashReverb` — Freeverb réduit à 4
+peignes + 2 passe-tout), alloué au moment de programmer le fondu, jamais
+dans la boucle par bloc ; toutes ses queues s'éteignent avant la fin du
+fondu.
+
+**Banc d'écoute** (`SwapFxListenTest`) : chaque geste est rendu entre deux
+morceaux synthétiques à 90, 128 et 174 BPM (et entre tempos non calables
+pour wash, brake, spinback), avec le code exact du moteur, et doit passer
+cinq critères : aucun clic (pic isolé de la dérivée seconde > 5× son
+niveau local sur 10 ms), aucun trou > 100 ms sous −20 dB, aucune bosse
+> +3 dB en sonie momentary (400 ms, EBU R128), « 1 » tenu (entrant muet
+avant, plein après ; sortant muet 10 ms après), queue éteinte avant la fin
+du fondu. Il a trouvé et fait corriger : le passage du direct à la boucle
+du roll et l'amorce de son écho (sauts), l'envoi de réverbe coupé net du
+wash, le lissage du spinback parti de zéro. Le medley (va-et-vient de 20-30 s) a été
 retiré : désagréable à l'écoute.
 
 
@@ -461,7 +483,7 @@ pré-roll d'entrée (§3.6), l'entrant arrive par sa montée et son drop tombe
 (6 sur un passage d'au moins 48 mesures), le reste 4 ; jamais plus d'**un
 cinquième du passage sortant**, jamais moins d'une mesure. Normale ×2
 (mode pro) : durées doublées, plafond à 35 % du passage ; roll 2 + 1,
-wash 2 + 2, brake 1 + 1 mesures autour du « 1 » ; drop swap : 2 + 2
+wash 2 + 2, brake 1 + 1, spinback 2 + 1 mesures autour du « 1 » ; drop swap : 2 + 2
 mesures autour du « 1 ». Un DJ compte des
 mesures, pas des secondes (8 s à 90 BPM font trois mesures, une jonction
 hors de toute structure). Sans tempo connu : plafond en secondes
@@ -500,7 +522,7 @@ Principe commun : **une seule source par bande à chaque instant**.
   pour l'harmonique.
 - **Coupe** (`CUT`) : sortie raide, entrée franche, **echo-out** d'un temps.
 - **Loop roll** (`ROLL`, §3.5) : le sortant remplacé par sa boucle de
-  plus en plus courte (fenêtre anti-clic de 48 échantillons), passe-haut
+  plus en plus courte (fenêtre anti-clic de 96 échantillons), passe-haut
   montant 30 → 350 Hz jusqu'au « 1 », coupé en 10 ms ; entrant brut,
   plein en 3 ms ; écho d'un temps nourri par le dernier temps du roll.
 - **Reverb wash** (`WASH`, §3.5) : envoi réverbe du sortant (sans basses)
@@ -509,6 +531,10 @@ Principe commun : **une seule source par bande à chaque instant**.
 - **Brake** (`BRAKE`, §3.5) : le sortant capturé puis relu à vitesse
   décroissante (1 → 0, interpolation linéaire), son niveau en √vitesse ;
   entrant brut, plein en 3 ms sur le « 1 ».
+- **Spinback** (`SPINBACK`, §3.5) : relecture de la capture à vitesse
+  +1 → −vmax (bornée par ce qui a été capturé, ≤ 3) puis vers 0, passe-bas
+  ~6 kHz contre le repliement, niveau plein sur le premier tiers puis
+  cosinus jusqu'au silence sur le « 1 » ; entrant brut, plein en 3 ms.
 - **Drop swap** (`DROP`, §3.5) : sortant plein sous un passe-haut montant
   (30 → 350 Hz) sur ses 2 dernières mesures de montée, coupé en 10 ms sur
   le « 1 » ; entrant brut (aucun filtre), lu à partir du « 1 », plein en

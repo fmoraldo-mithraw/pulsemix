@@ -1198,7 +1198,7 @@ fun PlayerScreen(
                         vm.proTransitions.collectAsStateWithLifecycle()
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "Transitions pro : loop roll, reverb wash, brake, drops calés",
+                            "Transitions pro : roll, wash, brake, spinback, drops calés",
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f)
                         )

@@ -354,17 +354,32 @@ class DjMixerSpecTest {
     )
 
     @Test
-    fun `pro - tempo non calable - brake meme avec un drop, coupe juste apres un brake`() {
+    fun `pro - tempo non calable - spinback, brake, wash ou coupe, jamais deux fois de suite`() {
+        val rate = DjMixer.computeRate(128f, 100f)
         val a = track("a", 128f, energyMean = 0.2f)
         val b = track("b", 100f, energyMean = 0.2f)
-        val c = pro(a, b, rate = DjMixer.computeRate(128f, 100f), dropExit = true)
-        assertEquals(DjMixer.KIND_BRAKE, c.kind)
+        // Sortie chaude vers le drop de l'entrant : spinback, même avec un drop
+        val c = pro(a, b, rate = rate, dropExit = true)
+        assertEquals(DjMixer.KIND_SPINBACK, c.kind)
         assertEquals(false, c.long)
-        val d = pro(
-            a, b, rate = DjMixer.computeRate(128f, 100f), dropExit = true,
-            lastKind = DjMixer.KIND_BRAKE
+        // Juste après un spinback : brake ; juste après un brake : spinback
+        assertEquals(DjMixer.KIND_BRAKE, pro(a, b, rate = rate, lastKind = DjMixer.KIND_SPINBACK).kind)
+        assertEquals(DjMixer.KIND_SPINBACK, pro(a, b, rate = rate, lastKind = DjMixer.KIND_BRAKE).kind)
+        // Entrée molle (intro) : pas de spinback (il tomberait dans le vide) → brake
+        val intro = listOf(
+            StructureDetector.Section(0L, 120_000L, StructureDetector.SectionKind.INTRO)
         )
-        assertEquals(DjMixer.KIND_CUT, d.kind)
+        assertEquals(DjMixer.KIND_BRAKE, pro(a, b, rate = rate, sections = intro).kind)
+        // Sortie de break, tonalités compatibles : wash
+        assertEquals(
+            DjMixer.KIND_WASH,
+            pro(a, b, rate = rate, exitKind = StructureDetector.SectionKind.BREAK).kind
+        )
+        // Deux morceaux calmes : wash, puis coupe (jamais de brake sur du calme)
+        val ca = track("a", 128f, energyMean = 0.05f)
+        val cb = track("b", 100f, energyMean = 0.05f)
+        assertEquals(DjMixer.KIND_WASH, pro(ca, cb, rate = rate).kind)
+        assertEquals(DjMixer.KIND_CUT, pro(ca, cb, rate = rate, lastKind = DjMixer.KIND_WASH).kind)
     }
 
     @Test
@@ -408,6 +423,19 @@ class DjMixerSpecTest {
         assertTrue(pro(a, track("b", 128f, energyMean = 0.05f), exitKind = drp).long)
         // Sortie d'un couplet (INTRO, BUILD…) : normale ×2
         assertTrue(pro(a, b, exitKind = StructureDetector.SectionKind.BUILD).long)
+        // Roll vers une entrée molle (intro de l'entrant) : la tension ne
+        // se résoudrait sur rien → normale ×2
+        val intro = listOf(
+            StructureDetector.Section(0L, 120_000L, StructureDetector.SectionKind.INTRO)
+        )
+        assertTrue(pro(a, b, exitKind = drp, sections = intro).long)
+        // Wash en tonalités qui se heurtent : la réverbe garderait la note
+        // du sortant sous l'entrant → normale ×2
+        val ka = track("a", 128f, camelot = "8A", energyMean = 0.15f)
+        val kb = track("b", 128f, camelot = "2B", energyMean = 0.15f)
+        assertTrue(pro(ka, kb, exitKind = brk).long)
+        val kc = track("b", 128f, camelot = "9A", energyMean = 0.15f)
+        assertEquals(DjMixer.KIND_WASH, pro(ka, kc, exitKind = brk).kind)
     }
 
     @Test
@@ -446,10 +474,11 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `fadeBars - roll, wash, brake - effet puis queue`() {
+    fun `fadeBars - roll, wash, brake, spinback - effet puis queue`() {
         assertEquals(3, DjMixer.fadeBars(DjMixer.KIND_ROLL, 64.0, bpm = 128f))
         assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_WASH, 64.0, bpm = 128f))
         assertEquals(2, DjMixer.fadeBars(DjMixer.KIND_BRAKE, 64.0, bpm = 128f))
+        assertEquals(3, DjMixer.fadeBars(DjMixer.KIND_SPINBACK, 64.0, bpm = 128f))
     }
 
     @Test
