@@ -21,7 +21,7 @@ PulseMix a **deux moteurs de lecture**, donc deux familles de transitions :
 | **NORMAL** (lecture classique, playlists, file) | ExoPlayer (media3) | fondu croisé « deux platines » entre morceaux entiers, avec échange de basses | *Fondu croisé* on/off + durée 3-15 s |
 | **DOUCE** (sélection du plus doux au moins doux) | ExoPlayer | identiques à NORMAL | idem |
 | **MIX** (plan de mix : phases → morceaux entiers) | ExoPlayer | identiques à NORMAL, plus l'enchaînement en fondu d'un mix au suivant | idem |
-| **DJ** (set : phases → *passages forts* d'une minute) | `DjMixer` (AudioTrack + décodage maison) | jonctions battues, comptées en mesures : calage de tempo partagé, filtres, échange de basses ; en pro : medley, normales ×2, drop swap | *Transitions pro* on/off |
+| **DJ** (set : phases → *passages forts* d'une minute) | `DjMixer` (AudioTrack + décodage maison) | jonctions battues, comptées en mesures : calage de tempo partagé, filtres, échange de basses ; en pro : loop roll, reverb wash, brake, normales ×2, drop swap | *Transitions pro* on/off |
 
 À côté de ces deux familles, trois mécanismes « transversaux » modifient le
 son au moment d'un changement : le **micro-fondu de pause/reprise**, la
@@ -394,59 +394,30 @@ palette quand la structure est connue :
 | **on entre directement dans un DROP** | pas de sweep grave |
 
 `fadeSpecPro` — toggle **Transitions pro** — choisit à chaque jonction
-entre **trois styles**, comme un DJ qui choisit son geste :
+un **geste par situation**, comme un DJ — jamais deux fois le même
+d'affilée :
 
 | Style | Quand | Ce qu'on entend |
 |---|---|---|
 | **Drop swap** (`KIND_DROP`) | le sortant a été calé pour finir sur sa **montée** (`Deck.dropExit`) et l'entrant a un vrai **drop** sur son ancre (`dropEntryOk` : passage fort, énergie ≥ 0,12), tempos calables | la montée du sortant, et sur le « 1 » où *son* drop devait tomber, c'est le drop de l'entrant qui tombe |
-| **Medley** (`KIND_LONG`, le va-et-vient) | tempos calés, médiums capables de se répondre : tonalités compatibles (Camelot ≥ 0,8) **ou** pas deux morceaux chantés ; jamais deux medleys d'affilée | 20 à 30 s où les deux morceaux se répondent par cellules de mesures, **mélangés par bandes** (ci-dessous) |
+| **Reverb wash** (`KIND_WASH`) | tempos calés, le sortant sort d'un **BREAK** ou d'une **OUTRO**, ou deux morceaux calmes (énergie < 0,08) | 2 mesures où le sortant part de plus en plus dans une longue réverbe (sans ses basses), coupé sur le « 1 » ; la réverbe s'éteint sur 2 mesures pendant que l'entrant arrive en un temps |
+| **Loop roll** (`KIND_ROLL`) | tempos calés, le sortant sort d'un **DROP** (structure inconnue : morceau énergique), entrant énergique (≥ 0,12) | le premier temps des 2 dernières mesures est capturé et rejoué en boucles de 1, ½, ¼ puis ⅛ de temps sous un passe-haut montant ; l'entrant tombe plein sur le « 1 », queue d'écho discrète |
+| **Brake** (`KIND_BRAKE`) | tempos **non calables** (en alternance avec la coupe écho) | le sortant ralentit jusqu'à l'arrêt sur ses 2 derniers temps (0,6 à 1,2 s), comme un vinyle qu'on stoppe ; l'entrant part plein sur le « 1 » |
 | **Normale ×2** | tout le reste | la palette ci-dessus (sweep, échange de basses, blend harmonique, coupe écho), **durée doublée** : 8 mesures (8 à 12 en harmonique, 4 pour une coupe), plafond à 35 % du passage |
 
-Tempos non calables : coupe + echo-out ; saut manuel : fondu court neutre.
-Journal : `transition … : <technique>, style drop|medley|normale longue, …`.
+Saut manuel : fondu court neutre.
+Journal : `transition … : <technique>, style drop|geste sur le 1|normale longue|coupe, …`.
 
-**Le medley, mélangé aux bons endroits.** Le cadre du va-et-vient reste :
-le sortant ouvre, l'entrant **répond** une cellule, retour du sortant,
-**échange des basses** sur le « 1 » du milieu, dernier retour du sortant,
-puis l'entrant seul pendant que le sortant s'efface en cosinus sur la
-dernière cellule (son drop tombe là, pré-roll §3.6).
+**Les gestes « sur le 1 »** (roll, wash, brake) ont la géométrie du drop
+swap : c'est le « 1 » — fin de l'effet, coupe du sortant, départ de
+l'entrant sur son ancre, sans pré-roll — qui est calé sur la **phrase** du
+sortant ; l'effet le précède (2 mesures pour roll et wash, 1 pour le
+brake), la queue le suit (2 mesures pour le wash, 1 sinon). Tampons
+(capture du roll, du brake ; réverbe `WashReverb`, Freeverb réduit à 4
+peignes + 2 passe-tout) alloués au moment de programmer le fondu, jamais
+dans la boucle par bloc. Le medley (va-et-vient de 20-30 s) a été
+retiré : désagréable à l'écoute.
 
-| Durée | Cellules (A = sortant, B = entrant) |
-|---|---|
-| 16 mesures | A4 · B2 · A2 · **[swap]** B4 · A2 · B2 (sortie) |
-| 12 mesures | A3 · B2 · A1 · **[swap]** B3 · A1 · B2 |
-| 8 mesures | A2 · B1 · A1 · **[swap]** B2 · A1 · B1 |
-
-Ce qui change : on ne joue plus aux volumes sur le signal entier (deux
-mélodies l'une sur l'autre en permanence, et un trou de basses à chaque
-cellule de l'entrant). Chaque deck est **recomposé par bandes**
-(`longBandGains`, séparation one-pole < 120 Hz / < 2,5 kHz / au-delà,
-reconstruction exacte à gain 1), comme sur les trois potards d'EQ d'une
-table :
-
-- **basses** : une seule ligne, à plein niveau — le sortant les garde
-  jusqu'à l'échange *même quand l'entrant a la main* (l'entrant joue sur
-  son groove), puis l'entrant ;
-- **médiums** (voix, mélodies) : celui qui a la main seul devant, l'autre
-  à −9 dB, **−15 dB quand celui qui a la main chante** — on ne couvre
-  jamais une voix ;
-- **aigus** (charleys, percussions, air) : **mélangés** — l'autre reste à
-  −4,4 dB (`LONG_HIGH_MIX`) : c'est là que deux morceaux calés
-  s'épaississent sans se brouiller.
-
-L'entrant arrive en fondu sur la première mesure (il entrait d'un coup à
-−9 dB). Chaque bascule est une rampe d'un temps en cosinus.
-
-**Qui a la main, et quand** (`longPlan`) : les cellules 1, 2 et 4 sont
-décidées par le **profil phrase par phrase** de chaque morceau
-(`PhraseProfile`) : l'entrant répond en 1 sauf si le sortant a nettement
-plus à montrer, le sortant revient en 2 et 4 sauf si l'entrant a
-nettement plus à montrer (écart de `hookScore` > 0,3) ; à score
-comparable, **celui qui chante** garde la main face à un instrumental.
-Sans profil : A·B·A|B·A·B. Journal : `cellules A·B·A|B·A·B[, voix protégée
-sur N cellule(s)][ (sans profil de phrases)]`. Durée : ~26 s (`longBars`,
-multiple de 4 mesures, 8 à 16) ; pré-roll admis jusqu'au début de la
-section qui précède l'ancre (`preRollMs(relaxed)`).
 
 **Le drop swap, calé à l'échantillon.** Un drop swap raté est pire que pas
 de transition : tout tient au calage.
@@ -480,7 +451,7 @@ de transition : tout tient au calage.
   (journal : `montée manquée`).
 
 **Passages allongés.** En mode pro, chaque passage est **allongé de la
-durée du medley** (`longBars`, ~26 s, `Deck.init`) pour que la minute
+~26 s** (`longBars`, `Deck.init`) pour que la minute
 forte se joue entière avant que l'entrant ne réponde ; les durées de plan
 (`MixEngine.trackLenMs`, `DJ_LONG_BLEND_MS`) en tiennent compte. Avec le
 pré-roll d'entrée (§3.6), l'entrant arrive par sa montée et son drop tombe
@@ -489,8 +460,8 @@ pré-roll d'entrée (§3.6), l'entrant arrive par sa montée et son drop tombe
 **Durée en mesures** (`fadeBars`) : coupe 2 mesures, blend harmonique 4
 (6 sur un passage d'au moins 48 mesures), le reste 4 ; jamais plus d'**un
 cinquième du passage sortant**, jamais moins d'une mesure. Normale ×2
-(mode pro) : durées doublées, plafond à 35 % du passage ; medley : sa
-durée (`longBars`), au plus la moitié du passage ; drop swap : 2 + 2
+(mode pro) : durées doublées, plafond à 35 % du passage ; roll 2 + 1,
+wash 2 + 2, brake 1 + 1 mesures autour du « 1 » ; drop swap : 2 + 2
 mesures autour du « 1 ». Un DJ compte des
 mesures, pas des secondes (8 s à 90 BPM font trois mesures, une jonction
 hors de toute structure). Sans tempo connu : plafond en secondes
@@ -528,10 +499,16 @@ Principe commun : **une seule source par bande à chaque instant**.
   dernière mesure avant la fin du fondu (`EQ`, `HARMONIC`), puis *mid swap*
   pour l'harmonique.
 - **Coupe** (`CUT`) : sortie raide, entrée franche, **echo-out** d'un temps.
-- **Medley** (`LONG`, §3.5) : les deux decks recomposés par bandes
-  (basses / médiums / aigus) selon la cellule ; échange des basses **net**
-  sur le « 1 » de la 3e frontière (rampe d'un temps) ; pas de filtre
-  d'ouverture sur l'entrant.
+- **Loop roll** (`ROLL`, §3.5) : le sortant remplacé par sa boucle de
+  plus en plus courte (fenêtre anti-clic de 48 échantillons), passe-haut
+  montant 30 → 350 Hz jusqu'au « 1 », coupé en 10 ms ; entrant brut,
+  plein en 3 ms ; écho d'un temps nourri par le dernier temps du roll.
+- **Reverb wash** (`WASH`, §3.5) : envoi réverbe du sortant (sans basses)
+  en t² jusqu'au « 1 », retour ×0,55 éteint en cosinus sur la queue ;
+  sortant coupé en 10 ms, entrant brut qui monte en un temps.
+- **Brake** (`BRAKE`, §3.5) : le sortant capturé puis relu à vitesse
+  décroissante (1 → 0, interpolation linéaire), son niveau en √vitesse ;
+  entrant brut, plein en 3 ms sur le « 1 ».
 - **Drop swap** (`DROP`, §3.5) : sortant plein sous un passe-haut montant
   (30 → 350 Hz) sur ses 2 dernières mesures de montée, coupé en 10 ms sur
   le « 1 » ; entrant brut (aucun filtre), lu à partir du « 1 », plein en

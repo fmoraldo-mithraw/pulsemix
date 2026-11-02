@@ -321,10 +321,10 @@ class DjMixerSpecTest {
     }
 
     // ---------------------------------------------------------- fadeSpecPro
-    // Trois styles : drop swap (sortant calé sur sa montée + vrai drop de
-    // l'entrant), medley (va-et-vient) quand les médiums peuvent se
-    // répondre, normale à durée doublée sinon. Non calable → coupe ;
-    // saut manuel → fondu court.
+    // Un geste par situation : drop swap (sortant calé sur sa montée + vrai
+    // drop de l'entrant), reverb wash en sortie de break / outro, loop roll
+    // en sortie de drop, normale à durée doublée sinon. Non calable →
+    // brake (ou coupe juste après un brake) ; saut manuel → fondu court.
 
     private fun dropAt(startMs: Long) = listOf(
         StructureDetector.Section(
@@ -354,14 +354,17 @@ class DjMixerSpecTest {
     )
 
     @Test
-    fun `pro - tempo non calable - coupe courte meme avec un drop`() {
-        val c = pro(
-            track("a", 128f, energyMean = 0.2f), track("b", 100f, energyMean = 0.2f),
-            rate = DjMixer.computeRate(128f, 100f), dropExit = true
-        )
-        assertEquals(DjMixer.FADE_CUT_S, c.fadeS, 1e-9)
-        assertEquals(DjMixer.KIND_CUT, c.kind)
+    fun `pro - tempo non calable - brake meme avec un drop, coupe juste apres un brake`() {
+        val a = track("a", 128f, energyMean = 0.2f)
+        val b = track("b", 100f, energyMean = 0.2f)
+        val c = pro(a, b, rate = DjMixer.computeRate(128f, 100f), dropExit = true)
+        assertEquals(DjMixer.KIND_BRAKE, c.kind)
         assertEquals(false, c.long)
+        val d = pro(
+            a, b, rate = DjMixer.computeRate(128f, 100f), dropExit = true,
+            lastKind = DjMixer.KIND_BRAKE
+        )
+        assertEquals(DjMixer.KIND_CUT, d.kind)
     }
 
     @Test
@@ -383,25 +386,28 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `pro - medley si les mediums peuvent se repondre, jamais deux d affilee, sinon normale x2`() {
-        // Pas chantés : medley (va-et-vient)
-        val c = pro(track("a", 128f, energyMean = 0.15f), track("b", 128f, energyMean = 0.15f))
-        assertEquals(DjMixer.KIND_LONG, c.kind)
-        assertEquals(DjMixer.LONG_TARGET_S, c.fadeS, 1e-9)
-        // Juste après un medley : normale à durée doublée
-        val n = pro(
-            track("a", 128f, energyMean = 0.15f), track("b", 128f, energyMean = 0.15f),
-            lastKind = DjMixer.KIND_LONG
-        )
-        assertTrue(n.kind != DjMixer.KIND_LONG)
+    fun `pro - wash en sortie de break, roll en sortie de drop, jamais deux fois de suite`() {
+        val a = track("a", 128f, energyMean = 0.15f)
+        val b = track("b", 128f, energyMean = 0.15f)
+        val brk = StructureDetector.SectionKind.BREAK
+        val drp = StructureDetector.SectionKind.DROP
+        assertEquals(DjMixer.KIND_WASH, pro(a, b, exitKind = brk).kind)
+        assertEquals(DjMixer.KIND_WASH, pro(a, b, exitKind = StructureDetector.SectionKind.OUTRO).kind)
+        assertEquals(DjMixer.KIND_ROLL, pro(a, b, exitKind = drp).kind)
+        // Structure inconnue : morceaux énergiques → roll ; calmes → wash
+        assertEquals(DjMixer.KIND_ROLL, pro(a, b).kind)
+        val calmA = track("a", 128f, energyMean = 0.05f)
+        val calmB = track("b", 128f, energyMean = 0.05f)
+        assertEquals(DjMixer.KIND_WASH, pro(calmA, calmB).kind)
+        // Jamais le même geste deux fois de suite : normale ×2
+        val n = pro(a, b, exitKind = drp, lastKind = DjMixer.KIND_ROLL)
         assertTrue(n.long)
-        // Deux voix, tonalités éloignées : normale ×2
-        val m = pro(vocal("a", 128f, "8A"), vocal("b", 128f, "2B"))
-        assertTrue(m.kind != DjMixer.KIND_LONG)
-        assertTrue(m.long)
-        // Deux voix mais tonalités compatibles : medley
-        val h = pro(vocal("a", 128f, "8A"), vocal("b", 128f, "9A"))
-        assertEquals(DjMixer.KIND_LONG, h.kind)
+        val w = pro(a, b, exitKind = brk, lastKind = DjMixer.KIND_WASH)
+        assertTrue(w.kind != DjMixer.KIND_WASH)
+        // Entrant mou : pas de roll (il tomberait dans le vide)
+        assertTrue(pro(a, track("b", 128f, energyMean = 0.05f), exitKind = drp).long)
+        // Sortie d'un couplet (INTRO, BUILD…) : normale ×2
+        assertTrue(pro(a, b, exitKind = StructureDetector.SectionKind.BUILD).long)
     }
 
     @Test
@@ -419,12 +425,12 @@ class DjMixerSpecTest {
         assertEquals(8, DjMixer.fadeBars(DjMixer.KIND_NORMAL, 48.0, long = true))
         assertEquals(12, DjMixer.fadeBars(DjMixer.KIND_HARMONIC, 48.0, long = true))
         assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_CUT, 48.0, long = true))
-        // Passage court : 35 % au plus (vs 20 % en medley)
+        // Passage court : 35 % au plus (vs 20 % en normale)
         assertEquals(5, DjMixer.fadeBars(DjMixer.KIND_EQ, 17.0, long = true))
         assertEquals(3, DjMixer.fadeBars(DjMixer.KIND_EQ, 17.0))
     }
 
-    // ------------------------------------------------------- medley pur
+    // ------------------------------------------- allongement des passages
 
     @Test
     fun `longBars - 20 a 30 s selon le tempo, multiple de 4, borne 8 a 16`() {
@@ -440,91 +446,58 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `longBoundaries - swap au milieu, cellules entieres`() {
-        assertEquals(listOf(4, 6, 8, 12, 14), DjMixer.longBoundaries(16).toList())
-        assertEquals(listOf(3, 5, 6, 9, 10), DjMixer.longBoundaries(12).toList())
-        assertEquals(listOf(2, 3, 4, 6, 7), DjMixer.longBoundaries(8).toList())
-        val b = DjMixer.longBoundaries(10)
-        for (i in 1 until b.size) assertTrue(b[i] >= b[i - 1])
-        assertTrue(b[4] < 10)
+    fun `fadeBars - roll, wash, brake - effet puis queue`() {
+        assertEquals(3, DjMixer.fadeBars(DjMixer.KIND_ROLL, 64.0, bpm = 128f))
+        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_WASH, 64.0, bpm = 128f))
+        assertEquals(2, DjMixer.fadeBars(DjMixer.KIND_BRAKE, 64.0, bpm = 128f))
     }
 
     @Test
-    fun `fadeBars - medley - sa duree, jamais plus de la moitie du passage`() {
-        assertEquals(12, DjMixer.fadeBars(DjMixer.KIND_LONG, 64.0, bpm = 128f))
-        assertEquals(8, DjMixer.fadeBars(DjMixer.KIND_LONG, 16.0, bpm = 128f))
-        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_LONG, 6.0, bpm = 128f))
-    }
-
-    private fun noProfilePlan() = DjMixer.longPlan(
-        FloatArray(6), FloatArray(6), BooleanArray(6), BooleanArray(6)
-    )
-
-    private fun bands(pos: Float, plan: DjMixer.LongPlan = noProfilePlan()): FloatArray {
-        val out = FloatArray(6)
-        DjMixer.longBandGains(pos, 16, DjMixer.longBoundaries(16), plan, out)
-        return out
+    fun `rollLoopFrames - 1 temps, puis un demi, un quart, un huitieme`() {
+        val beat = 20_672 // 128 BPM
+        assertEquals(beat, DjMixer.rollLoopFrames(7.5, beat))
+        assertEquals(beat / 2, DjMixer.rollLoopFrames(3.5, beat))
+        assertEquals(beat / 4, DjMixer.rollLoopFrames(1.5, beat))
+        assertEquals(beat / 8, DjMixer.rollLoopFrames(0.5, beat))
+        assertEquals(64, DjMixer.rollLoopFrames(0.5, 100))
     }
 
     @Test
-    fun `longPlan - sans profil A B A puis B A B, une voix garde la main et est protegee`() {
-        val p = noProfilePlan()
-        assertEquals("A·B·A|B·A·B", p.describe())
-        for (l in p.level) assertEquals(DjMixer.LONG_TEASE, l, 0f)
-        // Cellule 2 : A chante, B non, scores égaux → A garde la main et
-        // les médiums de B passent à −15 dB ; cellule 1 : B chante → B
-        val vA = booleanArrayOf(false, false, true, false, false, false)
-        val vB = booleanArrayOf(false, true, false, false, false, false)
-        val q = DjMixer.longPlan(FloatArray(6), FloatArray(6), vA, vB)
-        assertEquals(false, q.domB[2])
-        assertEquals(true, q.domB[1])
-        assertEquals(DjMixer.LONG_TEASE_VOCAL, q.level[1], 0f)
-        assertEquals(DjMixer.LONG_TEASE_VOCAL, q.level[2], 0f)
-        // Le cadre ne bouge jamais : 0 = A, 3 = B (swap), 5 = B
-        val r = DjMixer.longPlan(
-            floatArrayOf(0f, 0f, 0f, 9f, 0f, 9f), floatArrayOf(9f, 0f, 0f, 0f, 0f, 0f),
-            BooleanArray(6), BooleanArray(6)
-        )
-        assertEquals(false, r.domB[0])
-        assertEquals(true, r.domB[3])
-        assertEquals(true, r.domB[5])
-    }
-
-    @Test
-    fun `longBandGains - basses pleines, mediums de celui qui a la main, aigus melanges`() {
-        // Début : l'entrant n'est pas encore là
-        val z = bands(0f)
-        assertEquals(1f, z[1], 1e-6f)
-        assertEquals(0f, z[3] + z[4] + z[5], 1e-6f)
-        // Fin de la première mesure : A plein, B médiums −9 dB, aigus mélangés
-        val a = bands(1.5f)
-        assertEquals(1f, a[0], 1e-6f)
-        assertEquals(1f, a[1], 1e-6f)
-        assertEquals(1f, a[2], 1e-6f)
-        assertEquals(DjMixer.LONG_TEASE, a[4], 1e-6f)
-        assertEquals(DjMixer.LONG_HIGH_MIX, a[5], 1e-6f)
-        // Cellule de B (mesures 4-6) : B devant, A garde ses basses pleines
-        val b = bands(5f)
-        assertEquals(1f, b[0], 1e-6f)
-        assertEquals(DjMixer.LONG_TEASE, b[1], 1e-6f)
-        assertEquals(DjMixer.LONG_HIGH_MIX, b[2], 1e-6f)
-        assertEquals(1f, b[4], 1e-6f)
-        assertEquals(1f, b[5], 1e-6f)
-        // Dernière cellule : A s'efface jusqu'à zéro, toutes bandes
-        val e = bands(16f)
-        assertEquals(0f, e[0] + e[1] + e[2], 1e-6f)
-        assertEquals(1f, e[4], 1e-6f)
-        // Jamais de saut : au plus ~0,4 par 1/16 de mesure
-        var prev = bands(0f)
-        var x = 0f
-        while (x <= 16f) {
-            val g = bands(x)
-            for (k in 0 until 6) {
-                assertTrue("saut bande $k à $x", kotlin.math.abs(g[k] - prev[k]) <= 0.4f)
-            }
-            prev = g
-            x += 1f / 16f
+    fun `brake - jamais en avance sur la capture, arret au bout`() {
+        val len = 40_000L
+        assertEquals(0.0, DjMixer.brakeReadPos(0L, len), 1e-9)
+        assertEquals(len / 2.0, DjMixer.brakeReadPos(len, len), 1e-9)
+        assertEquals(len / 2.0, DjMixer.brakeReadPos(len * 2, len), 1e-9)
+        var prev = -1.0
+        for (t in 0L..len step 997L) {
+            val p = DjMixer.brakeReadPos(t, len)
+            assertTrue(p <= t.toDouble())
+            assertTrue(p >= prev)
+            prev = p
         }
+        // Deux temps, bornés à 0,6..1,2 s
+        assertEquals(41_344L, DjMixer.brakeFrames(20_672.0))
+        assertEquals(26_460L, DjMixer.brakeFrames(5_000.0))
+        assertEquals(52_920L, DjMixer.brakeFrames(40_000.0))
+    }
+
+    @Test
+    fun `washReverb - silence en entree, silence en sortie, queue qui s eteint`() {
+        val r = WashReverb()
+        val out = FloatArray(2)
+        r.process(0f, 0f, out)
+        assertEquals(0f, out[0], 0f)
+        r.process(1f, 1f, out)
+        var peakLate = 0f
+        var peakEarly = 0f
+        for (i in 0 until 44_100 * 4) {
+            r.process(0f, 0f, out)
+            val v = kotlin.math.abs(out[0]) + kotlin.math.abs(out[1])
+            if (i < 44_100 / 2) peakEarly = maxOf(peakEarly, v)
+            if (i > 44_100 * 3) peakLate = maxOf(peakLate, v)
+        }
+        assertTrue(peakEarly > 0f)
+        assertTrue(peakLate < peakEarly * 0.01f)
     }
 
     @Test
