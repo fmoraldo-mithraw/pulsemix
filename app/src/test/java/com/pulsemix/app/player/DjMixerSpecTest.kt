@@ -617,7 +617,7 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `dropHpFc - monte de 30 a 350 Hz, lentement d abord`() {
+    fun `dropHpFc - monte de 30 a 250 Hz, lentement d abord`() {
         assertEquals(DjMixer.DROP_HP_FROM, DjMixer.dropHpFc(0f), 1e-3f)
         assertEquals(DjMixer.DROP_HP_TO, DjMixer.dropHpFc(1f), 1e-2f)
         assertTrue(DjMixer.dropHpFc(0.5f) < 100f)

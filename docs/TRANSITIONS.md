@@ -401,7 +401,7 @@ d'affilée :
 |---|---|---|
 | **Drop swap** (`KIND_DROP`) | le sortant a été calé pour finir sur sa **montée** (`Deck.dropExit`) et l'entrant a un vrai **drop** sur son ancre (`dropEntryOk` : passage fort, énergie ≥ 0,12), tempos calables | la montée du sortant, et sur le « 1 » où *son* drop devait tomber, c'est le drop de l'entrant qui tombe |
 | **Reverb wash** (`KIND_WASH`) | le sortant sort d'un **BREAK** ou d'une **OUTRO**, ou deux morceaux calmes (énergie < 0,08) — **et tonalités compatibles** (Camelot ≥ 0,8) ou inconnues ; tempos calés ou non | 2 mesures où le sortant part de plus en plus dans une longue réverbe (sans ses basses), coupé sur le « 1 » ; la réverbe s'éteint sur 2 mesures pendant que l'entrant arrive en un temps |
-| **Loop roll** (`KIND_ROLL`) | tempos calés, le sortant sort d'un **DROP** (structure inconnue : morceau énergique) **et** l'entrant arrive sur **son drop** (structure inconnue : énergique, ≥ 0,12) | le premier temps des 2 dernières mesures est capturé et rejoué en boucles de 1, ½, ¼ puis ⅛ de temps sous un passe-haut montant ; l'entrant tombe plein sur le « 1 », queue d'écho discrète |
+| **Loop roll** (`KIND_ROLL`) | tempos calés, le sortant sort d'un **DROP** (structure inconnue : morceau énergique) **et** l'entrant arrive sur **son drop** (structure inconnue : énergique, ≥ 0,12) | le premier temps des 2 dernières mesures est capturé et rejoué en boucles de 1, ½, ¼ puis ⅛ de temps sous un passe-haut montant sur la dernière mesure ; drop explosif : riser, dernier coup en réverbe, silence, l'entrant plein sur le « 1 » sous l'impact |
 | **Spinback** (`KIND_SPINBACK`) | tempos **non calables**, sortie chaude vers l'entrée forte de l'entrant (mêmes critères que le roll) | le disque du sortant est rattrapé (en 8 % du geste, sans saut) et lancé en arrière jusqu'à 3× : la relecture remonte ce qu'il vient de jouer, ralentit et s'éteint sur 2 temps (0,6 à 1,1 s) ; l'entrant part plein sur le « 1 » |
 | **Brake** (`KIND_BRAKE`) | tempos **non calables**, morceau qui a du corps (jamais entre deux morceaux calmes) | le sortant ralentit jusqu'à l'arrêt sur ses 2 derniers temps (0,6 à 1,2 s), comme un vinyle qu'on stoppe ; l'entrant part plein sur le « 1 » |
 | **Normale ×2** | tout le reste | la palette ci-dessus (sweep, échange de basses, blend harmonique, coupe écho), **durée doublée** : 8 mesures (8 à 12 en harmonique, 4 pour une coupe), plafond à 35 % du passage |
@@ -441,6 +441,28 @@ wash, le lissage du spinback parti de zéro. Le medley (va-et-vient de 20-30 s) 
 retiré : désagréable à l'écoute.
 
 
+**Le drop explosif.** Un drop frappe par **contraste**, pas par son
+volume : c'est le silence juste avant qui le fait exploser (l'oreille se
+recalibre sur le silence, le cerveau qui attend le drop le reçoit plus
+fort), et une montée qui culmine sur un point d'orgue. Avant, le sortant
+s'amincissait sur 2 mesures (passe-haut jusqu'à 350 Hz), était coupé à
+l'échantillon où l'entrant démarrait (aucune coupure audible), et son écho
+tombait sur le « 1 » de l'entrant : on « passait d'un morceau à l'autre ».
+Désormais (`SwapFx`, réglage *Drops* : douce / normale / explosive) :
+
+| Moment | Ce qu'on entend |
+|---|---|
+| montée | le sortant garde ses basses jusqu'à sa **dernière mesure** (passe-haut 30 → 250 Hz sur cette seule mesure) ; un **riser** — bruit dans un passe-bande qui monte de 300 Hz à 6 kHz, niveau en t² jusqu'à 25 / 40 / 60 % du niveau efficace du sortant — porte la tension (pas sous un brake : un frein dégonfle) |
+| point d'orgue | le dernier coup du sortant (drop swap, roll) lancé dans une réverbe, envoi qui monte sur le dernier temps ; puis **coupure** |
+| silence | ½ temps (douce) ou 1 temps (normale, explosive), 120 à 600 ms (`dropGapFrames`) ; seule la queue de réverbe s'y éteint, en (1−u)³ — plus rien sur le « 1 » |
+| le « 1 » | l'entrant plein en 3 ms sur son drop, avec un **impact** : infra-basse qui chute de 80 à 35 Hz (décroissance 0,3 s) et crash (bruit au-dessus de ~4 kHz, 0,45 s), proportionnels au niveau du sortant ; plus d'écho par-dessus ; le renfort dynamique des basses revient dès le « 1 » (il restait gelé sur toute la queue) |
+
+Mesuré au banc (`SwapFxListenTest`) : coupure sous −20 dB sur au moins
+les deux tiers du silence ; montée jamais au-dessus de +3 dB ; les 400 ms
+après le « 1 » plus fortes que la suite du drop d'environ +1 dB (douce),
++3 dB (normale), +5 dB (explosive) ; limiteur du moteur (rejoué) qui ne
+retire jamais plus de 1,5 dB à l'attaque (0,6 dB au pire mesuré).
+
 **Le drop swap, calé à l'échantillon.** Un drop swap raté est pire que pas
 de transition : tout tient au calage.
 
@@ -462,13 +484,9 @@ de transition : tout tient au calage.
   le décodeur garde désormais le tampon qui chevauche le point de seek à
   partir de l'échantillon visé (avant, il jetait jusqu'à ~25 ms — l'attaque
   du drop). Il n'est lu qu'à partir du « 1 » (`startedAtFrame`).
-- **Le geste** : les 2 dernières mesures de la montée, passe-haut montant
-  sur le sortant (30 → 350 Hz, `dropHpFc`) — la tension monte, le grave se
-  dégage. Sur le « 1 » : sortant coupé en 10 ms, entrant plein en 3 ms
-  (`dropCutGainA/B`), plein spectre, basses comprises ; queue d'écho d'un
-  temps du sortant, discrète (×0,35) ; la jonction dure encore 2 mesures,
-  le temps que l'écho s'éteigne. Pas de recalage de kicks après le « 1 »
-  (le sortant, muet, n'est plus une référence).
+- **Le geste** : le *drop explosif* (ci-dessous), commun au drop swap,
+  au loop roll, au brake et au spinback. Pas de recalage de kicks après le
+  « 1 » (le sortant, muet, n'est plus une référence).
 - **Repli** : montée déjà passée quand l'entrant est prêt → coupe courte
   (journal : `montée manquée`).
 
@@ -522,23 +540,26 @@ Principe commun : **une seule source par bande à chaque instant**.
   pour l'harmonique.
 - **Coupe** (`CUT`) : sortie raide, entrée franche, **echo-out** d'un temps.
 - **Loop roll** (`ROLL`, §3.5) : le sortant remplacé par sa boucle de
-  plus en plus courte (fenêtre anti-clic de 96 échantillons), passe-haut
-  montant 30 → 350 Hz jusqu'au « 1 », coupé en 10 ms ; entrant brut,
-  plein en 3 ms ; écho d'un temps nourri par le dernier temps du roll.
+  plus en plus courte (fenêtre anti-clic de 96 échantillons, longueurs
+  changées sur les temps comptés depuis la capture), passe-haut montant
+  30 → 250 Hz sur la dernière mesure, puis drop explosif (riser, dernier
+  coup en réverbe, silence, impact) ; entrant brut, plein en 3 ms.
 - **Reverb wash** (`WASH`, §3.5) : envoi réverbe du sortant (sans basses)
   en t² jusqu'au « 1 », retour ×0,55 éteint en cosinus sur la queue ;
   sortant coupé en 10 ms, entrant brut qui monte en un temps.
 - **Brake** (`BRAKE`, §3.5) : le sortant capturé puis relu à vitesse
-  décroissante (1 → 0, interpolation linéaire), son niveau en √vitesse ;
-  entrant brut, plein en 3 ms sur le « 1 ».
+  décroissante (1 → 0, interpolation linéaire), son niveau en √vitesse,
+  jusqu'à la coupure ; silence, puis entrant brut, plein en 3 ms sur le
+  « 1 », sous l'impact (pas de riser : un frein dégonfle).
 - **Spinback** (`SPINBACK`, §3.5) : relecture de la capture à vitesse
   +1 → −vmax (bornée par ce qui a été capturé, ≤ 3) puis vers 0, passe-bas
   ~6 kHz contre le repliement, niveau plein sur le premier tiers puis
-  cosinus jusqu'au silence sur le « 1 » ; entrant brut, plein en 3 ms.
-- **Drop swap** (`DROP`, §3.5) : sortant plein sous un passe-haut montant
-  (30 → 350 Hz) sur ses 2 dernières mesures de montée, coupé en 10 ms sur
-  le « 1 » ; entrant brut (aucun filtre), lu à partir du « 1 », plein en
-  3 ms ; écho d'un temps du sortant à ×0,35.
+  cosinus jusqu'à la coupure (riser par-dessus) ; silence, puis entrant
+  brut, plein en 3 ms sur le « 1 », sous l'impact.
+- **Drop swap** (`DROP`, §3.5) : drop explosif — sortant plein, passe-haut
+  montant (30 → 250 Hz) sur sa seule dernière mesure, riser, dernier coup
+  en réverbe, coupé en 10 ms un silence avant le « 1 » ; entrant brut
+  (aucun filtre), lu à partir du « 1 », plein en 3 ms, sous l'impact.
 - **Limiteur doux** de sortie, renfort dynamique des basses gelé pendant les
   fondus, écrêtage dur ±1 en dernier recours.
 

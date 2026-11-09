@@ -941,6 +941,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setProTransitions(on: Boolean) = PlayerCore.setProTransitions(on)
 
+    /** Intensité des drops explosifs (0 douce, 1 normale, 2 explosive). */
+    val dropIntensity = PlayerCore.dropIntensity
+
+    fun setDropIntensity(level: Int) = PlayerCore.setDropIntensity(level)
+
     /** Supprime définitivement un morceau du disque et de la bibliothèque. */
     fun deleteTrack(track: Track) {
         PlayerCore.onTrackDeleted(track.uri)
