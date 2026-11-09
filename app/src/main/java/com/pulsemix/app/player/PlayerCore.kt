@@ -103,8 +103,8 @@ object PlayerCore {
 
     /**
      * Transitions « pro » du mode DJ (sélection fadeSpecPro du moteur) :
-     * loop roll, reverb wash, brake, normale à durée doublée ou drop swap — la
-     * montée du sortant, coupée sur le « 1 » par le drop de l'entrant. Persisté, et
+     * loop roll, reverb wash, brake, spinback ou normale à durée doublée
+     * (le drop swap a été retiré). Persisté, et
      * applicable À CHAUD : la prochaine transition programmée le lit,
      * pas besoin de redémarrer le set.
      */
@@ -617,7 +617,7 @@ object PlayerCore {
                 }
             }
         })
-        // Mode « Transitions pro » (roll, wash, brake, normale ×2, drop swap) : réglage
+        // Mode « Transitions pro » (roll, wash, brake, spinback, normale ×2) : réglage
         // persistant transmis au moteur dès sa création, puis à chaud.
         mixer.setProMode(proTransitions.value)
         com.pulsemix.app.mix.MixEngine.djPassageExtraMs =

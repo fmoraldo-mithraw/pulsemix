@@ -21,7 +21,7 @@ PulseMix a **deux moteurs de lecture**, donc deux familles de transitions :
 | **NORMAL** (lecture classique, playlists, file) | ExoPlayer (media3) | fondu croisé « deux platines » entre morceaux entiers, avec échange de basses | *Fondu croisé* on/off + durée 3-15 s |
 | **DOUCE** (sélection du plus doux au moins doux) | ExoPlayer | identiques à NORMAL | idem |
 | **MIX** (plan de mix : phases → morceaux entiers) | ExoPlayer | identiques à NORMAL, plus l'enchaînement en fondu d'un mix au suivant | idem |
-| **DJ** (set : phases → *passages forts* d'une minute) | `DjMixer` (AudioTrack + décodage maison) | jonctions battues, comptées en mesures : calage de tempo partagé, filtres, échange de basses ; en pro : loop roll, reverb wash, brake, spinback, normales ×2, drop swap | *Transitions pro* on/off |
+| **DJ** (set : phases → *passages forts* d'une minute) | `DjMixer` (AudioTrack + décodage maison) | jonctions battues, comptées en mesures : calage de tempo partagé, filtres, échange de basses ; en pro : loop roll, reverb wash, brake, spinback, normales ×2 | *Transitions pro* on/off |
 
 À côté de ces deux familles, trois mécanismes « transversaux » modifient le
 son au moment d'un changement : le **micro-fondu de pause/reprise**, la
@@ -440,6 +440,12 @@ du roll et l'amorce de son écho (sauts), l'envoi de réverbe coupé net du
 wash, le lissage du spinback parti de zéro. Le medley (va-et-vient de 20-30 s) a été
 retiré : désagréable à l'écoute.
 
+
+**Drop swap : retiré** (`DROP_SWAP_ENABLED = false`). Jugé trop discret
+dans sa première version, puis désagréable en version « explosive »
+(riser, silence, impact — essai annulé) : il n'est plus jamais choisi, et
+le sortant n'est plus calé sur la fin de sa montée pour lui. Le code est
+gardé dormant ; ce qui suit décrit son fonctionnement s'il était rétabli.
 
 **Le drop swap, calé à l'échantillon.** Un drop swap raté est pire que pas
 de transition : tout tient au calage.

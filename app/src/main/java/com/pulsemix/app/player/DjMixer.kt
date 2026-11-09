@@ -382,6 +382,8 @@ class DjMixer(private val context: Context, private val listener: Listener) {
          * dure encore [DROP_TAIL_BARS] après le swap, le temps que l'écho
          * s'éteigne.
          */
+        /** Drop swap désactivé : retiré du mode pro à l'écoute. */
+        const val DROP_SWAP_ENABLED = false
         const val DROP_PRE_BARS = 2
         const val DROP_TAIL_BARS = 2
         const val DROP_HP_FROM = 30f
@@ -1071,7 +1073,12 @@ class DjMixer(private val context: Context, private val listener: Listener) {
                     else -> ProChoice(FADE_CUT_S, KIND_CUT, false)
                 }
             }
-            if (sortantDropExit && dropEntryOk(next, fortPassage, nextSections, anchorMs)) {
+            // Drop swap retiré du mode pro (jugé désagréable à l'écoute,
+            // même en version « explosive ») : plus jamais choisi, et le
+            // sortant n'est plus calé sur sa montée pour lui (Deck.init).
+            if (DROP_SWAP_ENABLED && sortantDropExit &&
+                dropEntryOk(next, fortPassage, nextSections, anchorMs)
+            ) {
                 return ProChoice(FADE_CUT_S, KIND_DROP, false)
             }
             if (washOk) return ProChoice(FADE_CUT_S, KIND_WASH, false)
@@ -1834,7 +1841,7 @@ class DjMixer(private val context: Context, private val listener: Listener) {
             // Transitions pro, drop swap possible vers le passage suivant :
             // la fin est calée sur la fin d'une MONTÉE (là où le drop de ce
             // morceau tomberait — c'est celui de l'entrant qui tombera).
-            val dropEnd = if (!playToEnd && proMode && dropStreakIn < 2)
+            val dropEnd = if (DROP_SWAP_ENABLED && !playToEnd && proMode && dropStreakIn < 2)
                 dropExitFor(track, anchor, segMs, sections) else -1L
             dropExit = dropEnd > 0L
             val end = when {

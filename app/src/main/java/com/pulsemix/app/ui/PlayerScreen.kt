@@ -1190,15 +1190,14 @@ fun PlayerScreen(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                     // Transitions pro : un geste choisi à chaque jonction —
-                    // loop roll, reverb wash, brake, normales deux fois
-                    // plus longues, et drop swap calé sur la montée du
-                    // sortant. Réglage persistant, applicable
+                    // loop roll, reverb wash, brake, spinback, normales
+                    // deux fois plus longues. Réglage persistant, applicable
                     // à chaud (prochaine transition).
                     val proTransitions by
                         vm.proTransitions.collectAsStateWithLifecycle()
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "Transitions pro : roll, wash, brake, spinback, drops calés",
+                            "Transitions pro : roll, wash, brake, spinback",
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f)
                         )

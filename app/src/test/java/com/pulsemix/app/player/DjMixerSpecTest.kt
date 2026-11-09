@@ -383,12 +383,12 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `pro - sortant cale sur sa montee et vrai drop - drop swap`() {
+    fun `pro - drop swap retire - jamais choisi, meme sortant cale et vrai drop`() {
         val c = pro(
             track("a", 128f, energyMean = 0.2f), track("b", 128f, energyMean = 0.2f),
             dropExit = true
         )
-        assertEquals(DjMixer.KIND_DROP, c.kind)
+        assertTrue(c.kind != DjMixer.KIND_DROP)
     }
 
     @Test

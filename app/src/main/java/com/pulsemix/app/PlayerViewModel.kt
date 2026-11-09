@@ -936,7 +936,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setCrossfadeSeconds(seconds: Int) = PlayerCore.setCrossfadeSeconds(seconds)
 
-    /** Transitions pro du mode DJ (loop roll, reverb wash, brake, normale ×2, drop swap). */
+    /** Transitions pro du mode DJ (loop roll, reverb wash, brake, spinback, normale ×2). */
     val proTransitions = PlayerCore.proTransitions
 
     fun setProTransitions(on: Boolean) = PlayerCore.setProTransitions(on)
