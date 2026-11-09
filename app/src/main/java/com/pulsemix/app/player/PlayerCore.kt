@@ -121,21 +121,6 @@ object PlayerCore {
             .edit().putBoolean("proTransitions", on).apply()
     }
 
-    /**
-     * Intensité des drops explosifs du mode pro (0 douce, 1 normale,
-     * 2 explosive) : dose le silence avant le « 1 », le riser, la réverbe
-     * du dernier coup et l'impact. Persistée, applicable à chaud.
-     */
-    val dropIntensity = MutableStateFlow(1)
-
-    fun setDropIntensity(level: Int) {
-        val l = level.coerceIn(0, 2)
-        dropIntensity.value = l
-        mixer.setDropIntensity(l)
-        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
-            .edit().putInt("dropIntensity", l).apply()
-    }
-
     /** Égaliseur simple : graves / médiums / aigus en dB (-6..+6). */
     val eqBands = MutableStateFlow(Triple(0f, 0f, 0f))
 
@@ -385,7 +370,6 @@ object PlayerCore {
         crossfade.value = prefs.getBoolean("crossfade", true)
         crossfadeSeconds.value = prefs.getInt("crossfadeSeconds", 10).coerceIn(3, 15)
         proTransitions.value = prefs.getBoolean("proTransitions", false)
-        dropIntensity.value = prefs.getInt("dropIntensity", 1).coerceIn(0, 2)
         // La latence d'amorçage est propre à l'appareil : la retenir entre
         // les sessions rend le PREMIER fondu aussi propre que les suivants,
         // au lieu de repartir d'une valeur typique à recalibrer.
@@ -636,7 +620,6 @@ object PlayerCore {
         // Mode « Transitions pro » (roll, wash, brake, normale ×2, drop swap) : réglage
         // persistant transmis au moteur dès sa création, puis à chaud.
         mixer.setProMode(proTransitions.value)
-        mixer.setDropIntensity(dropIntensity.value)
         com.pulsemix.app.mix.MixEngine.djPassageExtraMs =
             if (proTransitions.value) com.pulsemix.app.mix.MixEngine.DJ_LONG_BLEND_MS else 0L
 
@@ -1109,7 +1092,6 @@ object PlayerCore {
         o.put("crossfade", crossfade.value)
         o.put("crossfadeSeconds", crossfadeSeconds.value)
         o.put("proTransitions", proTransitions.value)
-        o.put("dropIntensity", dropIntensity.value)
         return o
     }
 
@@ -1130,7 +1112,6 @@ object PlayerCore {
             setProTransitions(
                 o.optBoolean("proTransitions", proTransitions.value)
             )
-            setDropIntensity(o.optInt("dropIntensity", dropIntensity.value))
         }
     }
 

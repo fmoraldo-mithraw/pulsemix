@@ -1207,29 +1207,6 @@ fun PlayerScreen(
                             onCheckedChange = { vm.setProTransitions(it) }
                         )
                     }
-                    // Drops explosifs : silence avant le « 1 », riser,
-                    // impact — dosés ici (réglage persistant, à chaud).
-                    if (proTransitions) {
-                        val dropIntensity by
-                            vm.dropIntensity.collectAsStateWithLifecycle()
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                "Drops",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            listOf("Douce", "Normale", "Explosive")
-                                .forEachIndexed { level, label ->
-                                    FilterChip(
-                                        selected = dropIntensity == level,
-                                        onClick = { vm.setDropIntensity(level) },
-                                        label = { Text(label) }
-                                    )
-                                }
-                        }
-                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 // Un mix dure toujours au moins une heure : les catégories

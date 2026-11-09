@@ -9,55 +9,36 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 /**
- * Traitement des gestes « sur le 1 » du mode pro (drop swap, loop roll,
- * reverb wash, brake, spinback) — cf. [DjMixer.usesSwapFx]. Une instance
- * par transition, allouée au moment de programmer le fondu (jamais dans la
+ * Traitement des gestes « sur le 1 » du mode pro (loop roll, reverb wash,
+ * brake, spinback) — cf. [DjMixer.isSwapKind]. Une instance par
+ * transition, allouée au moment de programmer le fondu (jamais dans la
  * boucle par bloc) ; [process] n'alloue rien.
  *
  * Code PUR (aucune dépendance Android) : la boucle audio du moteur et le
  * banc d'écoute des tests JVM (SwapFxListenTest) passent par lui — ce qui
  * est mesuré là-bas est exactement ce qui sort du téléphone.
  *
- * DROP EXPLOSIF (tous les gestes sauf le wash) — un drop frappe par
- * CONTRASTE, pas par son volume :
- *  1. la montée : le sortant garde ses basses jusqu'à sa dernière mesure
- *     (passe-haut sur la seule dernière mesure) et un RISER — bruit filtré
- *     dont la bande et le niveau montent — porte la tension jusqu'au
- *     point d'orgue (pas de riser sous un brake : un frein dégonfle) ;
- *  2. le point d'orgue et la COUPURE : le sortant frappe son dernier
- *     coup (lancé dans une réverbe pour le drop swap et le roll), puis
- *     silence pendant [gapF] (½ à 1 temps), seule la queue de réverbe
- *     s'éteint dedans — l'oreille se recalibre sur le silence et le
- *     cerveau, qui attend le drop, le reçoit plus fort ;
- *  3. le « 1 » : l'entrant repart plein sur son drop, avec un IMPACT —
- *     infra-basse qui chute de 80 à 35 Hz et crash discret — et rien
- *     par-dessus (plus d'écho qui brouillait l'attaque).
- * L'intensité ([intensity] : 0 douce, 1 normale, 2 explosive) dose le
- * silence, le riser, la réverbe et l'impact, tous proportionnels au
- * niveau mesuré du sortant (les morceaux sont normalisés).
- *
  * À chaque frame [gf] (horloge de sortie du moteur), [process] reçoit le
  * sortant brut et rend :
  *  - [outL]/[outR] : le sortant traité (boucle, frein, rembobinage…),
  *    AVANT son gain ;
  *  - [gA]/[gB] : gains du sortant et de l'entrant ;
- *  - [wetL]/[wetR] : effets ajoutés (riser, réverbe, impact), déjà dosés,
- *    à ajouter au mélange.
+ *  - [wetL]/[wetR] : la queue d'effet (écho, réverbe), déjà dosée, à
+ *    ajouter au mélange.
  *
- * Tous les effets s'éteignent avant [endF] : à la fin du fondu, le
- * moteur referme le sortant et jette cet objet — un effet encore audible
- * serait coupé net.
+ * Toutes les queues s'éteignent avant [endF] : à la fin du fondu, le
+ * moteur referme le sortant et jette cet objet — une queue encore
+ * audible serait coupée net.
  */
 internal class SwapFx(
     val kind: Int,
     val fadeStartF: Long,
     swapAt: Long,
     val endF: Long,
-    beatFrames: Double,
-    intensity: Int = 1
+    beatFrames: Double
 ) {
-    /** Le « 1 » : départ de l'entrant. Avancé par le moteur si le
-     *  sortant se tarit avant l'heure ([advanceSwap]). */
+    /** Le « 1 » : coupe du sortant, départ de l'entrant. Avancé par le
+     *  moteur si le sortant se tarit avant l'heure ([advanceSwap]). */
     var swapF: Long = swapAt
         private set
 
@@ -68,58 +49,39 @@ internal class SwapFx(
     var wetL = 0f
     var wetR = 0f
 
-    private val level = intensity.coerceIn(0, 2)
     private val beat = if (beatFrames.isNaN() || beatFrames <= 0.0) 22_050.0
     else beatFrames.coerceIn(11_025.0, 44_100.0)
     private val beatI = beat.toInt()
-    private val barF = (4.0 * beat).toLong()
 
-    /** Geste explosif (silence, impact) : tous sauf le wash. */
-    private val punch = kind != DjMixer.KIND_WASH
-    private val riserOn = punch && kind != DjMixer.KIND_BRAKE
-    private val throwOn = kind == DjMixer.KIND_DROP || kind == DjMixer.KIND_ROLL
-
-    /** Durée du silence avant le « 1 ». */
-    val gapF: Long = if (punch) DjMixer.dropGapFrames(beat, level, swapAt - fadeStartF) else 0L
-
-    /** La coupure du sortant : le « 1 » moins le silence. */
-    var cutF: Long = swapAt - gapF
-        private set
-
-    // Passe-bas one-pole des basses (< ~120 Hz) : retirées des réverbes
-    // (un grave réverbéré bave sous les basses de l'entrant).
+    // Passe-bas one-pole des basses (< ~120 Hz) : retirées de la réverbe
+    // du wash (un grave réverbéré bave sous les basses de l'entrant).
     private var lowL = 0f
     private var lowR = 0f
-    // Passe-haut de la dernière mesure (état one-pole du passe-bas soustrait)
+    // Passe-haut montant du roll (état one-pole du passe-bas soustrait)
     private var hpL = 0f
     private var hpR = 0f
     // Passe-bas de lissage du spinback (repliement de la relecture rapide)
     private var smL = 0f
     private var smR = 0f
-    // Niveau mesuré du sortant (moyenne quadratique depuis le début du
-    // fondu jusqu'à la coupure) : référence de dosage des effets.
-    private var sumSq = 0.0
-    private var nSq = 0L
-    private var refRms = 0f
 
     // ---- Loop roll : le premier temps capturé, son départ
-    private val rollStart = max(fadeStartF, cutF - (8.0 * beat).toLong())
+    private val rollStart = max(fadeStartF, swapAt - (8.0 * beat).toLong())
     private val rollBuf = if (kind == DjMixer.KIND_ROLL) FloatArray(beatI * 2) else null
-    // Temps entiers de roll avant la coupure : les boucles changent de
-    // longueur sur ces temps-là, là où elles repartent de zéro.
-    private val rollBeats = ((cutF - rollStart) / beatI).toInt().coerceAtLeast(1)
+    // Queue d'écho d'un temps, nourrie par le dernier temps du roll
+    private val echo = if (kind == DjMixer.KIND_ROLL) FloatArray(beatI * 2) else null
+    private var echoPos = 0
 
     // ---- Brake / spinback : capture du sortant depuis le début du fondu,
-    // relue à vitesse variable ; le geste finit sur la coupure.
+    // relue à vitesse variable
     private val capLen = if (kind == DjMixer.KIND_BRAKE || kind == DjMixer.KIND_SPINBACK)
-        (cutF - fadeStartF).coerceIn(1L, MAX_CAPTURE) else 0L
+        (swapAt - fadeStartF).coerceIn(1L, MAX_CAPTURE) else 0L
     private val cap = if (capLen > 0L) FloatArray(capLen.toInt() * 2) else null
     private val gestureLen: Long = when (kind) {
         DjMixer.KIND_BRAKE -> min(DjMixer.brakeFrames(beat), capLen).coerceAtLeast(1L)
         DjMixer.KIND_SPINBACK -> min(DjMixer.spinbackFrames(beat), capLen).coerceAtLeast(1L)
         else -> 1L
     }
-    private val gestureStart = cutF - gestureLen
+    private val gestureStart = swapAt - gestureLen
     // Spinback : vitesse arrière maximale, bornée par ce qui a été capturé
     // AVANT le geste (la relecture remonte dans le passé du sortant).
     private val spinMax: Double = if (kind == DjMixer.KIND_SPINBACK) {
@@ -127,30 +89,12 @@ internal class SwapFx(
         DjMixer.spinbackMaxSpeed(history, gestureLen.toDouble())
     } else 0.0
 
-    // ---- Réverbe : le wash, ou le dernier coup du drop swap / roll
-    private val reverb = if (kind == DjMixer.KIND_WASH || throwOn) WashReverb() else null
-    private val tmp = FloatArray(2)
+    // ---- Reverb wash
+    private val reverb = if (kind == DjMixer.KIND_WASH) WashReverb() else null
 
-    // ---- Riser : bruit (xorshift, un par canal) dans un passe-bande
-    // d'état variable qui monte ; niveau auto-normalisé.
-    private var seedL = 0x1234567
-    private var seedR = 0x7654321
-    private var svLowL = 0f
-    private var svBandL = 0f
-    private var svLowR = 0f
-    private var svBandR = 0f
-    private var riserMs = 1e-4f
-
-    // ---- Impact : phase de l'infra-basse, passe-bas du crash
-    private var subPhase = 0.0
-    private var crashLpL = 0f
-    private var crashLpR = 0f
-
-    /** Le sortant s'est tari avant l'heure : le « 1 » est maintenant (la
-     *  coupure aussi, si elle n'est pas déjà passée). */
+    /** Le sortant s'est tari avant l'heure : le « 1 » est maintenant. */
     fun advanceSwap(now: Long) {
         if (now < swapF) swapF = now
-        if (now < cutF) cutF = now
     }
 
     fun process(gf: Long, aL: Float, aR: Float) {
@@ -158,28 +102,17 @@ internal class SwapFx(
         outR = aR
         wetL = 0f
         wetR = 0f
-        gA = DjMixer.dropCutGainA(gf - cutF)
-        gB = DjMixer.dropCutGainB(gf - swapF)
+        val toSwap = gf - swapF
+        gA = DjMixer.dropCutGainA(toSwap)
+        gB = DjMixer.dropCutGainB(toSwap)
         lowL += LOW_ALPHA * (aL - lowL)
         lowR += LOW_ALPHA * (aR - lowR)
-        if (gf < cutF) {
-            sumSq += (aL * aL + aR * aR) * 0.5
-            nSq++
-            refRms = kotlin.math.sqrt(sumSq / nSq).toFloat()
-        }
         when (kind) {
-            DjMixer.KIND_DROP -> lastBarHp(gf)
-            DjMixer.KIND_ROLL -> {
-                roll(gf)
-                lastBarHp(gf)
-            }
+            DjMixer.KIND_ROLL -> roll(gf)
             DjMixer.KIND_BRAKE -> brake(gf, aL, aR)
             DjMixer.KIND_SPINBACK -> spinback(gf, aL, aR)
             DjMixer.KIND_WASH -> wash(gf)
         }
-        if (throwOn) throwReverb(gf)
-        if (riserOn && gf < cutF + DjMixer.DROP_CUT_A_FRAMES) riser(gf)
-        if (punch && gf >= swapF) impact(gf)
     }
 
     /** Extinction des queues : pleine jusqu'à mi-queue, puis cosinus
@@ -192,114 +125,55 @@ internal class SwapFx(
         return cos(t.coerceIn(0f, 1f) * HALF_PI)
     }
 
-    /** Passe-haut montant (30 → 250 Hz) sur la SEULE dernière mesure avant
-     *  la coupure : la montée garde son corps jusque-là, puis le grave se
-     *  libère pour les basses de l'entrant. */
-    private fun lastBarHp(gf: Long) {
-        val from = cutF - barF
-        if (gf < from) return
-        val fc = DjMixer.dropHpFc((gf - from).toFloat() / barF.coerceAtLeast(1L))
+    private fun roll(gf: Long) {
+        val rb = rollBuf ?: return
+        if (gf >= rollStart) {
+            val t = gf - rollStart
+            if (t < beatI) {
+                rb[t.toInt() * 2] = outL
+                rb[t.toInt() * 2 + 1] = outR
+                // Le direct s'efface sur ses dernières frames : la boucle
+                // repart de zéro (fenêtre), sans saut.
+                val w = min(1f, (beatI - 1 - t).toFloat() / DjMixer.ROLL_EDGE_FRAMES)
+                outL *= w
+                outR *= w
+            } else {
+                val len = DjMixer.rollLoopFrames((swapF - gf).toDouble() / beat, beatI)
+                val pos = ((t % beatI) % len).toInt()
+                val w = min(1f, min(pos, len - 1 - pos).toFloat() / DjMixer.ROLL_EDGE_FRAMES)
+                outL = rb[pos * 2] * w
+                outR = rb[pos * 2 + 1] * w
+            }
+        }
+        // Passe-haut qui monte de 30 à 350 Hz jusqu'au « 1 » : la tension
+        // monte, le grave se libère pour les basses de l'entrant.
+        val pre = (swapF - fadeStartF).coerceAtLeast(1L)
+        val fc = DjMixer.dropHpFc((gf - fadeStartF).toFloat() / pre)
         val alpha = 1f - exp(-2f * PI.toFloat() * fc / DjMixer.OUT_SR)
         hpL += alpha * (outL - hpL)
         hpR += alpha * (outR - hpR)
         outL -= hpL
         outR -= hpR
+        // Écho d'un temps : nourri par le DERNIER temps du roll (les
+        // huitièmes de temps), il tombe en rythme sur l'entrant.
+        val eb = echo ?: return
+        val eL = eb[echoPos * 2]
+        val eR = eb[echoPos * 2 + 1]
+        // Nourri en fenêtre (bords de ROLL_EDGE_FRAMES) : la boucle
+        // d'écho se referme sur elle-même sans saut.
+        val feed = if (gf in (swapF - beatI) until swapF) min(
+            1f,
+            min(gf - (swapF - beatI), swapF - 1 - gf).toFloat() / DjMixer.ROLL_EDGE_FRAMES
+        ) * gA else 0f
+        eb[echoPos * 2] = eL * DjMixer.ECHO_FEEDBACK + outL * feed
+        eb[echoPos * 2 + 1] = eR * DjMixer.ECHO_FEEDBACK + outR * feed
+        echoPos = if (echoPos + 1 >= beatI) 0 else echoPos + 1
+        val wet = DjMixer.DROP_ECHO_WET * tailFade(gf)
+        wetL = eL * wet
+        wetR = eR * wet
     }
 
-    private fun roll(gf: Long) {
-        val rb = rollBuf ?: return
-        if (gf < rollStart) return
-        val t = gf - rollStart
-        if (t < beatI) {
-            rb[t.toInt() * 2] = outL
-            rb[t.toInt() * 2 + 1] = outR
-            // Le direct s'efface sur ses dernières frames : la boucle
-            // repart de zéro (fenêtre), sans saut.
-            val w = min(1f, (beatI - 1 - t).toFloat() / DjMixer.ROLL_EDGE_FRAMES)
-            outL *= w
-            outR *= w
-        } else {
-            val left = rollBeats - (t / beatI).toInt()
-            val len = DjMixer.rollLoopFrames(left.toDouble(), beatI)
-            val pos = ((t % beatI) % len).toInt()
-            val w = min(1f, min(pos, len - 1 - pos).toFloat() / DjMixer.ROLL_EDGE_FRAMES)
-            outL = rb[pos * 2] * w
-            outR = rb[pos * 2 + 1] * w
-        }
-    }
-
-    /** Le dernier coup du sortant lancé dans la réverbe : envoi qui monte
-     *  sur le dernier temps, fermé avec lui à la coupure ; la queue
-     *  s'éteint vite dans le silence (le silence doit S'ENTENDRE) et plus
-     *  rien sur le « 1 ». */
-    private fun throwReverb(gf: Long) {
-        val r = reverb ?: return
-        val t = (gf - (cutF - beatI)).toFloat() / beatI
-        val send = if (t <= 0f) 0f else t.coerceAtMost(1f).pow(2f) * gA
-        r.process((outL - lowL) * send, (outR - lowR) * send, tmp)
-        val wet = THROW_WET[level] * when {
-            gf < cutF -> 1f
-            gf >= swapF -> 0f
-            else -> (1f - (gf - cutF).toFloat() / (swapF - cutF).coerceAtLeast(1L)).pow(3f)
-        }
-        wetL += tmp[0] * wet
-        wetR += tmp[1] * wet
-    }
-
-    private fun noise(l: Boolean): Float {
-        var x = if (l) seedL else seedR
-        x = x xor (x shl 13)
-        x = x xor (x ushr 17)
-        x = x xor (x shl 5)
-        if (l) seedL = x else seedR = x
-        return x.toFloat() / Int.MAX_VALUE
-    }
-
-    /** Riser : bruit dans un passe-bande qui monte de 300 Hz à 6 kHz sur
-     *  la montée, niveau en t² jusqu'à [RISER_LEVEL] × le niveau du
-     *  sortant au point d'orgue, coupé avec lui. */
-    private fun riser(gf: Long) {
-        val pre = (cutF - fadeStartF).coerceAtLeast(1L)
-        val p = ((gf - fadeStartF).toFloat() / pre).coerceIn(0f, 1f)
-        val fc = 300f * 20f.pow(p.pow(1.5f))
-        val f = 2f * sin(PI.toFloat() * fc / DjMixer.OUT_SR)
-        val nl = noise(true)
-        val nr = noise(false)
-        val hiL = nl - svLowL - RISER_DAMP * svBandL
-        svBandL += f * hiL
-        svLowL += f * svBandL
-        val hiR = nr - svLowR - RISER_DAMP * svBandR
-        svBandR += f * hiR
-        svLowR += f * svBandR
-        riserMs += 0.002f * ((svBandL * svBandL + svBandR * svBandR) * 0.5f - riserMs)
-        val norm = (1f / kotlin.math.sqrt(riserMs)).coerceAtMost(8f)
-        val g = RISER_LEVEL[level] * refRms * p * p * gA * norm
-        wetL += svBandL * g
-        wetR += svBandR * g
-    }
-
-    /** Impact sur le « 1 » : infra-basse qui chute de 80 à 35 Hz (attaque
-     *  2 ms) et crash (bruit au-dessus de ~4 kHz), proportionnels au niveau
-     *  du sortant, éteints avant la fin du fondu. */
-    private fun impact(gf: Long) {
-        val ti = (gf - swapF).toDouble() / DjMixer.OUT_SR
-        val fade = tailFade(gf)
-        val freq = 35.0 + 45.0 * exp(-ti / 0.06)
-        subPhase += 2.0 * PI * freq / DjMixer.OUT_SR
-        val atk = min(1.0, ti / 0.002)
-        val sub = (SUB_LEVEL[level] * refRms * 1.41f) *
-            (atk * exp(-ti / SUB_TAU) * sin(subPhase)).toFloat() * fade
-        val nl = noise(true)
-        val nr = noise(false)
-        crashLpL += CRASH_ALPHA * (nl - crashLpL)
-        crashLpR += CRASH_ALPHA * (nr - crashLpR)
-        val cenv = (min(1.0, ti / 0.001) * exp(-ti / 0.45)).toFloat() *
-            CRASH_LEVEL[level] * refRms * 1.7f * fade
-        wetL += sub + (nl - crashLpL) * cenv
-        wetR += sub + (nr - crashLpR) * cenv
-    }
-
-    /** Capture du sortant depuis le début du fondu, jusqu'à la coupure. */
+    /** Capture du sortant depuis le début du fondu, jusqu'au « 1 ». */
     private fun capture(gf: Long, aL: Float, aR: Float) {
         val c = cap ?: return
         val i = gf - fadeStartF
@@ -375,26 +249,16 @@ internal class SwapFx(
         gB = if (tb <= 0f) 0f else sin(tb.coerceAtMost(1f) * HALF_PI)
     }
 
+    private val tmp = FloatArray(2)
+
     private companion object {
         const val HALF_PI = 1.5707964f
         const val LOW_ALPHA = 0.017f
         /** ~6 kHz en one-pole à 44,1 kHz. */
         val SPIN_SMOOTH = 1f - exp(-2f * PI.toFloat() * 6_000f / 44_100f)
-        /** ~4 kHz : ce qui reste du bruit au-dessus fait le crash. */
-        val CRASH_ALPHA = 1f - exp(-2f * PI.toFloat() * 4_000f / 44_100f)
-        /** Amortissement du passe-bande du riser (1/Q). */
-        const val RISER_DAMP = 0.7f
         /** Capture du brake / spinback : 9 s au plus (deux mesures à
          *  60 BPM, le tempo le plus lent admis). */
         const val MAX_CAPTURE = 44_100L * 9L
-        // Dosages par intensité (douce, normale, explosive), relatifs au
-        // niveau efficace du sortant
-        val RISER_LEVEL = floatArrayOf(0.25f, 0.4f, 0.6f)
-        val THROW_WET = floatArrayOf(0.35f, 0.5f, 0.6f)
-        val SUB_LEVEL = floatArrayOf(1.0f, 1.8f, 2.6f)
-        val CRASH_LEVEL = floatArrayOf(0.2f, 0.3f, 0.45f)
-        /** Décroissance de l'infra-basse (s). */
-        const val SUB_TAU = 0.3
     }
 }
 
