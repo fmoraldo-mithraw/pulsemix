@@ -112,7 +112,7 @@ class AudioDecoder {
                         // trame de synchro d'avant) : gardé à partir de
                         // startUs, à l'échantillon près. Le jeter entier
                         // faisait démarrer le deck jusqu'à ~25 ms trop tard —
-                        // l'attaque d'un drop, pile ce que le drop swap vise.
+                        // l'attaque d'un drop, pile là où l'entrant démarre.
                         val ptsUs = info.presentationTimeUs
                         val overlaps = ptsUs < startUs && sampleRate > 0 &&
                             channels > 0 && info.size > 0 &&

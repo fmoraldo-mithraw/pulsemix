@@ -115,7 +115,6 @@ class DjMixerSpecTest {
         assertEquals(2, DjMixer.fadeBars(DjMixer.KIND_CUT, 32.0))
         assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_NORMAL, 32.0))
         assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_EQ, 32.0))
-        assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_DROP, 32.0))
         // Harmonique : 4 mesures sur un passage d'une minute (32 mesures),
         // 6 sur un long passage (≥ 48 mesures)
         assertEquals(4, DjMixer.fadeBars(DjMixer.KIND_HARMONIC, 32.0))
@@ -321,10 +320,10 @@ class DjMixerSpecTest {
     }
 
     // ---------------------------------------------------------- fadeSpecPro
-    // Un geste par situation : drop swap (sortant calé sur sa montée + vrai
-    // drop de l'entrant), reverb wash en sortie de break / outro, loop roll
-    // en sortie de drop, normale à durée doublée sinon. Non calable →
-    // brake (ou coupe juste après un brake) ; saut manuel → fondu court.
+    // Un geste par situation : reverb wash en sortie de break / outro,
+    // loop roll en sortie de drop vers le drop de l'entrant, normale à
+    // durée doublée sinon. Non calable → wash, spinback, brake ou coupe ;
+    // saut manuel → fondu court.
 
     private fun dropAt(startMs: Long) = listOf(
         StructureDetector.Section(
@@ -337,13 +336,11 @@ class DjMixerSpecTest {
 
     private fun pro(
         a: Track, b: Track, rate: Float = 1f, jumping: Boolean = false,
-        dropExit: Boolean = false, fort: Boolean = true,
         sections: List<StructureDetector.Section> = dropAt(60_000L),
         exitKind: StructureDetector.SectionKind? = null,
         lastKind: Int = -1
     ) = DjMixer.fadeSpecPro(
         a, 1f, b, rate, jumping, lastKind = lastKind,
-        sortantDropExit = dropExit, fortPassage = fort,
         nextSections = sections, anchorMs = 60_000L, exitKind = exitKind
     )
 
@@ -359,7 +356,7 @@ class DjMixerSpecTest {
         val a = track("a", 128f, energyMean = 0.2f)
         val b = track("b", 100f, energyMean = 0.2f)
         // Sortie chaude vers le drop de l'entrant : spinback, même avec un drop
-        val c = pro(a, b, rate = rate, dropExit = true)
+        val c = pro(a, b, rate = rate)
         assertEquals(DjMixer.KIND_SPINBACK, c.kind)
         assertEquals(false, c.long)
         // Juste après un spinback : brake ; juste après un brake : spinback
@@ -383,66 +380,10 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `pro - drop swap retire - jamais choisi, meme sortant cale et vrai drop`() {
-        val c = pro(
-            track("a", 128f, energyMean = 0.2f), track("b", 128f, energyMean = 0.2f),
-            dropExit = true
-        )
-        assertTrue(c.kind != DjMixer.KIND_DROP)
-    }
-
-    @Test
-    fun `pro - drop swap refuse - entrant mou, passage par role, pas de drop, sortant pas cale`() {
-        val a = track("a", 128f, energyMean = 0.2f)
-        assertTrue(pro(a, track("b", 128f, energyMean = 0.05f), dropExit = true).kind != DjMixer.KIND_DROP)
-        assertTrue(pro(a, track("b", 128f, energyMean = 0.2f), dropExit = true, fort = false).kind != DjMixer.KIND_DROP)
-        assertTrue(pro(a, track("b", 128f, energyMean = 0.2f), dropExit = true, sections = emptyList()).kind != DjMixer.KIND_DROP)
-        assertTrue(pro(a, track("b", 128f, energyMean = 0.2f), dropExit = false).kind != DjMixer.KIND_DROP)
-    }
-
-    @Test
-    fun `pro - wash en sortie de break, roll en sortie de drop, jamais deux fois de suite`() {
-        val a = track("a", 128f, energyMean = 0.15f)
-        val b = track("b", 128f, energyMean = 0.15f)
-        val brk = StructureDetector.SectionKind.BREAK
-        val drp = StructureDetector.SectionKind.DROP
-        assertEquals(DjMixer.KIND_WASH, pro(a, b, exitKind = brk).kind)
-        assertEquals(DjMixer.KIND_WASH, pro(a, b, exitKind = StructureDetector.SectionKind.OUTRO).kind)
-        assertEquals(DjMixer.KIND_ROLL, pro(a, b, exitKind = drp).kind)
-        // Structure inconnue : morceaux énergiques → roll ; calmes → wash
-        assertEquals(DjMixer.KIND_ROLL, pro(a, b).kind)
-        val calmA = track("a", 128f, energyMean = 0.05f)
-        val calmB = track("b", 128f, energyMean = 0.05f)
-        assertEquals(DjMixer.KIND_WASH, pro(calmA, calmB).kind)
-        // Jamais le même geste deux fois de suite : normale ×2
-        val n = pro(a, b, exitKind = drp, lastKind = DjMixer.KIND_ROLL)
-        assertTrue(n.long)
-        val w = pro(a, b, exitKind = brk, lastKind = DjMixer.KIND_WASH)
-        assertTrue(w.kind != DjMixer.KIND_WASH)
-        // Entrant mou : pas de roll (il tomberait dans le vide)
-        assertTrue(pro(a, track("b", 128f, energyMean = 0.05f), exitKind = drp).long)
-        // Sortie d'un couplet (INTRO, BUILD…) : normale ×2
-        assertTrue(pro(a, b, exitKind = StructureDetector.SectionKind.BUILD).long)
-        // Roll vers une entrée molle (intro de l'entrant) : la tension ne
-        // se résoudrait sur rien → normale ×2
-        val intro = listOf(
-            StructureDetector.Section(0L, 120_000L, StructureDetector.SectionKind.INTRO)
-        )
-        assertTrue(pro(a, b, exitKind = drp, sections = intro).long)
-        // Wash en tonalités qui se heurtent : la réverbe garderait la note
-        // du sortant sous l'entrant → normale ×2
-        val ka = track("a", 128f, camelot = "8A", energyMean = 0.15f)
-        val kb = track("b", 128f, camelot = "2B", energyMean = 0.15f)
-        assertTrue(pro(ka, kb, exitKind = brk).long)
-        val kc = track("b", 128f, camelot = "9A", energyMean = 0.15f)
-        assertEquals(DjMixer.KIND_WASH, pro(ka, kc, exitKind = brk).kind)
-    }
-
-    @Test
     fun `pro - saut manuel - fondu court neutre`() {
         val c = pro(
             track("a", 128f), track("b", 126f, energyMean = 0.2f),
-            rate = DjMixer.computeRate(128f, 126f), jumping = true, dropExit = true
+            rate = DjMixer.computeRate(128f, 126f), jumping = true
         )
         assertEquals(DjMixer.FADE_JUMP_S, c.fadeS, 1e-9)
         assertEquals(DjMixer.KIND_EQ, c.kind)
@@ -541,7 +482,7 @@ class DjMixerSpecTest {
         assertEquals(0L, DjMixer.preRollMs(90_000L, 22_500L, 128f, sections, relaxed = true))
     }
 
-    // ------------------------------------------------------- drop swap pur
+    // ---------------------------------------------- gestes « sur le 1 »
 
     @Test
     fun `tempoLockable - meme regle que splitRates`() {
@@ -557,58 +498,22 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `dropExitMs - fin de la montee la plus proche, jamais trop tot ni trop tard`() {
-        val sections = listOf(
-            section(0L, 30_000L, StructureDetector.SectionKind.BUILD),
-            section(30_000L, 60_000L, StructureDetector.SectionKind.DROP),
-            section(60_000L, 75_000L, StructureDetector.SectionKind.BREAK),
-            section(75_000L, 90_000L, StructureDetector.SectionKind.BUILD),
-            section(90_000L, 120_000L, StructureDetector.SectionKind.DROP),
-            section(120_000L, 150_000L, StructureDetector.SectionKind.BUILD),
-            section(150_000L, 180_000L, StructureDetector.SectionKind.DROP),
-            section(180_000L, 240_000L, StructureDetector.SectionKind.OUTRO)
-        )
-        // Ancre 30 s, fin visée 100 s : la montée qui finit à 90 s
-        assertEquals(90_000L, DjMixer.dropExitMs(100_000L, 30_000L, 128f, 240_000L, sections))
-        // Fin visée 140 s : 150 s (plus proche que 90)
-        assertEquals(150_000L, DjMixer.dropExitMs(140_000L, 30_000L, 128f, 240_000L, sections))
-        // Ancre 60 s : 90 s tombe sous les 45 s de jeu minimum → 150 s
-        // si elle est à portée, rien sinon
-        assertEquals(150_000L, DjMixer.dropExitMs(140_000L, 60_000L, 128f, 240_000L, sections))
-        assertEquals(-1L, DjMixer.dropExitMs(95_000L, 60_000L, 128f, 240_000L, sections))
-        // Fin visée 60 s : 150 s est à plus de deux phrases (15 s à 128) → aucune
-        assertEquals(-1L, DjMixer.dropExitMs(60_000L, 60_000L, 128f, 240_000L, sections))
-        // Sans structure ni tempo : rien
-        assertEquals(-1L, DjMixer.dropExitMs(100_000L, 30_000L, 128f, 240_000L, emptyList()))
-        assertEquals(-1L, DjMixer.dropExitMs(100_000L, 30_000L, 0f, 240_000L, sections))
-    }
-
-    @Test
-    fun `dropEntryOk - vrai drop sur l ancre, passage fort, morceau energique`() {
-        val b = track("b", 128f, energyMean = 0.2f)
-        assertTrue(DjMixer.dropEntryOk(b, true, dropAt(60_000L), 60_000L))
-        assertEquals(false, DjMixer.dropEntryOk(b, true, dropAt(60_000L), 70_000L))
-        assertEquals(false, DjMixer.dropEntryOk(b, false, dropAt(60_000L), 60_000L))
-        assertEquals(false, DjMixer.dropEntryOk(track("c", 128f, energyMean = 0.05f), true, dropAt(60_000L), 60_000L))
-    }
-
-    @Test
-    fun `drop cut gains - coupe nette au 1, sans clic`() {
+    fun `swap cut gains - coupe nette au 1, sans clic`() {
         // Avant le « 1 » : sortant plein, entrant muet
-        assertEquals(1f, DjMixer.dropCutGainA(-1000L), 0f)
-        assertEquals(0f, DjMixer.dropCutGainB(-1L), 0f)
+        assertEquals(1f, DjMixer.swapCutGainA(-1000L), 0f)
+        assertEquals(0f, DjMixer.swapCutGainB(-1L), 0f)
         // Au « 1 » : l'entrant part, le sortant commence sa coupe
-        assertEquals(1f, DjMixer.dropCutGainA(0L), 0f)
-        assertEquals(0f, DjMixer.dropCutGainB(0L), 0f)
+        assertEquals(1f, DjMixer.swapCutGainA(0L), 0f)
+        assertEquals(0f, DjMixer.swapCutGainB(0L), 0f)
         // Coupe en 10 ms, entrée en 3 ms
-        assertEquals(0f, DjMixer.dropCutGainA(DjMixer.DROP_CUT_A_FRAMES.toLong()), 0f)
-        assertEquals(1f, DjMixer.dropCutGainB(DjMixer.DROP_IN_B_FRAMES.toLong()), 0f)
+        assertEquals(0f, DjMixer.swapCutGainA(DjMixer.SWAP_CUT_A_FRAMES.toLong()), 0f)
+        assertEquals(1f, DjMixer.swapCutGainB(DjMixer.SWAP_IN_B_FRAMES.toLong()), 0f)
         // Monotones, sans saut de plus d'un pas de rampe
         var prevA = 1f
         var prevB = 0f
         for (f in 0L..600L) {
-            val ga = DjMixer.dropCutGainA(f)
-            val gb = DjMixer.dropCutGainB(f)
+            val ga = DjMixer.swapCutGainA(f)
+            val gb = DjMixer.swapCutGainB(f)
             assertTrue(ga <= prevA + 1e-6f && prevA - ga < 0.01f)
             assertTrue(gb >= prevB - 1e-6f && gb - prevB < 0.01f)
             prevA = ga
@@ -617,11 +522,11 @@ class DjMixerSpecTest {
     }
 
     @Test
-    fun `dropHpFc - monte de 30 a 350 Hz, lentement d abord`() {
-        assertEquals(DjMixer.DROP_HP_FROM, DjMixer.dropHpFc(0f), 1e-3f)
-        assertEquals(DjMixer.DROP_HP_TO, DjMixer.dropHpFc(1f), 1e-2f)
-        assertTrue(DjMixer.dropHpFc(0.5f) < 100f)
-        assertEquals(DjMixer.DROP_HP_TO, DjMixer.dropHpFc(2f), 1e-2f)
+    fun `rollHpFc - monte de 30 a 350 Hz, lentement d abord`() {
+        assertEquals(DjMixer.ROLL_HP_FROM, DjMixer.rollHpFc(0f), 1e-3f)
+        assertEquals(DjMixer.ROLL_HP_TO, DjMixer.rollHpFc(1f), 1e-2f)
+        assertTrue(DjMixer.rollHpFc(0.5f) < 100f)
+        assertEquals(DjMixer.ROLL_HP_TO, DjMixer.rollHpFc(2f), 1e-2f)
     }
 
     // --------------------------------------------------- snapEndToStructure

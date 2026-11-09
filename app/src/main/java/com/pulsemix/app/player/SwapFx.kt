@@ -103,8 +103,8 @@ internal class SwapFx(
         wetL = 0f
         wetR = 0f
         val toSwap = gf - swapF
-        gA = DjMixer.dropCutGainA(toSwap)
-        gB = DjMixer.dropCutGainB(toSwap)
+        gA = DjMixer.swapCutGainA(toSwap)
+        gB = DjMixer.swapCutGainB(toSwap)
         lowL += LOW_ALPHA * (aL - lowL)
         lowR += LOW_ALPHA * (aR - lowR)
         when (kind) {
@@ -148,7 +148,7 @@ internal class SwapFx(
         // Passe-haut qui monte de 30 à 350 Hz jusqu'au « 1 » : la tension
         // monte, le grave se libère pour les basses de l'entrant.
         val pre = (swapF - fadeStartF).coerceAtLeast(1L)
-        val fc = DjMixer.dropHpFc((gf - fadeStartF).toFloat() / pre)
+        val fc = DjMixer.rollHpFc((gf - fadeStartF).toFloat() / pre)
         val alpha = 1f - exp(-2f * PI.toFloat() * fc / DjMixer.OUT_SR)
         hpL += alpha * (outL - hpL)
         hpR += alpha * (outR - hpR)
@@ -168,7 +168,7 @@ internal class SwapFx(
         eb[echoPos * 2] = eL * DjMixer.ECHO_FEEDBACK + outL * feed
         eb[echoPos * 2 + 1] = eR * DjMixer.ECHO_FEEDBACK + outR * feed
         echoPos = if (echoPos + 1 >= beatI) 0 else echoPos + 1
-        val wet = DjMixer.DROP_ECHO_WET * tailFade(gf)
+        val wet = DjMixer.ROLL_ECHO_WET * tailFade(gf)
         wetL = eL * wet
         wetR = eR * wet
     }

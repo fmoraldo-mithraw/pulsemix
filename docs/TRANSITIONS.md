@@ -399,7 +399,6 @@ d'affilée :
 
 | Style | Quand | Ce qu'on entend |
 |---|---|---|
-| **Drop swap** (`KIND_DROP`) | le sortant a été calé pour finir sur sa **montée** (`Deck.dropExit`) et l'entrant a un vrai **drop** sur son ancre (`dropEntryOk` : passage fort, énergie ≥ 0,12), tempos calables | la montée du sortant, et sur le « 1 » où *son* drop devait tomber, c'est le drop de l'entrant qui tombe |
 | **Reverb wash** (`KIND_WASH`) | le sortant sort d'un **BREAK** ou d'une **OUTRO**, ou deux morceaux calmes (énergie < 0,08) — **et tonalités compatibles** (Camelot ≥ 0,8) ou inconnues ; tempos calés ou non | 2 mesures où le sortant part de plus en plus dans une longue réverbe (sans ses basses), coupé sur le « 1 » ; la réverbe s'éteint sur 2 mesures pendant que l'entrant arrive en un temps |
 | **Loop roll** (`KIND_ROLL`) | tempos calés, le sortant sort d'un **DROP** (structure inconnue : morceau énergique) **et** l'entrant arrive sur **son drop** (structure inconnue : énergique, ≥ 0,12) | le premier temps des 2 dernières mesures est capturé et rejoué en boucles de 1, ½, ¼ puis ⅛ de temps sous un passe-haut montant ; l'entrant tombe plein sur le « 1 », queue d'écho discrète |
 | **Spinback** (`KIND_SPINBACK`) | tempos **non calables**, sortie chaude vers l'entrée forte de l'entrant (mêmes critères que le roll) | le disque du sortant est rattrapé (en 8 % du geste, sans saut) et lancé en arrière jusqu'à 3× : la relecture remonte ce qu'il vient de jouer, ralentit et s'éteint sur 2 temps (0,6 à 1,1 s) ; l'entrant part plein sur le « 1 » |
@@ -415,7 +414,7 @@ entrée forte, sinon il tombe dans le vide. Une réverbe garde la note du
 sortant sous l'entrant : le wash exige des tonalités compatibles. Le brake,
 comique sur un morceau calme, n'est pris que sur un morceau qui a du corps.
 Jamais deux fois le même geste d'affilée.
-Journal : `transition … : <technique>, style drop|geste sur le 1|normale longue|coupe, …`.
+Journal : `transition … : <technique>, style geste sur le 1|normale longue|coupe, …`.
 
 **Les gestes « sur le 1 »** (roll, wash, brake) ont la géométrie du drop
 swap : c'est le « 1 » — fin de l'effet, coupe du sortant, départ de
@@ -441,42 +440,12 @@ wash, le lissage du spinback parti de zéro. Le medley (va-et-vient de 20-30 s) 
 retiré : désagréable à l'écoute.
 
 
-**Drop swap : retiré** (`DROP_SWAP_ENABLED = false`). Jugé trop discret
+**Drop swap : supprimé.** La transition où le drop de l'entrant
+remplaçait celui du sortant a été retirée du code : jugée trop discrète
 dans sa première version, puis désagréable en version « explosive »
-(riser, silence, impact — essai annulé) : il n'est plus jamais choisi, et
-le sortant n'est plus calé sur la fin de sa montée pour lui. Le code est
-gardé dormant ; ce qui suit décrit son fonctionnement s'il était rétabli.
-
-**Le drop swap, calé à l'échantillon.** Un drop swap raté est pire que pas
-de transition : tout tient au calage.
-
-- **Où sort le sortant** : à l'ouverture de son deck (`Deck.init`), si le
-  passage SUIVANT peut recevoir un drop swap, la fin du passage est calée
-  sur la **fin d'une section BUILD suivie d'un DROP** (`dropExitMs`) — là
-  où son propre drop tomberait. Au moins 45 s de jeu après l'ancre, au plus
-  deux phrases au-delà de la fin calculée, 15 s de morceau derrière.
-  Frontière déjà calée sur le saut de basses à l'analyse puis sur la
-  grille de phrases. Trois drop swaps d'affilée : non (`dropStreakIn`),
-  deux c'est le geste des festivals, trois une formule.
-- **Quand** : l'instant du « 1 » est calculé sur la **position source** du
-  sortant (`srcMsNow`, frames réellement décodées), pas sur son compteur de
-  sortie, qui dérive avec les glissements de tempo. Le tempo du sortant est
-  figé dès que l'entrant est en vol ; sa boucle de sortie est retenue
-  jusqu'à ce que la source ait atteint la fin de la montée
-  (`holdLoopToSrcEnd`).
-- **L'entrant** démarre **pile sur le début de son DROP**, sans pré-roll :
-  le décodeur garde désormais le tampon qui chevauche le point de seek à
-  partir de l'échantillon visé (avant, il jetait jusqu'à ~25 ms — l'attaque
-  du drop). Il n'est lu qu'à partir du « 1 » (`startedAtFrame`).
-- **Le geste** : les 2 dernières mesures de la montée, passe-haut montant
-  sur le sortant (30 → 350 Hz, `dropHpFc`) — la tension monte, le grave se
-  dégage. Sur le « 1 » : sortant coupé en 10 ms, entrant plein en 3 ms
-  (`dropCutGainA/B`), plein spectre, basses comprises ; queue d'écho d'un
-  temps du sortant, discrète (×0,35) ; la jonction dure encore 2 mesures,
-  le temps que l'écho s'éteigne. Pas de recalage de kicks après le « 1 »
-  (le sortant, muet, n'est plus une référence).
-- **Repli** : montée déjà passée quand l'entrant est prêt → coupe courte
-  (journal : `montée manquée`).
+(riser, silence, impact). Le sortant n'est plus calé sur la fin d'une
+montée. Ses gains de coupe (`swapCutGainA/B`) et son passe-haut montant
+(`rollHpFc`) restent ceux des gestes « sur le 1 ».
 
 **Passages allongés.** En mode pro, chaque passage est **allongé de la
 ~26 s** (`longBars`, `Deck.init`) pour que la minute
@@ -489,8 +458,7 @@ pré-roll d'entrée (§3.6), l'entrant arrive par sa montée et son drop tombe
 (6 sur un passage d'au moins 48 mesures), le reste 4 ; jamais plus d'**un
 cinquième du passage sortant**, jamais moins d'une mesure. Normale ×2
 (mode pro) : durées doublées, plafond à 35 % du passage ; roll 2 + 1,
-wash 2 + 2, brake 1 + 1, spinback 2 + 1 mesures autour du « 1 » ; drop swap : 2 + 2
-mesures autour du « 1 ». Un DJ compte des
+wash 2 + 2, brake 1 + 1, spinback 2 + 1 mesures autour du « 1 ». Un DJ compte des
 mesures, pas des secondes (8 s à 90 BPM font trois mesures, une jonction
 hors de toute structure). Sans tempo connu : plafond en secondes
 (`clampFadeS`, 15 % du passage, 8 s). La durée est arrêtée **avant**
@@ -541,10 +509,6 @@ Principe commun : **une seule source par bande à chaque instant**.
   +1 → −vmax (bornée par ce qui a été capturé, ≤ 3) puis vers 0, passe-bas
   ~6 kHz contre le repliement, niveau plein sur le premier tiers puis
   cosinus jusqu'au silence sur le « 1 » ; entrant brut, plein en 3 ms.
-- **Drop swap** (`DROP`, §3.5) : sortant plein sous un passe-haut montant
-  (30 → 350 Hz) sur ses 2 dernières mesures de montée, coupé en 10 ms sur
-  le « 1 » ; entrant brut (aucun filtre), lu à partir du « 1 », plein en
-  3 ms ; écho d'un temps du sortant à ×0,35.
 - **Limiteur doux** de sortie, renfort dynamique des basses gelé pendant les
   fondus, écrêtage dur ±1 en dernier recours.
 

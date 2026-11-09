@@ -103,8 +103,8 @@ object PlayerCore {
 
     /**
      * Transitions « pro » du mode DJ (sélection fadeSpecPro du moteur) :
-     * loop roll, reverb wash, brake, spinback ou normale à durée doublée
-     * (le drop swap a été retiré). Persisté, et
+     * loop roll, reverb wash, brake, spinback ou normale à durée doublée.
+     * Persisté, et
      * applicable À CHAUD : la prochaine transition programmée le lit,
      * pas besoin de redémarrer le set.
      */
